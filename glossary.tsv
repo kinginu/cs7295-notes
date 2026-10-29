@@ -1,1 +1,483 @@
 en	ja	reading	lesson	note
+GPU	GPU	じーぴーゆー	1	
+CPU	CPU	しーぴーゆー	1	
+throughput	スループット	するーぷっと	1	
+latency	レイテンシ	れいてんし	1	
+precise exception	精密例外	せいみつれいがい	1	GPUs do not guarantee them (M1.1)
+host	ホスト	ほすと	1	
+accelerator	アクセラレータ	あくせられーた	1	
+instruction set architecture (ISA)	命令セットアーキテクチャ	めいれいせっとあーきてくちゃ	1	
+virtual ISA	仮想ISA	かそうあいえすえー	1	PTX is NVIDIA's virtual ISA
+SISD	SISD	しすど	1	single instruction, single data
+SIMD	SIMD	しむど	1	single instruction, multiple data
+MIMD	MIMD	みむど	1	
+SPMD	SPMD	えすぴーえむでぃー	1	programming style; SIMT is the hardware model
+SIMT	SIMT	えすあいえむてぃー	1	single instruction, multiple threads
+Flynn's taxonomy	フリンの分類	ふりんのぶんるい	1	
+superscalar	スーパースカラ	すーぱーすから	1	
+instruction-level parallelism (ILP)	命令レベル並列性	めいれいれべるへいれつせい	1	
+instructions per cycle (IPC)	サイクル当たり命令数	さいくるあたりめいれいすう	1	
+out-of-order execution	アウトオブオーダ実行	あうとおぶおーだじっこう	1	
+in-order execution	インオーダ実行	いんおーだじっこう	1	
+branch prediction	分岐予測	ぶんきよそく	1	
+multithreading	マルチスレッディング	まるちすれっでぃんぐ	1	
+multiprocessor	マルチプロセッサ	まるちぷろせっさ	1	
+Amdahl's law	アムダールの法則	あむだーるのほうそく	1	
+serial fraction	逐次部分の割合	ちくじぶぶんのわりあい	1	
+task decomposition	タスク分割	たすくぶんかつ	1	
+data decomposition	データ分割	でーたぶんかつ	1	
+reduction	リダクション	りだくしょん	1	
+streaming multiprocessor (SM)	ストリーミング・マルチプロセッサ	すとりーみんぐまるちぷろせっさ	1	the course's "core"
+SIMT lane	SIMTレーン	えすあいえむてぃーれーん	1	the course does not call a lane a core
+stream processor (CUDA core)	ストリーミングプロセッサ（CUDAコア）	すとりーみんぐぷろせっさくーだこあ	1	NVIDIA marketing term for a lane
+warp	ワープ	わーぷ	1	32 threads on NVIDIA GPUs
+wavefront	ウェーブフロント	うぇーぶふろんと	1	AMD term; used interchangeably with warp
+warp size	ワープサイズ	わーぷさいず	1	
+graphics pipeline	グラフィックスパイプライン	ぐらふぃっくすぱいぷらいん	1	
+vertex shader	頂点シェーダ	ちょうてんしぇーだ	1	
+pixel shader	ピクセルシェーダ	ぴくせるしぇーだ	1	
+unified shader	統合型シェーダ	とうごうがたしぇーだ	1	introduced with Tesla
+GPGPU	GPGPU	じーぴーじーぴーゆー	1	
+high bandwidth memory (HBM)	広帯域メモリ（HBM）	こうたいいきめもり	1	
+tensor core	テンソルコア	てんそるこあ	1	
+Transformer Engine	Transformer Engine	とらんすふぉーまーえんじん	1	Hopper
+Tensor Memory Accelerator (TMA)	テンソルメモリアクセラレータ	てんそるめもりあくせられーた	1	Hopper
+double precision (FP64)	倍精度	ばいせいど	1	
+single precision (FP32)	単精度	たんせいど	1	
+half precision (FP16)	半精度	はんせいど	1	
+parallel programming pattern	並列プログラミングパターン	へいれつぷろぐらみんぐぱたーん	2	
+concurrency	並行性	へいこうせい	2	
+master/worker pattern	マスタ／ワーカパターン	ますたわーかぱたーん	2	
+task queue	タスクキュー	たすくきゅー	2	
+loop parallelism	ループ並列性	るーぷへいれつせい	2	
+fork/join pattern	フォーク／ジョインパターン	ふぉーくじょいんぱたーん	2	
+pipeline pattern	パイプラインパターン	ぱいぷらいんぱたーん	2	
+shared-memory programming	共有メモリプログラミング	きょうゆうめもりぷろぐらみんぐ	2	CPU sense; distinct from CUDA shared memory (M3)
+distributed-memory programming	分散メモリプログラミング	ぶんさんめもりぷろぐらみんぐ	2	
+OpenMP	OpenMP	おーぷんえむぴー	2	
+compiler directive	コンパイラ指示文	こんぱいらしじぶん	2	#pragma omp ...
+clause	指示節	しじせつ	2	e.g. reduction(+:sum)
+environment variable	環境変数	かんきょうへんすう	2	OMP_NUM_THREADS
+thread	スレッド	すれっど	2	meaning differs on CPUs and GPUs
+POSIX threads (pthreads)	POSIXスレッド	ぽじっくすすれっど	2	
+mutex	ミューテックス	みゅーてっくす	2	
+mutual exclusion	相互排除	そうごはいじょ	2	
+critical section	クリティカルセクション	くりてぃかるせくしょん	2	
+lock	ロック	ろっく	2	
+data race	データ競合	でーたきょうごう	2	
+static scheduling	静的スケジューリング	せいてきすけじゅーりんぐ	2	OpenMP loop scheduling
+dynamic scheduling	動的スケジューリング	どうてきすけじゅーりんぐ	2	
+guided scheduling	ガイド付きスケジューリング	がいどつきすけじゅーりんぐ	2	
+chunk size	チャンクサイズ	ちゃんくさいず	2	
+private variable	プライベート変数	ぷらいべーとへんすう	2	
+shared variable	共有変数	きょうゆうへんすう	2	
+barrier	バリア	ばりあ	2	
+atomic operation	アトミック操作	あとみっくそうさ	2	
+parallel sections	並列セクション	へいれつせくしょん	2	
+load balancing	負荷分散	ふかぶんさん	2	
+MPI (Message Passing Interface)	MPI	えむぴーあい	2	
+message passing	メッセージパッシング	めっせーじぱっしんぐ	2	
+point-to-point communication	1対1通信	いったいいちつうしん	2	MPI_Send / MPI_Recv
+collective communication	集団通信	しゅうだんつうしん	2	
+broadcast	ブロードキャスト	ぶろーどきゃすと	2	MPI_Bcast; also shared-memory broadcast (M4)
+process	プロセス	ぷろせす	2	
+rank	ランク	らんく	2	
+stencil	ステンシル	すてんしる	2	
+halo (ghost cells)	ハロー領域	はろーりょういき	2	
+boundary exchange	境界交換	きょうかいこうかん	2	
+kernel	カーネル	かーねる	3	
+host code	ホストコード	ほすとこーど	3	
+device code	デバイスコード	でばいすこーど	3	
+device	デバイス	でばいす	3	
+grid	グリッド	ぐりっど	3	
+thread block	スレッドブロック	すれっどぶろっく	3	
+cooperative thread array (CTA)	協調スレッド配列（CTA）	きょうちょうすれっどはいれつ	3	PTX name for a thread block
+thread index	スレッドインデックス	すれっどいんでっくす	3	threadIdx
+block index	ブロックインデックス	ぶろっくいんでっくす	3	blockIdx
+thread hierarchy	スレッド階層	すれっどかいそう	3	
+execution configuration	実行構成	じっこうこうせい	3	<<<grid, block>>>
+kernel launch	カーネル起動	かーねるきどう	3	
+shared memory	共有メモリ	きょうゆうめもり	3	CUDA __shared__, per block, on chip
+scratchpad memory	スクラッチパッドメモリ	すくらっちぱっどめもり	3	
+global memory	グローバルメモリ	ぐろーばるめもり	3	
+local memory	ローカルメモリ	ろーかるめもり	3	
+constant memory	コンスタントメモリ	こんすたんとめもり	3	
+texture memory	テクスチャメモリ	てくすちゃめもり	3	
+barrier synchronization	バリア同期	ばりあどうき	3	__syncthreads()
+bulk synchronous parallel (BSP)	バルク同期並列（BSP）	ばるくどうきへいれつ	3	
+occupancy	占有率	せんゆうりつ	3	active warps / max warps per SM
+active warp	アクティブワープ	あくてぃぶわーぷ	3	
+resource constraint	資源制約	しげんせいやく	3	
+register	レジスタ	れじすた	3	
+register pressure	レジスタ圧力	れじすたあつりょく	3	
+compute capability	Compute Capability	こんぴゅーとけいぱびりてぃ	3	
+thread block cluster	スレッドブロッククラスタ	すれっどぶろっくくらすた	3	Hopper
+host memory	ホストメモリ	ほすとめもり	3	
+device memory	デバイスメモリ	でばいすめもり	3	
+memory allocation	メモリ確保	めもりかくほ	3	cudaMalloc
+unified memory	ユニファイドメモリ	ゆにふぁいどめもり	3	details in M7
+tile	タイル	たいる	3	
+tiling	タイリング	たいりんぐ	3	
+boundary condition	境界条件	きょうかいじょうけん	3	
+zero padding	ゼロパディング	ぜろぱでぃんぐ	3	
+convolution	畳み込み	たたみこみ	3	
+filter	フィルタ	ふぃるた	3	
+data reuse	データ再利用	でーたさいりよう	3	
+latency hiding	レイテンシ隠蔽	れいてんしいんぺい	4	
+context switch	コンテキストスイッチ	こんてきすとすいっち	4	free on a GPU, costly on a CPU
+fine-grained multithreading	細粒度マルチスレッディング	さいりゅうどまるちすれっでぃんぐ	4	
+program counter (PC)	プログラムカウンタ	ぷろぐらむかうんた	4	one per warp
+register file	レジスタファイル	れじすたふぁいる	4	
+cache miss	キャッシュミス	きゃっしゅみす	4	
+memory-level parallelism (MLP)	メモリレベル並列性	めもりれべるへいれつせい	4	
+port	ポート	ぽーと	4	
+read port	読み出しポート	よみだしぽーと	4	
+write port	書き込みポート	かきこみぽーと	4	
+bank	バンク	ばんく	4	
+bank conflict	バンク競合	ばんくきょうごう	4	
+register bank conflict	レジスタバンク競合	れじすたばんくきょうごう	4	
+shared memory bank conflict	共有メモリのバンク競合	きょうゆうめもりのばんくきょうごう	4	32 banks x 4 B (CC >= 5.0)
+padding	パディング	ぱでぃんぐ	4	e.g. 32x33 tile
+static	静的	せいてき	4	"before running code"; compile time
+dynamic	動的	どうてき	4	depends on program input
+static instruction count	静的命令数	せいてきめいれいすう	4	
+dynamic instruction count	動的命令数	どうてきめいれいすう	4	
+scoreboard	スコアボード	すこあぼーど	4	
+operand collector	オペランドコレクタ	おぺらんどこれくた	4	A18 ch3 term; not named in the lecture
+operand buffer	オペランドバッファ	おぺらんどばっふぁ	4	
+lane	レーン	れーん	4	one ALU execution path
+active mask	アクティブマスク	あくてぃぶますく	4	
+special register	特殊レジスタ	とくしゅれじすた	4	%tid, %ctaid
+instruction fetch	命令フェッチ	めいれいふぇっち	4	
+decode	デコード	でこーど	4	
+issue	命令発行	めいれいはっこう	4	
+write-back	ライトバック	らいとばっく	4	
+memory coalescing	メモリコアレッシング	めもりこあれっしんぐ	4	NVIDIA JP also writes 結合アクセス
+coalesced access	コアレスアクセス	こあれすあくせす	4	
+uncoalesced access	非コアレスアクセス	ひこあれすあくせす	4	
+memory transaction	メモリトランザクション	めもりとらんざくしょん	4	32 B sectors on CC >= 6.0
+alignment	アライメント	あらいめんと	4	
+stride	ストライド	すとらいど	4	
+cache line	キャッシュライン	きゃっしゅらいん	4	
+memory bandwidth	メモリ帯域幅	めもりたいいきはば	4	
+SRAM	SRAM	えすらむ	4	
+DRAM	DRAM	でぃーらむ	4	
+3D-stacked memory	3次元積層メモリ	さんじげんせきそうめもり	4	
+silicon interposer	シリコンインターポーザ	しりこんいんたーぽーざ	4	
+special function unit (SFU)	特殊関数ユニット	とくしゅかんすうゆにっと	4	K12 §1.4.1; transcendental approximations
+profiling	プロファイリング	ぷろふぁいりんぐ	5	
+profiler	プロファイラ	ぷろふぁいら	5	
+hotspot	ホットスポット	ほっとすぽっと	5	
+data transfer	データ転送	でーたてんそう	5	
+PCI Express (PCIe)	PCI Express	ぴーしーあいえくすぷれす	5	
+pinned memory	ピン留めメモリ	ぴんどめめもり	5	page-locked memory, ページロックメモリ
+asynchronous copy	非同期コピー	ひどうきこぴー	5	cudaMemcpyAsync
+overlap of computation and transfer	計算と転送のオーバーラップ	けいさんとてんそうのおーばーらっぷ	5	
+CUDA stream	CUDAストリーム	くーだすとりーむ	5	
+concurrent copy and execute	コピーと実行の並行処理	こぴーとじっこうのへいこうしょり	5	
+zero copy	ゼロコピー	ぜろこぴー	5	
+unified virtual addressing (UVA)	統合仮想アドレッシング（UVA）	とうごうかそうあどれっしんぐ	5	details in M7
+theoretical bandwidth	理論帯域幅	りろんたいいきはば	5	BPG 9.2.1
+effective bandwidth	実効帯域幅	じっこうたいいきはば	5	BPG 9.2.2
+instruction optimization	命令最適化	めいれいさいてきか	5	
+intrinsic function	組み込み関数	くみこみかんすう	5	rsqrtf()
+predicated execution	プレディケート実行	ぷれでぃけーとじっこう	5	defined in M6.1
+warp shuffle	ワープシャッフル	わーぷしゃっふる	5	
+warp vote function	ワープ投票関数	わーぷとうひょうかんすう	5	vote / ballot
+cooperative groups	Cooperative Groups	こーぽれーてぃぶぐるーぷす	5	
+independent thread scheduling	独立スレッドスケジューリング	どくりつすれっどすけじゅーりんぐ	5	Volta and later
+split arrive/wait barrier	分割型到着／待機バリア	ぶんかつがたとうちゃくたいきばりあ	5	
+math library	数学ライブラリ	すうがくらいぶらり	5	
+cuBLAS	cuBLAS	きゅーぶらす	5	
+cuDNN	cuDNN	きゅーでぃーえぬえぬ	5	
+NCCL	NCCL	にっける	5	
+Thrust	Thrust	すらすと	5	
+OpenCL	OpenCL	おーぷんしーえる	5	
+SYCL	SYCL	しくる	5	
+HIP	HIP	ひっぷ	5	
+Nsight Compute	Nsight Compute	えぬさいとこんぴゅーと	5	
+Nsight Systems	Nsight Systems	えぬさいとしすてむず	5	
+sorting network	ソーティングネットワーク	そーてぃんぐねっとわーく	5	concept only (Project 2 boundary)
+bitonic sort	バイトニックソート	ばいとにっくそーと	5	concept only; no optimised CUDA kernel (Project 2)
+merge sort	マージソート	まーじそーと	5	
+basic block	基本ブロック	きほんぶろっく	6	formal definition in M10.3
+divergent branch	ダイバージェント分岐	だいばーじぇんとぶんき	6	
+divergent warp	ダイバージェントワープ	だいばーじぇんとわーぷ	6	
+warp divergence	ワープダイバージェンス	わーぷだいばーじぇんす	6	
+reconvergence point	再収束点	さいしゅうそくてん	6	
+post-dominator	後支配節点	こうしはいせってん	6	
+immediate post-dominator (IPDOM)	直接後支配節点	ちょくせつこうしはいせってん	6	the usual reconvergence point
+if-conversion	if変換	いふへんかん	6	
+predicate	プレディケート	ぷれでぃけーと	6	
+SIMT stack	SIMTスタック	えすあいえむてぃーすたっく	6	
+nested branch	入れ子の分岐	いれこのぶんき	6	
+large warp	ラージワープ	らーじわーぷ	6	Narasiman 2011
+dynamic warp formation (DWF)	動的ワープ形成	どうてきわーぷけいせい	6	Fung 2007
+SIMD efficiency	SIMD効率	しむどこうりつ	6	lane utilisation
+register file cache (RFC)	レジスタファイルキャッシュ	れじすたふぁいるきゃっしゅ	6	Gebhart ISCA 2011
+main register file (MRF)	主レジスタファイル	しゅれじすたふぁいる	6	
+hierarchical register file	階層型レジスタファイル	かいそうがたれじすたふぁいる	6	
+live register	生存レジスタ	せいぞんれじすた	6	
+dead register	非生存レジスタ	ひせいぞんれじすた	6	
+value lifetime	値の生存期間	あたいのせいぞんきかん	6	
+register file virtualization	レジスタファイル仮想化	れじすたふぁいるかそうか	6	Jeon 2015
+register renaming	レジスタリネーミング	れじすたりねーみんぐ	6	
+physical register	物理レジスタ	ぶつりれじすた	6	
+architectural register	アーキテクチャレジスタ	あーきてくちゃれじすた	6	
+non-volatile memory (NVM)	不揮発性メモリ	ふきはつせいめもり	6	
+hardware-managed cache	ハードウェア管理キャッシュ	はーどうぇあかんりきゃっしゅ	6	
+software-managed cache	ソフトウェア管理キャッシュ	そふとうぇあかんりきゃっしゅ	6	
+tag	タグ	たぐ	6	
+replacement policy	置換ポリシ	ちかんぽりし	6	
+LRU (least recently used)	LRU	えるあーるゆー	6	
+unified local memory	統合ローカルメモリ	とうごうろーかるめもり	6	Gebhart MICRO 2012
+L1 data cache	L1データキャッシュ	えるわんでーたきゃっしゅ	6	
+shared memory carve-out	共有メモリのカーブアウト	きょうゆうめもりのかーぶあうと	6	L1/shared split per kernel
+operand register file (ORF)	オペランドレジスタファイル	おぺらんどれじすたふぁいる	6	Gebhart MICRO 2011, compiler-managed
+last result file (LRF)	ラストリザルトファイル	らすとりざるとふぁいる	6	Gebhart MICRO 2011, 1 entry per thread
+virtual memory	仮想メモリ	かそうめもり	7	
+virtual address	仮想アドレス	かそうあどれす	7	
+physical address	物理アドレス	ぶつりあどれす	7	
+address translation	アドレス変換	あどれすへんかん	7	
+page	ページ	ぺーじ	7	
+virtual page number (VPN)	仮想ページ番号	かそうぺーじばんごう	7	
+physical frame number (PFN)	物理フレーム番号	ぶつりふれーむばんごう	7	also PPN
+page offset	ページオフセット	ぺーじおふせっと	7	
+page table	ページテーブル	ぺーじてーぶる	7	
+page table entry (PTE)	ページテーブルエントリ	ぺーじてーぶるえんとり	7	
+TLB (translation lookaside buffer)	TLB	てぃーえるびー	7	
+TLB miss	TLBミス	てぃーえるびーみす	7	
+page table walk	ページテーブルウォーク	ぺーじてーぶるうぉーく	7	
+page table walker (PTW)	ページテーブルウォーカ	ぺーじてーぶるうぉーか	7	
+page walk cache	ページウォークキャッシュ	ぺーじうぉーくきゃっしゅ	7	Power 2014
+page fault	ページフォールト	ぺーじふぉーると	7	
+multi-level page table	多段ページテーブル	ただんぺーじてーぶる	7	
+large page	ラージページ	らーじぺーじ	7	2 MB
+internal fragmentation	内部断片化	ないぶだんぺんか	7	
+segment mapping	セグメントマッピング	せぐめんとまっぴんぐ	7	
+copy-then-execute model	コピー後実行モデル	こぴーごじっこうもでる	7	
+shared virtual memory (SVM)	共有仮想メモリ	きょうゆうかそうめもり	7	
+on-demand paging	オンデマンドページング	おんでまんどぺーじんぐ	7	cudaMallocManaged
+IOMMU	IOMMU	あいおーえむえむゆー	7	
+DMA (direct memory access)	DMA	でぃーえむえー	7	
+prefetching	プリフェッチ	ぷりふぇっち	7	
+page prefetching	ページプリフェッチ	ぺーじぷりふぇっち	7	
+tree-based neighborhood prefetching	ツリーベース近傍プリフェッチ	つりーべーすきんぼうぷりふぇっち	7	NVIDIA UVM driver
+memory oversubscription	メモリのオーバーサブスクリプション	めもりのおーばーさぶすくりぷしょん	7	
+page eviction	ページ追い出し	ぺーじおいだし	7	
+warp scheduler	ワープスケジューラ	わーぷすけじゅーら	7	
+round-robin (RR)	ラウンドロビン	らうんどろびん	7	
+greedy-then-oldest (GTO)	GTOスケジューリング	じーてぃーおーすけじゅーりんぐ	7	defined in Rogers 2012
+oldest-first	最古優先	さいこゆうせん	7	
+two-level warp scheduling	2レベルワープスケジューリング	にれべるわーぷすけじゅーりんぐ	7	Narasiman 2011 / Gebhart 2011
+fetch group	フェッチグループ	ふぇっちぐるーぷ	7	Narasiman 2011
+active warp set / pending warp set	アクティブワープ集合／待機ワープ集合	あくてぃぶわーぷしゅうごうたいきわーぷしゅうごう	7	
+working set	ワーキングセット	わーきんぐせっと	7	
+cache thrashing	キャッシュスラッシング	きゃっしゅすらっしんぐ	7	
+compulsory miss	初期参照ミス	しょきさんしょうみす	7	
+intra-warp locality	ワープ内局所性	わーぷないきょくしょせい	7	
+inter-warp locality	ワープ間局所性	わーぷかんきょくしょせい	7	
+cache-conscious wavefront scheduling (CCWS)	キャッシュ考慮型ウェーブフロントスケジューリング	きゃっしゅこうりょがたうぇーぶふろんとすけじゅーりんぐ	7	Rogers 2012
+lost intra-wavefront locality detector (LLD)	ウェーブフロント内局所性損失検出器	うぇーぶふろんとないきょくしょせいそんしつけんしゅつき	7	
+CTA-aware scheduling	CTA考慮スケジューリング	しーてぃーえーこうりょすけじゅーりんぐ	7	Jog 2013 (OWL)
+bank-level parallelism	バンクレベル並列性	ばんくれべるへいれつせい	7	DRAM banks
+far fault	ファーフォールト	ふぁーふぉーると	7	GPU page fault serviced by the host driver
+GPU memory management unit (GMMU)	GPUメモリ管理ユニット	じーぴーゆーめもりかんりゆにっと	7	Ganguly 2019
+pre-eviction	事前追い出し	じぜんおいだし	7	Ganguly 2019
+loose round-robin (LRR)	ルーズラウンドロビン	るーずらうんどろびん	7	Rogers 2012 baseline
+performance modeling	性能モデリング	せいのうもでりんぐ	8	
+cycle-level simulation	サイクルレベルシミュレーション	さいくるれべるしみゅれーしょん	8	
+execution-driven simulation	実行駆動シミュレーション	じっこうくどうしみゅれーしょん	8	
+trace-driven simulation	トレース駆動シミュレーション	とれーすくどうしみゅれーしょん	8	
+trace	トレース	とれーす	8	
+event-driven simulation	イベント駆動シミュレーション	いべんとくどうしみゅれーしょん	8	
+clock domain	クロックドメイン	くろっくどめいん	8	
+queue-based model	キューベースモデル	きゅーべーすもでる	8	
+FIFO	FIFO	ふぁいふぉ	8	
+pipeline width	パイプライン幅	ぱいぷらいんはば	8	
+simulator	シミュレータ	しみゅれーた	8	
+sectored cache	セクタキャッシュ	せくたきゃっしゅ	8	
+sector	セクタ	せくた	8	32 B on NVIDIA
+analytical model	解析モデル	かいせきもでる	8	
+first-order model	一次近似モデル	いちじきんじもでる	8	
+fused multiply-add (FMA)	融合積和演算（FMA）	ゆうごうせきわえんざん	8	
+Roofline model	ルーフラインモデル	るーふらいんもでる	8	
+arithmetic intensity	演算強度	えんざんきょうど	8	FLOP per byte
+operational intensity	演算強度（DRAMバイト当たり）	えんざんきょうどどらむばいとあたり	8	Williams 2009 term: FLOPs per DRAM byte
+compute-bound	演算律速	えんざんりっそく	8	
+memory-bound	メモリ律速	めもりりっそく	8	
+ridge point	リッジポイント	りっじぽいんと	8	
+cycles per instruction (CPI)	命令当たりサイクル数（CPI）	めいれいあたりさいくるすう	8	
+CPI stack	CPIスタック	しーぴーあいすたっく	8	
+interval analysis	インターバル解析	いんたーばるかいせき	8	Karkhanis & Smith 2004; GPUMech
+miss event	ミスイベント	みすいべんと	8	
+MSHR (miss status holding register)	MSHR	えむえすえいちあーる	8	
+memory warp parallelism (MWP)	メモリワープ並列度	めもりわーぷへいれつど	8	Hong & Kim 2009
+computation warp parallelism (CWP)	計算ワープ並列度	けいさんわーぷへいれつど	8	Hong & Kim 2009
+sub-core	サブコア	さぶこあ	8	SM partition
+sampled simulation	サンプリングシミュレーション	さんぷりんぐしみゅれーしょん	8	
+warm-up	ウォームアップ	うぉーむあっぷ	8	
+checkpoint	チェックポイント	ちぇっくぽいんと	8	
+program phase	プログラムフェーズ	ぷろぐらむふぇーず	8	
+SimPoint	SimPoint	しむぽいんと	8	
+kernel-level sampling	カーネル単位サンプリング	かーねるたんいさんぷりんぐ	8	
+FPGA emulation	FPGAエミュレーション	えふぴーじーえーえみゅれーしょん	8	
+data-driven model	データ駆動モデル	でーたくどうもでる	8	
+microbenchmark	マイクロベンチマーク	まいくろべんちまーく	8	
+representative workload	代表ワークロード	だいひょうわーくろーど	8	
+multi-GPU	マルチGPU	まるちじーぴーゆー	9	
+monolithic GPU	モノリシックGPU	ものりしっくじーぴーゆー	9	
+multi-chip module (MCM)	マルチチップモジュール	まるちちっぷもじゅーる	9	
+GPU module (GPM)	GPUモジュール	じーぴーゆーもじゅーる	9	Arunkumar 2017
+chiplet	チップレット	ちっぷれっと	9	
+non-uniform memory access (NUMA)	不均一メモリアクセス（NUMA）	ふきんいつめもりあくせす	9	
+near memory / far memory	近接メモリ／遠隔メモリ	きんせつめもりえんかくめもり	9	
+first-touch page placement	ファーストタッチ配置	ふぁーすとたっちはいち	9	
+page migration	ページマイグレーション	ぺーじまいぐれーしょん	9	
+thread block scheduling	スレッドブロックスケジューリング	すれっどぶろっくすけじゅーりんぐ	9	
+NVLink	NVLink	えぬぶいりんく	9	
+NVSwitch	NVSwitch	えぬぶいすいっち	9	
+interconnect	インターコネクト	いんたーこねくと	9	
+remote direct memory access (RDMA)	リモートダイレクトメモリアクセス（RDMA）	りもーとだいれくとめもりあくせす	9	
+host bypass	ホストバイパス	ほすとばいぱす	9	
+GPUDirect RDMA	GPUDirect RDMA	じーぴーゆーだいれくとあーるでぃーえむえー	9	
+network interface card (NIC)	ネットワークインタフェースカード	ねっとわーくいんたふぇーすかーど	9	
+utilization	利用率	りようりつ	9	
+multi-tenancy	マルチテナンシ	まるちてなんし	9	
+Multi-Process Service (MPS)	マルチプロセスサービス（MPS）	まるちぷろせすさーびす	9	
+Multi-Instance GPU (MIG)	マルチインスタンスGPU（MIG）	まるちいんすたんすじーぴーゆー	9	
+GPU instance	GPUインスタンス	じーぴーゆーいんすたんす	9	up to 7 (A100, H100)
+quality of service (QoS)	サービス品質（QoS）	さーびすひんしつ	9	
+spatial partitioning	空間分割	くうかんぶんかつ	9	
+time slicing	タイムスライシング	たいむすらいしんぐ	9	
+concurrent kernel execution	カーネルの並行実行	かーねるのへいこうじっこう	9	
+CUDA Graph	CUDAグラフ	くーだぐらふ	9	
+datacenter	データセンタ	でーたせんた	9	
+compiler	コンパイラ	こんぱいら	10	
+front end	フロントエンド	ふろんとえんど	10	
+back end	バックエンド	ばっくえんど	10	
+intermediate representation (IR)	中間表現	ちゅうかんひょうげん	10	
+abstract syntax tree (AST)	抽象構文木	ちゅうしょうこうぶんぎ	10	
+preprocessor	プリプロセッサ	ぷりぷろせっさ	10	
+Clang	Clang	くらん	10	
+LLVM	LLVM	えるえるぶいえむ	10	
+NVPTX	NVPTX	えぬぶいぴーてぃーえっくす	10	LLVM back end
+nvcc	nvcc	えぬぶいしーしー	10	
+PTX (Parallel Thread Execution)	PTX	ぴーてぃーえっくす	10	virtual ISA; no register allocation
+SASS	SASS	さす	10	shader assembly; architecture-specific
+virtual architecture	仮想アーキテクチャ	かそうあーきてくちゃ	10	compute_XX
+fat binary	ファットバイナリ	ふぁっとばいなり	10	
+JIT compilation	JITコンパイル	じっとこんぱいる	10	
+code generation	コード生成	こーどせいせい	10	
+directive	ディレクティブ	でぃれくてぃぶ	10	PTX .target, .reg, ...
+guard predicate	ガード述語	がーどじゅつご	10	@p / @!p
+predicate register	述語レジスタ	じゅつごれじすた	10	.pred
+opcode	オペコード	おぺこーど	10	
+operand	オペランド	おぺらんど	10	
+label	ラベル	らべる	10	
+memory fence	メモリフェンス	めもりふぇんす	10	membar / fence
+three-address code	3番地コード	さんばんちこーど	10	
+leader	リーダ（先頭命令）	りーだせんとうめいれい	10	
+control flow graph (CFG)	制御フローグラフ	せいぎょふろーぐらふ	10	
+predecessor	先行ブロック	せんこうぶろっく	10	
+successor	後続ブロック	こうぞくぶろっく	10	
+local optimization	局所最適化	きょくしょさいてきか	10	
+global optimization	大域最適化	たいいきさいてきか	10	
+data-flow analysis	データフロー解析	でーたふろーかいせき	10	
+program point	プログラム点	ぷろぐらむてん	10	
+transfer function	伝達関数	でんたつかんすう	10	
+meet operator	合流演算子	ごうりゅうえんざんし	10	union for both analyses in the course
+forward analysis	前向き解析	まえむきかいせき	10	
+definition	定義	ていぎ	10	
+use	使用	しよう	10	
+reaching definitions	到達定義	とうたつていぎ	10	
+gen set	gen集合	じぇんしゅうごう	10	
+kill set	kill集合	きるしゅうごう	10	
+copy propagation	コピー伝播	こぴーでんぱ	10	
+iterative algorithm	反復アルゴリズム	はんぷくあるごりずむ	10	
+fixed point	不動点	ふどうてん	10	
+bit vector	ビットベクタ	びっとべくた	10	
+live variable	生存変数	せいぞんへんすう	11	
+liveness analysis	生存変数解析	せいぞんへんすうかいせき	11	
+backward analysis	後ろ向き解析	うしろむきかいせき	11	
+def set	def集合	でふしゅうごう	11	
+use set	use集合	ゆーずしゅうごう	11	
+register allocation	レジスタ割り付け	れじすたわりつけ	11	
+register spill	レジスタスピル	れじすたすぴる	11	
+fill (reload)	フィル（再ロード）	ふぃるさいろーど	11	
+interference graph	干渉グラフ	かんしょうぐらふ	11	not in the lecture; standard
+static single assignment (SSA)	静的単一代入	せいてきたんいつだいにゅう	11	
+SSA form	SSA形式	えすえすえーけいしき	11	
+phi function	φ関数	ふぁいかんすう	11	
+join point	合流点	ごうりゅうてん	11	
+path-convergence criterion	経路収束条件	けいろしゅうそくじょうけん	11	
+dominator	支配節点	しはいせってん	11	
+dominance frontier	支配辺境	しはいへんきょう	11	not in the lecture; standard SSA algorithm
+def-use chain	定義・使用連鎖	ていぎしようれんさ	11	
+conditional move	条件付き移動	じょうけんつきいどう	11	
+loop unrolling	ループ展開	るーぷてんかい	11	
+epilogue loop	エピローグループ	えぴろーぐるーぷ	11	
+function inlining	関数のインライン展開	かんすうのいんらいんてんかい	11	
+inter-procedural analysis	手続き間解析	てつづきかんかいせき	11	
+dead code elimination	不要コード除去	ふようこーどじょきょ	11	
+constant propagation	定数伝播	ていすうでんぱ	11	
+constant folding	定数畳み込み	ていすうたたみこみ	11	
+strength reduction	強さの低減	つよさのていげん	11	
+code motion	コード移動	こーどいどう	11	
+loop-invariant code motion	ループ不変式の移動	るーぷふへんしきのいどう	11	
+induction variable	誘導変数	ゆうどうへんすう	11	
+vectorization	ベクトル化	べくとるか	11	
+divergence analysis	ダイバージェンス解析	だいばーじぇんすかいせき	11	concept only (Project 5 boundary)
+thread-dependent value	スレッド依存値	すれっどいぞんち	11	
+uniform value	一様値	いちようち	11	
+conservative analysis	保守的解析	ほしゅてきかいせき	11	
+machine learning (ML)	機械学習	きかいがくしゅう	12	
+deep neural network (DNN)	深層ニューラルネットワーク	しんそうにゅーらるねっとわーく	12	
+GEMM (general matrix multiplication)	GEMM（一般行列積）	じぇむいっぱんぎょうれつせき	12	
+matrix multiplication	行列積	ぎょうれつせき	12	
+fully connected layer	全結合層	ぜんけつごうそう	12	
+convolution layer	畳み込み層	たたみこみそう	12	
+element-wise operation	要素ごとの演算	ようそごとのえんざん	12	
+activation function	活性化関数	かっせいかかんすう	12	
+pooling	プーリング	ぷーりんぐ	12	
+dot product	内積	ないせき	12	
+ops:byte ratio	演算／バイト比	えんざんばいとひ	12	V100: 138.9
+math-limited / memory-limited	演算律速／メモリ律速	えんざんりっそくめもりりっそく	12	GEMM guide wording; see M8
+tile quantization	タイル量子化	たいるりょうしか	12	GEMM guide
+wave quantization	ウェーブ量子化	うぇーぶりょうしか	12	GEMM guide
+matrix multiply-accumulate (MMA)	行列積和演算（MMA）	ぎょうれつせきわえんざん	12	
+multiply-accumulate (MAC)	積和演算（MAC）	せきわえんざん	12	
+HMMA	HMMA	えいちえむえむえー	12	SASS half-precision MMA
+systolic array	シストリックアレイ	しすとりっくあれい	12	
+fill and drain	充填と排出	じゅうてんとはいしゅつ	12	systolic array overhead
+copy descriptor	コピー記述子	こぴーきじゅつし	12	TMA
+floating-point format	浮動小数点形式	ふどうしょうすうてんけいしき	12	
+IEEE 754	IEEE 754	あいとりぷるいーななごーよん	12	
+sign bit	符号ビット	ふごうびっと	12	
+exponent	指数部	しすうぶ	12	
+mantissa (fraction)	仮数部	かすうぶ	12	
+exponent bias	指数バイアス	しすうばいあす	12	
+subnormal number	非正規化数	ひせいきかすう	12	also denormal
+underflow	アンダーフロー	あんだーふろー	12	
+overflow	オーバーフロー	おーばーふろー	12	
+NaN (not a number)	非数（NaN）	ひすう	12	
+rounding mode	丸めモード	まるめもーど	12	
+bfloat16 (BF16)	bfloat16	びーふろーとじゅうろく	12	1/8/7 bits
+TensorFloat-32 (TF32)	TF32	てぃーえふさんじゅうに	12	1/8/10 bits
+FP8	FP8	えふぴーはち	12	E4M3, E5M2
+quantization	量子化	りょうしか	12	
+mixed precision	混合精度	こんごうせいど	12	
+accumulator	アキュムレータ	あきゅむれーた	12	
+dynamic range	ダイナミックレンジ	だいなみっくれんじ	12	
+sparsity	スパース性	すぱーすせい	12	
+sparse matrix	疎行列	そぎょうれつ	12	
+structured sparsity	構造化スパース性	こうぞうかすぱーすせい	12	
+2:4 structured sparsity	2:4構造化スパース性	にたいよんこうぞうかすぱーすせい	12	Ampere
+pruning	枝刈り	えだがり	12	
+sparse matrix-vector multiplication (SpMV)	疎行列ベクトル積	そぎょうれつべくとるせき	12	
+compressed sparse format	疎行列圧縮形式	そぎょうれつあっしゅくけいしき	12	COO, CSR
+asynchronous barrier	非同期バリア	ひどうきばりあ	12	
+Advanced Matrix Extensions (AMX)	AMX	えーえむえっくす	12	Intel; 16x16 tiles per the lecture
+attention	アテンション	あてんしょん	12	Project 4 topic; concepts only
+FlashAttention	FlashAttention	ふらっしゅあてんしょん	12	Project 4 topic; cite Dao 2022, no kernel code
+shifted and squeezed FP8 (S2FP8)	S2FP8	えすつーえふぴーはち	12	Cambier et al. 2020; named on the slide

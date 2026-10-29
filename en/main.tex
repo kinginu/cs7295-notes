@@ -28,6 +28,18 @@
 % Each is included only once it exists, so the book builds while
 % chapters are still being written.
 % BEGIN chapters (tools/sync-main.py)
+\IfFileExists{lessons/01-introduction-to-gpus.tex}{\subfile{lessons/01-introduction-to-gpus}}{}
+\IfFileExists{lessons/02-parallel-programming.tex}{\subfile{lessons/02-parallel-programming}}{}
+\IfFileExists{lessons/03-gpu-programming-introduction.tex}{\subfile{lessons/03-gpu-programming-introduction}}{}
+\IfFileExists{lessons/04-gpu-architecture.tex}{\subfile{lessons/04-gpu-architecture}}{}
+\IfFileExists{lessons/05-advanced-gpu-programming.tex}{\subfile{lessons/05-advanced-gpu-programming}}{}
+\IfFileExists{lessons/06-divergence-and-register-file.tex}{\subfile{lessons/06-divergence-and-register-file}}{}
+\IfFileExists{lessons/07-virtual-memory-and-warp-scheduling.tex}{\subfile{lessons/07-virtual-memory-and-warp-scheduling}}{}
+\IfFileExists{lessons/08-gpu-simulation.tex}{\subfile{lessons/08-gpu-simulation}}{}
+\IfFileExists{lessons/09-multi-gpu.tex}{\subfile{lessons/09-multi-gpu}}{}
+\IfFileExists{lessons/10-compiler-background-i.tex}{\subfile{lessons/10-compiler-background-i}}{}
+\IfFileExists{lessons/11-compiler-background-ii.tex}{\subfile{lessons/11-compiler-background-ii}}{}
+\IfFileExists{lessons/12-ml-acceleration-on-gpus.tex}{\subfile{lessons/12-ml-acceleration-on-gpus}}{}
 % END chapters
 
 \backmatter

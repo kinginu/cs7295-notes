@@ -2,5 +2,144 @@
   "course": "CS 7295 GPU Hardware and Software",
   "unit": "Lesson",
   "source": "The Canvas module list of the Georgia Tech course by Hyesoon Kim (modules M1-M12); lessons and their units are filled in from the research dossier.",
-  "lessons": []
+  "lessons": [
+    {
+      "number": 1,
+      "slug": "01-introduction-to-gpus",
+      "title": "Introduction of GPU",
+      "title_ja": "GPU入門",
+      "units": [
+        "Instructor and Course Introduction",
+        "Modern Processor Paradigms",
+        "How to Write Parallel Programs",
+        "Introduction to GPU Architecture",
+        "History Trend of GPU Architectures"
+      ]
+    },
+    {
+      "number": 2,
+      "slug": "02-parallel-programming",
+      "title": "Parallel Programming",
+      "title_ja": "並列プログラミング",
+      "units": [
+        "Parallel Programming Patterns",
+        "OpenMP vs. MPI (Part 1)",
+        "OpenMP vs. MPI (Part 2)",
+        "Programming with MPI"
+      ]
+    },
+    {
+      "number": 3,
+      "slug": "03-gpu-programming-introduction",
+      "title": "GPU Programming Introduction",
+      "title_ja": "GPUプログラミング入門",
+      "units": [
+        "Introduction of CUDA Programming",
+        "Occupancy",
+        "Host Code",
+        "Stencil Operation with CUDA"
+      ]
+    },
+    {
+      "number": 4,
+      "slug": "04-gpu-architecture",
+      "title": "GPU Architecture",
+      "title_ja": "GPUアーキテクチャ",
+      "units": [
+        "Multi-threaded Architecture",
+        "Bank Conflicts",
+        "GPU Architecture Pipeline",
+        "Global Memory Coalescing"
+      ]
+    },
+    {
+      "number": 5,
+      "slug": "05-advanced-gpu-programming",
+      "title": "Advanced GPU Programming",
+      "title_ja": "GPUプログラミングの最適化技法",
+      "units": [
+        "Advanced GPU Programming"
+      ]
+    },
+    {
+      "number": 6,
+      "slug": "06-divergence-and-register-file",
+      "title": "GPU Architecture Optimizations - I",
+      "title_ja": "GPUアーキテクチャの最適化 I",
+      "units": [
+        "Handling Divergent Branch",
+        "Register Optimizations",
+        "Unified Register File and Shared Memory"
+      ]
+    },
+    {
+      "number": 7,
+      "slug": "07-virtual-memory-and-warp-scheduling",
+      "title": "GPU Architecture Optimizations - II",
+      "title_ja": "GPUアーキテクチャの最適化 II",
+      "units": [
+        "GPU Virtual Memory",
+        "GPU Virtual Memory - UVA",
+        "GPU Warp Scheduling"
+      ]
+    },
+    {
+      "number": 8,
+      "slug": "08-gpu-simulation",
+      "title": "GPU Simulation",
+      "title_ja": "GPUシミュレーション",
+      "units": [
+        "GPU Cycle Level Simulation (Part 1)",
+        "GPU Cycle Level Simulation (Part 2)",
+        "Analytical Models of GPUs",
+        "Accelerating GPU Simulation"
+      ]
+    },
+    {
+      "number": 9,
+      "slug": "09-multi-gpu",
+      "title": "Multi GPU",
+      "title_ja": "マルチGPU",
+      "units": [
+        "Multi-GPU Hardware",
+        "Concurrency on GPUs"
+      ]
+    },
+    {
+      "number": 10,
+      "slug": "10-compiler-background-i",
+      "title": "Compiler Background - I",
+      "title_ja": "コンパイラの基礎 I",
+      "units": [
+        "GPU Compiler Flow",
+        "PTX",
+        "IR and Basic Block",
+        "Introduction to Data Flow Analysis",
+        "Example of Reaching Definitions"
+      ]
+    },
+    {
+      "number": 11,
+      "slug": "11-compiler-background-ii",
+      "title": "Compiler Background - II",
+      "title_ja": "コンパイラの基礎 II",
+      "units": [
+        "Live-Variable Analysis",
+        "SSA",
+        "Examples of Compiler Optimizations",
+        "Divergence Analysis"
+      ]
+    },
+    {
+      "number": 12,
+      "slug": "12-ml-acceleration-on-gpus",
+      "title": "ML Accelerations On GPUs",
+      "title_ja": "GPUによる機械学習の高速化",
+      "units": [
+        "GPU and ML",
+        "Floating Point Formats",
+        "Tensor Core"
+      ]
+    }
+  ]
 }

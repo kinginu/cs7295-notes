@@ -22,10 +22,22 @@ what the lectures cover.  Built with
 
 ## Status
 
-Chapters appear here as soon as both editions are finished and pushed.
+One row per lesson; ✅ marks an edition that is finished and pushed.
 
 | Lesson | Title | en | ja |
 |---|---|---|---|
+| 1 | Introduction of GPU | | |
+| 2 | Parallel Programming | | |
+| 3 | GPU Programming Introduction | | |
+| 4 | GPU Architecture | | |
+| 5 | Advanced GPU Programming | | |
+| 6 | GPU Architecture Optimizations - I | | |
+| 7 | GPU Architecture Optimizations - II | | |
+| 8 | GPU Simulation | | |
+| 9 | Multi GPU | | |
+| 10 | Compiler Background - I | | |
+| 11 | Compiler Background - II | | |
+| 12 | ML Accelerations On GPUs | | |
 
 ## Writing conventions
 

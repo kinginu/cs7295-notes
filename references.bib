@@ -1,2 +1,408 @@
-% Shared bibliography of this book (textbooks and papers cited by more than
-% one chapter).  Per-chapter entries go in bib/NN-slug.bib.
+% references.bib for "GPU Hardware and Software" (CS 7295 / CS 8803 O21 course notes)
+% Metadata verified 2026-10-29 against doi.org BibTeX content negotiation / Crossref
+% (papers and Synthesis Lectures), arXiv (FlashAttention), Elsevier Educate (PMPP 4e),
+% Open Library (Patterns for Parallel Programming) and the documents themselves (NVIDIA).
+% Keys follow <firstauthor><year><shortword>.
+
+%% ---------------------------------------------------------------- Books
+@book{kim2012gpgpu,
+  author    = {Kim, Hyesoon and Vuduc, Richard and Baghsorkhi, Sara and Choi, Jee and Hwu, Wen-mei},
+  title     = {Performance Analysis and Tuning for General Purpose Graphics Processing Units ({GPGPU})},
+  series    = {Synthesis Lectures on Computer Architecture},
+  number    = {20},
+  publisher = {Morgan \& Claypool},
+  year      = {2012},
+  doi       = {10.2200/S00451ED1V01Y201209CAC020},
+  isbn      = {978-1-60845-954-4},
+  note      = {Reissued by Springer, doi:10.1007/978-3-031-01737-7. Chapters: 1 GPU Design, Programming, and Trends (pp. 1--24); 2 Performance Principles (p. 25); 3 From Principles to Practice: Analysis and Tuning (p. 39); 4 Using Detailed Performance Analysis to Guide Optimization (p. 49). Full section TOC verified from the PDF on co-author Jee Choi's page (jeewhanchoi.github.io/publication/pdf/perf_analysis_book.pdf)}
+}
+
+@book{aamodt2018gpu,
+  author    = {Aamodt, Tor M. and Fung, Wilson Wai Lun and Rogers, Timothy G.},
+  title     = {General-Purpose Graphics Processor Architectures},
+  series    = {Synthesis Lectures on Computer Architecture},
+  number    = {44},
+  publisher = {Morgan \& Claypool},
+  year      = {2018},
+  doi       = {10.2200/S00848ED1V01Y201804CAC044},
+  isbn      = {978-1-62705-923-7},
+  note      = {Reissued by Springer, doi:10.1007/978-3-031-01759-9. Chapters (start pages per Google Books): 1 Introduction (1); 2 Programming Model (9); 3 The SIMT Core: Instruction and Register Data Flow (21); 4 Memory System (67); 5 Crosscutting Research on GPU Computing Architectures (85). Section headings not verified}
+}
+
+@book{eeckhout2010perfeval,
+  author    = {Eeckhout, Lieven},
+  title     = {Computer Architecture Performance Evaluation Methods},
+  series    = {Synthesis Lectures on Computer Architecture},
+  number    = {10},
+  publisher = {Morgan \& Claypool},
+  year      = {2010},
+  doi       = {10.2200/S00273ED1V01Y201006CAC010},
+  note      = {Reissued by Springer, doi:10.1007/978-3-031-01727-8. Optional reading, Module 8}
+}
+
+@book{hwu2022pmpp,
+  author    = {Hwu, Wen-mei W. and Kirk, David B. and El Hajj, Izzat},
+  title     = {Programming Massively Parallel Processors: A Hands-on Approach},
+  edition   = {4},
+  publisher = {Morgan Kaufmann (Elsevier)},
+  address   = {Cambridge, MA},
+  year      = {2022},
+  isbn      = {978-0-323-91231-0},
+  note      = {Not on the course reading lists; used here as a secondary textbook}
+}
+
+@book{mattson2004patterns,
+  author    = {Mattson, Timothy G. and Sanders, Beverly A. and Massingill, Berna L.},
+  title     = {Patterns for Parallel Programming},
+  publisher = {Addison-Wesley},
+  address   = {Boston},
+  year      = {2004},
+  isbn      = {0-321-22811-1},
+  note      = {Copyright 2005 printing. Optional reading: ch. 2 (Module 1); ch. 3, appendices A and B (Module 2)}
+}
+
+%% ---------------------------------------------------------------- NVIDIA documents
+@manual{nvidia2024cudaguide,
+  author       = {{NVIDIA Corporation}},
+  title        = {{CUDA C++ Programming Guide}},
+  edition      = {Release 12.4},
+  year         = {2024},
+  url          = {https://docs.nvidia.com/cuda/archive/12.4.0/cuda-c-programming-guide/index.html},
+  note         = {Assigned: sections 1--2 and 4 (Module 1), section 3 (Module 3). Numbering refers to the 12.x guide; from CUDA 13 the guide was reorganised into five parts at https://docs.nvidia.com/cuda/cuda-programming-guide/}
+}
+
+@manual{nvidia2026cudabestpractices,
+  author       = {{NVIDIA Corporation}},
+  title        = {{CUDA C++ Best Practices Guide}},
+  year         = {2026},
+  url          = {https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html},
+  note         = {Assigned: sections 9 (Performance Metrics), 10 (Memory Optimizations), 11 (Execution Configuration Optimizations), Module 5. Accessed 2026-10-29}
+}
+
+@manual{nvidia2026ptx,
+  author       = {{NVIDIA Corporation}},
+  title        = {{Parallel Thread Execution ISA}},
+  edition      = {Version 9.4},
+  year         = {2026},
+  url          = {https://docs.nvidia.com/cuda/parallel-thread-execution/index.html},
+  note         = {Accessed 2026-10-29}
+}
+
+@techreport{nvidia2020ampere,
+  author       = {{NVIDIA Corporation}},
+  title        = {{NVIDIA A100 Tensor Core GPU Architecture}},
+  institution  = {NVIDIA},
+  type         = {Whitepaper},
+  year         = {2020},
+  url          = {https://images.nvidia.com/aem-dam/en-zz/Solutions/data-center/nvidia-ampere-architecture-whitepaper.pdf},
+  note         = {Optional reading, Module 12}
+}
+
+@techreport{nvidia2022hopper,
+  author       = {{NVIDIA Corporation}},
+  title        = {{NVIDIA H100 Tensor Core GPU Architecture}},
+  institution  = {NVIDIA},
+  type         = {Whitepaper},
+  number       = {V1.02},
+  year         = {2022},
+  url          = {https://resources.nvidia.com/en-us-tensor-core/gtc22-whitepaper-hopper},
+  note         = {H100 figures in this version are preliminary. Fetched from mirror https://www.ece.lsu.edu/koppel/gp/refs/gtc22-whitepaper-hopper.pdf}
+}
+
+@manual{nvidia2026gemmguide,
+  author       = {{NVIDIA Corporation}},
+  title        = {{Matrix Multiplication Background User's Guide}},
+  organization = {NVIDIA Deep Learning Performance Documentation},
+  year         = {2026},
+  url          = {https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html},
+  note         = {Optional reading, Module 12. Accessed 2026-10-29}
+}
+
+@incollection{kipfer2005gpusort,
+  author    = {Kipfer, Peter and Westermann, R{\"u}diger},
+  title     = {Improved {GPU} Sorting},
+  booktitle = {{GPU} Gems 2: Programming Techniques for High-Performance Graphics and General-Purpose Computation},
+  editor    = {Pharr, Matt and Fernando, Randima},
+  chapter   = {46},
+  publisher = {Addison-Wesley},
+  year      = {2005},
+  url       = {https://developer.nvidia.com/gpugems/gpugems2/part-vi-simulation-and-numerical-algorithms/chapter-46-improved-gpu-sorting},
+  note      = {Assigned in Module 5 as Project 2 preparation}
+}
+
+@misc{harris2013sharedmem,
+  author       = {Harris, Mark},
+  title        = {Using Shared Memory in {CUDA} {C/C++}},
+  howpublished = {NVIDIA Technical Blog},
+  year         = {2013},
+  url          = {https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/},
+  note         = {Required reading, Module 5}
+}
+
+@misc{barney2026parallel,
+  author       = {Barney, Blaise and Frederick, Donald},
+  title        = {Introduction to Parallel Computing Tutorial},
+  howpublished = {Lawrence Livermore National Laboratory},
+  year         = {2026},
+  url          = {https://hpc.llnl.gov/documentation/tutorials/introduction-parallel-computing-tutorial},
+  note         = {Required reading, Module 2. Page version dated June 16, 2026; accessed 2026-10-29}
+}
+
+%% ---------------------------------------------------------------- Papers: control flow, registers (Module 6)
+@inproceedings{fung2007dwf,
+  author    = {Fung, Wilson W. L. and Sham, Ivan and Yuan, George and Aamodt, Tor M.},
+  title     = {Dynamic Warp Formation and Scheduling for Efficient {GPU} Control Flow},
+  booktitle = {Proceedings of the 40th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)},
+  pages     = {407--420},
+  publisher = {IEEE},
+  year      = {2007},
+  doi       = {10.1109/MICRO.2007.30}
+}
+
+@inproceedings{jeon2015rfv,
+  author    = {Jeon, Hyeran and Ravi, Gokul Subramanian and Kim, Nam Sung and Annavaram, Murali},
+  title     = {{GPU} Register File Virtualization},
+  booktitle = {Proceedings of the 48th International Symposium on Microarchitecture (MICRO-48)},
+  pages     = {420--432},
+  publisher = {ACM},
+  year      = {2015},
+  doi       = {10.1145/2830772.2830784},
+  note      = {Full text not obtained (ACM DL blocked automated access); metadata verified}
+}
+
+@inproceedings{gebhart2012unifying,
+  author    = {Gebhart, Mark and Keckler, Stephen W. and Khailany, Brucek and Krashinsky, Ronny and Dally, William J.},
+  title     = {Unifying Primary Cache, Scratch, and Register File Memories in a Throughput Processor},
+  booktitle = {Proceedings of the 45th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)},
+  pages     = {96--106},
+  publisher = {IEEE},
+  year      = {2012},
+  doi       = {10.1109/MICRO.2012.18}
+}
+
+@inproceedings{gebhart2011energy,
+  author    = {Gebhart, Mark and Johnson, Daniel R. and Tarjan, David and Keckler, Stephen W. and Dally, William J. and Lindholm, Erik and Skadron, Kevin},
+  title     = {Energy-efficient Mechanisms for Managing Thread Context in Throughput Processors},
+  booktitle = {Proceedings of the 38th Annual International Symposium on Computer Architecture (ISCA)},
+  pages     = {235--246},
+  publisher = {ACM},
+  year      = {2011},
+  doi       = {10.1145/2000064.2000093}
+}
+
+@inproceedings{gebhart2011compile,
+  author    = {Gebhart, Mark and Keckler, Stephen W. and Dally, William J.},
+  title     = {A Compile-Time Managed Multi-Level Register File Hierarchy},
+  booktitle = {Proceedings of the 44th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO-44)},
+  pages     = {465--476},
+  publisher = {ACM},
+  year      = {2011},
+  doi       = {10.1145/2155620.2155675}
+}
+
+%% ---------------------------------------------------------------- Papers: VM and scheduling (Module 7)
+@inproceedings{power2014x86,
+  author    = {Power, Jason and Hill, Mark D. and Wood, David A.},
+  title     = {Supporting x86-64 Address Translation for 100s of {GPU} Lanes},
+  booktitle = {Proceedings of the 20th IEEE International Symposium on High Performance Computer Architecture (HPCA)},
+  pages     = {568--578},
+  publisher = {IEEE},
+  year      = {2014},
+  doi       = {10.1109/HPCA.2014.6835965}
+}
+
+@inproceedings{narasiman2011twolevel,
+  author    = {Narasiman, Veynu and Shebanow, Michael and Lee, Chang Joo and Miftakhutdinov, Rustam and Mutlu, Onur and Patt, Yale N.},
+  title     = {Improving {GPU} Performance via Large Warps and Two-Level Warp Scheduling},
+  booktitle = {Proceedings of the 44th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO-44)},
+  pages     = {308--317},
+  publisher = {ACM},
+  year      = {2011},
+  doi       = {10.1145/2155620.2155656}
+}
+
+@inproceedings{rogers2012ccws,
+  author    = {Rogers, Timothy G. and O'Connor, Mike and Aamodt, Tor M.},
+  title     = {Cache-Conscious Wavefront Scheduling},
+  booktitle = {Proceedings of the 45th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)},
+  pages     = {72--83},
+  publisher = {IEEE},
+  year      = {2012},
+  doi       = {10.1109/MICRO.2012.16}
+}
+
+@inproceedings{jog2013owl,
+  author    = {Jog, Adwait and Kayiran, Onur and Chidambaram Nachiappan, Nachiappan and Mishra, Asit K. and Kandemir, Mahmut T. and Mutlu, Onur and Iyer, Ravishankar and Das, Chita R.},
+  title     = {{OWL}: Cooperative Thread Array Aware Scheduling Techniques for Improving {GPGPU} Performance},
+  booktitle = {Proceedings of the 18th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS)},
+  pages     = {395--406},
+  publisher = {ACM},
+  year      = {2013},
+  doi       = {10.1145/2451116.2451158}
+}
+
+@inproceedings{jog2013orchestrated,
+  author    = {Jog, Adwait and Kayiran, Onur and Mishra, Asit K. and Kandemir, Mahmut T. and Mutlu, Onur and Iyer, Ravishankar and Das, Chita R.},
+  title     = {Orchestrated Scheduling and Prefetching for {GPGPUs}},
+  booktitle = {Proceedings of the 40th Annual International Symposium on Computer Architecture (ISCA)},
+  pages     = {332--343},
+  publisher = {ACM},
+  year      = {2013},
+  doi       = {10.1145/2485922.2485951},
+  note      = {The course list cites the SIGARCH Computer Architecture News version, doi:10.1145/2508148.2485951}
+}
+
+@inproceedings{ganguly2019interplay,
+  author    = {Ganguly, Debashis and Zhang, Ziyu and Yang, Jun and Melhem, Rami},
+  title     = {Interplay between Hardware Prefetcher and Page Eviction Policy in {CPU-GPU} Unified Virtual Memory},
+  booktitle = {Proceedings of the 46th International Symposium on Computer Architecture (ISCA)},
+  pages     = {224--235},
+  publisher = {ACM},
+  year      = {2019},
+  doi       = {10.1145/3307650.3322224}
+}
+
+@inproceedings{ausavarungnirun2017mosaic,
+  author    = {Ausavarungnirun, Rachata and Landgraf, Joshua and Miller, Vance and Ghose, Saugata and Gandhi, Jayneel and Rossbach, Christopher J. and Mutlu, Onur},
+  title     = {Mosaic: A {GPU} Memory Manager with Application-Transparent Support for Multiple Page Sizes},
+  booktitle = {Proceedings of the 50th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO-50)},
+  pages     = {136--150},
+  publisher = {ACM},
+  year      = {2017},
+  doi       = {10.1145/3123939.3123975}
+}
+
+@inproceedings{li2021tlb,
+  author    = {Li, Bingyao and Yin, Jieming and Zhang, Youtao and Tang, Xulong},
+  title     = {Improving Address Translation in Multi-{GPUs} via Sharing and Spilling Aware {TLB} Design},
+  booktitle = {Proceedings of the 54th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO-54)},
+  pages     = {1154--1168},
+  publisher = {ACM},
+  year      = {2021},
+  doi       = {10.1145/3466752.3480083}
+}
+
+@inproceedings{kim2020batch,
+  author    = {Kim, Hyojong and Sim, Jaewoong and Gera, Prasun and Hadidi, Ramyad and Kim, Hyesoon},
+  title     = {Batch-Aware Unified Memory Management in {GPUs} for Irregular Workloads},
+  booktitle = {Proceedings of the 25th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS)},
+  pages     = {1357--1370},
+  publisher = {ACM},
+  year      = {2020},
+  doi       = {10.1145/3373376.3378529}
+}
+
+%% ---------------------------------------------------------------- Papers: simulation and modelling (Module 8)
+@inproceedings{liu2023photon,
+  author    = {Liu, Changxi and Sun, Yifan and Carlson, Trevor E.},
+  title     = {Photon: A Fine-grained Sampled Simulation Methodology for {GPU} Workloads},
+  booktitle = {Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)},
+  pages     = {1227--1241},
+  publisher = {ACM},
+  year      = {2023},
+  doi       = {10.1145/3613424.3623773}
+}
+
+@article{williams2009roofline,
+  author    = {Williams, Samuel and Waterman, Andrew and Patterson, David},
+  title     = {Roofline: An Insightful Visual Performance Model for Multicore Architectures},
+  journal   = {Communications of the ACM},
+  volume    = {52},
+  number    = {4},
+  pages     = {65--76},
+  year      = {2009},
+  doi       = {10.1145/1498765.1498785}
+}
+
+@inproceedings{hong2009analytical,
+  author    = {Hong, Sunpyo and Kim, Hyesoon},
+  title     = {An Analytical Model for a {GPU} Architecture with Memory-level and Thread-level Parallelism Awareness},
+  booktitle = {Proceedings of the 36th Annual International Symposium on Computer Architecture (ISCA)},
+  pages     = {152--163},
+  publisher = {ACM},
+  year      = {2009},
+  doi       = {10.1145/1555754.1555775}
+}
+
+@inproceedings{huang2014gpumech,
+  author    = {Huang, Jen-Cheng and Lee, Joo Hwan and Kim, Hyesoon and Lee, Hsien-Hsin S.},
+  title     = {{GPUMech}: {GPU} Performance Modeling Technique Based on Interval Analysis},
+  booktitle = {Proceedings of the 47th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)},
+  pages     = {268--279},
+  publisher = {IEEE},
+  year      = {2014},
+  doi       = {10.1109/MICRO.2014.59}
+}
+
+@inproceedings{karkhanis2004firstorder,
+  author    = {Karkhanis, Tejas S. and Smith, James E.},
+  title     = {A First-Order Superscalar Processor Model},
+  booktitle = {Proceedings of the 31st Annual International Symposium on Computer Architecture (ISCA)},
+  pages     = {338--349},
+  publisher = {IEEE},
+  year      = {2004},
+  doi       = {10.1109/ISCA.2004.1310786}
+}
+
+%% ---------------------------------------------------------------- Papers: multi-GPU (Module 9)
+@inproceedings{arunkumar2017mcmgpu,
+  author    = {Arunkumar, Akhil and Bolotin, Evgeny and Cho, Benjamin and Milic, Ugljesa and Ebrahimi, Eiman and Villa, Oreste and Jaleel, Aamer and Wu, Carole-Jean and Nellans, David},
+  title     = {{MCM-GPU}: Multi-Chip-Module {GPUs} for Continued Performance Scalability},
+  booktitle = {Proceedings of the 44th Annual International Symposium on Computer Architecture (ISCA)},
+  pages     = {320--332},
+  publisher = {ACM},
+  year      = {2017},
+  doi       = {10.1145/3079856.3080231}
+}
+
+@misc{yu2022multitenant,
+  author        = {Yu, Fuxun and Wang, Di and Shangguan, Longfei and Zhang, Minjia and Liu, Chenchen and Chen, Xiang},
+  title         = {A Survey of Multi-Tenant Deep Learning Inference on {GPU}},
+  year          = {2022},
+  eprint        = {2203.09040},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.DC}
+}
+
+@article{ye2024dlsched,
+  author    = {Ye, Zhisheng and Gao, Wei and Hu, Qinghao and Sun, Peng and Wang, Xiaolin and Luo, Yingwei and Zhang, Tianwei and Wen, Yonggang},
+  title     = {Deep Learning Workload Scheduling in {GPU} Datacenters: A Survey},
+  journal   = {ACM Computing Surveys},
+  volume    = {56},
+  number    = {6},
+  pages     = {146:1--146:38},
+  year      = {2024},
+  doi       = {10.1145/3638757}
+}
+
+%% ---------------------------------------------------------------- Papers: ML (Module 12 / Project 4 background)
+@inproceedings{dao2022flashattention,
+  author    = {Dao, Tri and Fu, Daniel Y. and Ermon, Stefano and Rudra, Atri and R{\'e}, Christopher},
+  title     = {{FlashAttention}: Fast and Memory-Efficient Exact Attention with {IO}-Awareness},
+  booktitle = {Advances in Neural Information Processing Systems 35 (NeurIPS 2022)},
+  year      = {2022},
+  doi       = {10.52202/068431-1189},
+  eprint    = {2205.14135},
+  archivePrefix = {arXiv},
+  note      = {Not on the lowyx reading lists; background for Project 4 (from Spring 2026)}
+}
+
+@misc{dao2023flashattention2,
+  author        = {Dao, Tri},
+  title         = {{FlashAttention-2}: Faster Attention with Better Parallelism and Work Partitioning},
+  year          = {2023},
+  eprint        = {2307.08691},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {Published at ICLR 2024 (venue not re-verified in this pass). Not on the lowyx reading lists}
+}
+
+@misc{cambier2020s2fp8,
+  author        = {Cambier, L{\'e}opold and Bhiwandiwalla, Anahita and Gong, Ting and Nekuii, Mehran and Elibol, Oguz H. and Tang, Hanlin},
+  title         = {Shifted and Squeezed 8-bit Floating Point format for Low-Precision Training of Deep Neural Networks},
+  year          = {2020},
+  eprint        = {2001.05674},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {S2FP8, named on the M12 quantization slide. Venue reported as ICLR 2020 (not verified in this pass)}
+}
