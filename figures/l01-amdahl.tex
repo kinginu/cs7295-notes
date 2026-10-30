@@ -1,0 +1,58 @@
+% Amdahl's law: speedup against the serial fraction S for N = 2, 4, 8, 16
+% and 100 processors (Lesson 1).  speedup = 1 / (S + (1 - S)/N), plotted
+% for S from 0.05 to 1.  Redraws the outline figure m1l3_amdahllaw with the
+% serial fraction increasing to the right.
+% Usage: \input{figures/l01-amdahl}
+% Width: body (120 mm); the drawing is about 95 mm wide.
+\begin{tikzpicture}[x=80mm, y=2.6mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  % grid and axes
+  \foreach \yv in {2,4,...,16} {
+    \draw[ln-rule!50, thin] (0,\yv) -- (1,\yv);
+    \node[left, inner sep=1.5pt] at (0,\yv) {\yv};
+  }
+  \draw[->] (0,0) -- (1.04,0);
+  \node[anchor=north, inner sep=1pt] at (0.52,-2)
+    {\iflangja{逐次部分の割合 $S$}{serial fraction $S$}};
+  \draw[->] (0,0) -- (0,18.5)
+    node[above, inner sep=2pt] {\iflangja{高速化率}{speedup}};
+  \foreach \xv/\xl in {0.1/0.1, 0.2/0.2, 0.3/0.3, 0.4/0.4, 0.5/0.5,
+                       0.6/0.6, 0.7/0.7, 0.8/0.8, 0.9/0.9, 1.0/1.0} {
+    \draw (\xv,0) -- (\xv,-0.4) node[below, inner sep=1pt] {\xl};
+  }
+  % curves
+  \draw[thick, ln-accent] plot coordinates {
+    (0.05,16.81) (0.10,9.17) (0.15,6.31) (0.20,4.81) (0.25,3.88) (0.30,3.26)
+    (0.35,2.81) (0.40,2.46) (0.45,2.20) (0.50,1.98) (0.55,1.80) (0.60,1.66)
+    (0.65,1.53) (0.70,1.42) (0.75,1.33) (0.80,1.25) (0.85,1.17) (0.90,1.11)
+    (0.95,1.05) (1.00,1.00)};
+  \node[right, text=ln-accent, inner sep=1pt] at (0.05,16.81) {$N=100$};
+  \draw[thick, ln-source] plot coordinates {
+    (0.05,9.14) (0.10,6.40) (0.15,4.92) (0.20,4.00) (0.25,3.37) (0.30,2.91)
+    (0.35,2.56) (0.40,2.29) (0.45,2.06) (0.50,1.88) (0.55,1.73) (0.60,1.60)
+    (0.65,1.49) (0.70,1.39) (0.75,1.31) (0.80,1.23) (0.85,1.16) (0.90,1.10)
+    (0.95,1.05) (1.00,1.00)};
+  \node[right, text=ln-source, inner sep=1pt] at (0.05,9.14) {$N=16$};
+  \draw[thick, ln-caution] plot coordinates {
+    (0.05,5.93) (0.10,4.71) (0.15,3.90) (0.20,3.33) (0.25,2.91) (0.30,2.58)
+    (0.35,2.32) (0.40,2.11) (0.45,1.93) (0.50,1.78) (0.55,1.65) (0.60,1.54)
+    (0.65,1.44) (0.70,1.36) (0.75,1.28) (0.80,1.21) (0.85,1.15) (0.90,1.10)
+    (0.95,1.05) (1.00,1.00)};
+  \node[right, text=ln-caution, inner sep=1pt] at (0.05,5.93) {$N=8$};
+  \draw[thick, ln-tip] plot coordinates {
+    (0.05,3.48) (0.10,3.08) (0.15,2.76) (0.20,2.50) (0.25,2.29) (0.30,2.11)
+    (0.35,1.95) (0.40,1.82) (0.45,1.70) (0.50,1.60) (0.55,1.51) (0.60,1.43)
+    (0.65,1.36) (0.70,1.29) (0.75,1.23) (0.80,1.18) (0.85,1.13) (0.90,1.08)
+    (0.95,1.04) (1.00,1.00)};
+  \node[right, text=ln-tip, inner sep=1pt] at (0.05,3.48) {$N=4$};
+  \draw[thick, ln-muted] plot coordinates {
+    (0.05,1.90) (0.10,1.82) (0.15,1.74) (0.20,1.67) (0.25,1.60) (0.30,1.54)
+    (0.35,1.48) (0.40,1.43) (0.45,1.38) (0.50,1.33) (0.55,1.29) (0.60,1.25)
+    (0.65,1.21) (0.70,1.18) (0.75,1.14) (0.80,1.11) (0.85,1.08) (0.90,1.05)
+    (0.95,1.03) (1.00,1.00)};
+  \node[right, text=ln-muted, inner sep=1pt] at (0.05,1.90) {$N=2$};
+  % 1/S bound
+  \draw[densely dashed, ln-muted] (0.1,10)
+    node[above right, inner sep=1pt, text=ln-muted]
+    {\iflangja{$S=0.1$: 上限 $1/S=10$}{$S=0.1$: bound $1/S=10$}} -- (0.1,0);
+\end{tikzpicture}

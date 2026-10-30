@@ -1,0 +1,711 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPU入門}
+\lessoninfo{
+  video={モジュール 1，レッスン 1--5},
+  sources={NVIDIA A100 \cite{nvidia2020ampere} および H100 \cite{nvidia2022hopper} ホワイトペーパー（世代ごとの数値）},
+  textbook={K12 \cite{kim2012gpgpu} ch.~1；A18 \cite{aamodt2018gpu} ch.~1；CPG \cite{nvidia2024cudaguide} §1 Introduction，§2 Programming Model，§4 Hardware Implementation；PMPP \cite{hwu2022pmpp} ch.~1；PPP \cite{mattson2004patterns} ch.~2（任意）；BPG \cite{nvidia2026cudabestpractices} §4.1.3 Understanding Scaling},
+  keywords={スループット，レイテンシ，仮想ISA，SIMD，SPMD，SIMT，マルチスレッディング，アムダールの法則，リダクション，フリンの分類，ストリーミング・マルチプロセッサ，ワープ，統合型シェーダ，テンソルコア},
+}
+
+本章は本書全体の枠組みを定める．CPU と GPU の設計目標を対比し，CPU
+コアが並列性を引き出す技法（スーパースカラ発行，アウトオブオーダ実行，
+マルチスレッディング，マルチプロセッシング）を復習し，アムダールの法則と
+プログラムを並列な仕事へ分割する2つの方法を述べ，続いて GPU ハードウェア
+の語彙，すなわちストリーミング・マルチプロセッサ，SIMT レーン，ワープを
+導入する．最後に，固定機能のグラフィックスパイプラインから今日の
+プログラマブルでテンソルコアを備えたアクセラレータへ至る GPU の進化を
+概観する．第2章は分割の考え方を OpenMP と MPI で発展させ，第3章は
+ワープと SPMD スタイルを具体的な CUDA プログラムへ結びつける．
+
+\section{CPU と GPU}
+\label{sec:l01-cpu-vs-gpu}
+
+\term{GPU}[GPU]（graphics processing unit）は 3D グラフィックス用の
+プロセッサとして生まれ，汎用の並列プロセッサへと成長した．今日では
+機械学習の高速化と高性能計算に最も結びつけられるハードウェアで
+ある．\source{M1，CPU vs GPU；K12 §1.2；CPG §1.1 The Benefits of
+Using GPUs．}\term{CPU}[CPU]（central processing unit）は設計空間の
+反対側の点に向けて作られており，\cref{tab:l01-cpu-gpu}にまとめた両者の
+対比が本書の残りの部分を貫く軸となる．
+
+\begin{table}[htbp]
+  \centering
+  \caption{CPU と GPU の設計点．}
+  \label{tab:l01-cpu-gpu}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{36mm}
+                  >{\raggedright\arraybackslash}p{36mm}
+                  >{\raggedright\arraybackslash}p{36mm}}
+    \toprule
+    & CPU & GPU \\
+    \midrule
+    対象アプリケーション & レイテンシ重視 & スループット重視 \\
+    精密例外 & あり & なし \\
+    役割 & ホスト & アクセラレータ \\
+    ISA & 公開（オープン） & 公開または非公開；公開の仮想 ISA として PTX \\
+    プログラミングモデル & SISD，SIMD & SPMD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{description}
+  \item[対象アプリケーション] CPU は\term[れいてんし]{レイテンシ}[latency]，
+    すなわち1つのタスクを終えるまでの時間に対して最適化されており，
+    単一のスレッドをできるだけ速く走らせる．GPU は
+    \term[するーぷっと]{スループット}[throughput]，すなわち単位時間
+    当たりに終える仕事の量に対して最適化されており，数千のスレッドを
+    同時に走らせることでそれを達成する．個々のスレッドは遅くても
+    よい．\margin{レイテンシとスループットは独立した目標である．2つの
+    スレッドを並べて走らせてスループットを倍にする設計は，各スレッドの
+    レイテンシを変えない．}
+  \item[精密例外] \term[せいみつれいがい]{精密例外}[precise exception]
+    とは，その後のアーキテクチャ状態が，例外を起こした命令の位置に
+    おける逐次プログラムの状態と正確に一致する例外である．すなわち
+    先行するすべての命令は完了しており，後続の命令はどれも状態を変えて
+    いない．CPU はこれを保証する．オペレーティングシステムとデバッガが
+    それに依存するからである（ページフォールト，ブレークポイント，
+    シグナル）．GPU は保証しない．例外を起こしたカーネルは通常カーネル
+    全体として報告され，カーネル内部の機械状態を命令単位で復元する
+    ことはできない．
+  \item[ホストとアクセラレータ] CPU はオペレーティングシステムと I/O
+    スタックを動かす．GPU はどちらも行わないので，仕事を与えて
+    もらうのに CPU に依存する．したがって CPU が\term[ほすと]{ホスト}[host]
+    であり，GPU は\term[あくせられーた]{アクセラレータ}[accelerator]，
+    すなわち I/O リンクを介してホストに接続されたコプロセッサで
+    ある．\margin{K12 §1.2（2012年）は，PCIe リンクがレーン当たり
+    \enquote{\SI{4}{\giga\bit\per\second}（Gen~2）または
+    \SI{8}{\giga\bit\per\second}（Gen~3）}を提供し，\enquote{しばしば
+    最大のボトルネックの1つになる}と述べる \cite{kim2012gpgpu}．
+    ホスト--デバイス間転送は第5章で扱う．}
+  \item[ISA] CPU の\term[めいれいせっとあーきてくちゃ]{命令セットアーキテクチャ}[instruction set architecture (ISA)]
+    は公開され安定している．コンパイル済みのソフトウェアが以後の
+    すべての実装で動き続けなければならないからである．GPU は
+    ドライバの背後でアクセラレータモードで動作し，ドライバが
+    プログラムを現行のハードウェア世代が実行するものへ変換する．
+    ネイティブ ISA は非公開でもよく，世代ごとに変わってもよい．
+    プログラマに安定した目標を与えるために NVIDIA は PTX，すなわち
+    \term[かそうあいえすえー]{仮想ISA}[virtual ISA]を公開した．どの
+    ハードウェアも直接には実行しないが，ドライバが搭載 GPU の
+    ネイティブ ISA へコンパイルする命令セットである．\margin{PTX
+    そのもの，そのレジスタ，コンパイラフローにおける位置は第10章の
+    主題である．}
+  \item[プログラミングモデル] CPU は\term{SISD}[SISD]（single
+    instruction, single data：1つの命令ストリームが一度に1つのデータ
+    項目を処理する）としてプログラムされ，\term{SIMD}[SIMD]（single
+    instruction, multiple data）ベクトル拡張では1つの命令が短い
+    ベクトルの各要素に同じ演算を適用する．GPU は\term{SPMD}[SPMD]
+    （single program, multiple data）としてプログラムされる．すべての
+    スレッドが同じプログラムを実行するが，それぞれ自分のデータに
+    対して実行し，独自の分岐をたどってよい．\caution{SPMD は
+    \emph{プログラム}を，SIMT はそれを実行する\emph{ハードウェア}を
+    表す．GPU は SPMD のコードを SIMT のハードウェア上で実行する
+    （\cref{sec:l01-parallel-programs}）．2つの頭字語は二者択一の
+    関係にはない．}
+\end{description}
+
+SIMD は規則的なデータ並列の仕事（画像処理，ベクトル演算）に対して
+効率がよい．1回の命令フェッチが多数の演算を駆動するからである．
+しかしすべてのレーンがロックステップで実行されるため，データ依存の
+分岐はレーンを無駄にする．SPMD は各スレッドが独自の制御フローをたどる
+のでより柔軟だが，多数のスレッドとそれらの間の通信を管理する代償が
+ある．1つのグループのスレッドがダイバージェンスを起こしたとき，
+ハードウェアがその柔軟性にどう代価を払うかは第6章で示す．
+
+\begin{note}
+  本コースの目標は，GPU がどう動くかとそのためのプログラムをどう
+  最適化するかを説明すること，GPU アーキテクチャとコンパイラの研究に
+  備えること，そして近年のハードウェアアクセラレータを説明することで
+  ある．CUDA の最新機能の概観ではなく，CUDA の基礎を築く．基本的な
+  5段 CPU パイプラインと C++ プログラミングを前提とし，GPU
+  プログラミングの経験は前提としない．
+\end{note}
+
+\section{現代のプロセッサパラダイム}
+\label{sec:l01-processor-paradigms}
+
+GPU は CPU コアの機構の大半を再利用するので，本節ではその機構と，CPU
+設計者が性能を高めてきた方法を復習する．\source{M1，CPU pipeline and
+ILP；PMPP ch.~1；A18 ch.~1．}
+
+\subsection{パイプライン}
+
+本書を通じて用いる CPU モデルは\cref{fig:l01-cpu-pipeline}の段を
+もつ．\emph{フロントエンド}が命令を，通常は命令キャッシュから
+フェッチする．\emph{デコード}段がそれを解釈する（複雑な x86 命令は
+ここで複数のマイクロ命令に分解される）．レジスタはデコードの後に
+読まれる．\emph{スケジューラ}が実行する命令を選び，\emph{実行}段が
+計算またはメモリアクセスを行い，\emph{ライトバック}段が結果を格納
+する．\margin{多くの CPU パイプラインはデコードとスケジューリングの
+間でレジスタの\emph{リネーミング}も行い，再利用されたレジスタ名を
+通じた偽の依存が命令を直列化しないようにする．}2つの基本的な CPU
+構成が異なるのはスケジューラである．
+\begin{description}
+  \item[インオーダ実行] \term[いんおーだじっこう]{インオーダ実行}[in-order execution]
+    は命令をプログラム順に発行する．命令は，自身のオペランドが揃って
+    いても，先行するすべての命令が発行されるまで待つ．
+  \item[アウトオブオーダ実行] \term[あうとおぶおーだじっこう]{アウトオブオーダ実行}[out-of-order execution]
+    はプログラム順に関係なくオペランドの揃った命令を発行し，キャッシュ
+    ミスで停止した命令がその後ろにある独立な命令を妨げないように
+    する．
+\end{description}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-cpu-pipeline}
+  \caption{5段パイプライン（フェッチ，デコード，スケジュール，実行，
+    ライトバック）に毎サイクル1命令を投入した場合 (a)，2命令幅
+    スーパースカラで毎サイクル2命令を投入した場合 (b)，4つの
+    スレッドから毎サイクル2命令を投入した場合 (c)．}
+  \label{fig:l01-cpu-pipeline}
+\end{figure}
+
+\subsection{命令レベル並列性}
+
+単一発行のパイプラインは1サイクルに高々1命令を開始する．
+\term[すーぱーすから]{スーパースカラ}[superscalar]プロセッサは
+1サイクルに複数の命令をフェッチ，デコード，実行し
+（\cref{fig:l01-cpu-pipeline}b），その
+\term[さいくるあたりめいれいすう]{サイクル当たり命令数}[instructions per cycle (IPC)]
+は1を超える．\margin{実際の幅：Intel の Golden Cove コア（2021年）は
+1サイクルに最大6個の x86 命令をデコードする
+\cite[§2.4.1]{intel2026optimization}．}実際にいくつの命令を同時に
+走らせられるかは，プログラムの
+\term[めいれいれべるへいれつせい]{命令レベル並列性}[instruction-level parallelism (ILP)]，
+すなわち互いに独立で同時に実行できる命令の数で上から抑えられる．
+
+\begin{example}
+  \label{ex:l01-ilp}
+  実行ユニットを2つもつマシンを考える．次の命令対のうち
+  \begin{center}
+    \begin{tabular}{ll}
+      \toprule
+      (a) 独立 & (b) 依存 \\
+      \midrule
+      \texttt{R1 = R2 * R3} & \texttt{R1 = R2 * R3} \\
+      \texttt{R4 = R5 - R6} & \texttt{R4 = R1 - R6} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  (a) の2命令は互いに素なレジスタを読み書きするので，両方が同じ
+  サイクルに発行される．(b) では2番目の命令が，1番目の命令が書く
+  \texttt{R1} を読むので，1番目が結果を出すまで開始できない．この対は
+  2つの発行スロットを順に使い，2番目のユニットは遊んだままに
+  なる．\tip{2つの命令が独立であるとは，どちらも相手が書くレジスタを
+  読みも書きもしないことである．アウトオブオーダのハードウェアは，
+  この条件を満たす命令をストリームのさらに先まで探す．}
+\end{example}
+
+アウトオブオーダ実行は，プログラム順で次にある命令以外にも独立な命令を
+見つけるために存在し，ILP を高めることは CPU 設計の主要なテーマの1つで
+あった．さらに2つの手段が，並列性を増やさずに単一スレッド性能を高める．
+パイプラインを深くすればクロック周波数を上げられるが，より優れた
+\term[ぶんきよそく]{分岐予測}[branch prediction]，すなわち分岐の方向と
+飛び先を実行前に推測して長いパイプラインを満たし続ける機構が必要に
+なる．また，キャッシュを大きくすれば，ミスして DRAM まで到達する
+メモリアクセスの数が減る．\margin{Pentium~4 は第1の手段をパイプライン
+20段（2000年）\cite{hinton2001pentium4}，31段（2004年）
+\cite{boggs2004pentium4}まで推し進めた．}
+
+\subsection{マルチスレッディングとマルチプロセッサ}
+
+次の並列性の源は\term[まるちすれっでぃんぐ]{マルチスレッディング}[multithreading]
+である．コアが複数のスレッドの状態を同時に保持し，現在のスレッドに
+発行可能な命令がなければ別のスレッドから発行する
+（\cref{fig:l01-cpu-pipeline}c）．独立なスレッドは ILP を探すことなく
+発行可能な命令を供給し，ハードウェアのコストは主に追加のプログラム
+カウンタとレジスタであって控えめである．マルチスレッディングは GPU
+性能の鍵となる要素の1つである．GPU コアは数十のスレッドグループを
+同時に走らせ，毎サイクルそれらを切り替える．\margin{GPU ではこれは
+毎サイクルコンテキストスイッチを行う細粒度マルチスレッディングで
+ある．第4章でそれがメモリレイテンシをどう隠すかを示す．}
+
+最後の手段はコア全体を複製することである．
+\term[まるちぷろせっさ]{マルチプロセッサ}[multiprocessor]は複数の
+コアを含み，各コアは自身のパイプラインと通常は自身の1次キャッシュを
+もち，コアに分配できる仕事に対してはコア数に比例してスループットを
+高める．CPU も GPU もマルチプロセッサであり，異なるのはトランジスタの
+使い方である（\cref{fig:l01-cpu-vs-gpu}）．CPU は，それぞれ ILP と
+単一スレッドのレイテンシのために作られた少数の大きなコアを，大きな
+共有キャッシュの上にもつ．GPU は，それぞれマルチスレッド化され SIMD
+幅をもつ多数の小さなコアを，比較的小さなキャッシュを挟んで
+もつ．\margin{今日の規模：AMD の EPYC~9654 CPU は 96コア（2022年）
+\cite{amd2026epyc9654}，NVIDIA の H100 は 132個のストリーミング・
+マルチプロセッサをもち \cite{nvidia2022hopper}，各々128レーンで
+ある．}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-cpu-vs-gpu}
+  \caption{CPU は面積を少数の大きなコアと大きなキャッシュに使い，GPU は
+    多数の小さなコアと小さなキャッシュに使う．}
+  \label{fig:l01-cpu-vs-gpu}
+\end{figure}
+
+\begin{keypoint}
+  CPU の性能は ILP（スーパースカラ，アウトオブオーダ），クロック周波数
+  （深いパイプラインと分岐予測），キャッシュ，マルチスレッディング，
+  複数コアから得られる．GPU はマルチスレッディングと複数コアを残し，
+  ILP の機構の大半を捨て，代わりにスレッド数を増やす．
+\end{keypoint}
+
+\section{並列プログラムの書き方}
+\label{sec:l01-parallel-programs}
+
+多数のコアをもつハードウェアは，並列な仕事を露わにするプログラムに
+対してのみ報われる．本節では，利得を上から抑える法則，プログラムを
+並列な部分へ分ける2つの方法，そして GPU が位置づけられる分類を
+述べる．\source{M1，Amdahl's law and decomposition；PPP ch.~2
+\cite{mattson2004patterns}；BPG §4.1.3 Understanding Scaling
+\cite{nvidia2026cudabestpractices}．}
+
+\subsection{アムダールの法則}
+
+\begin{definition}[アムダールの法則]
+  \label{def:l01-amdahl}
+  プログラムが逐次実行時間のうち割合 $S$ を並列化できない仕事，
+  すなわち\term[ちくじぶぶんのわりあい]{逐次部分の割合}[serial fraction]
+  に費やし，残りの割合 $P = 1 - S$ を $N$ 個のプロセッサが均等に分担
+  する仕事に費やすとする．\term[あむだーるのほうそく]{アムダールの法則}[Amdahl's law]
+  は逐次実行に対する高速化率を次式で与える．\margin{記法：$S$ と $P$
+  は\emph{逐次}実行時間に対する割合で $S + P = 1$，$N$ はプロセッサ
+  数．並列部分は完全に分割できると仮定する．}
+  \begin{equation}
+    \text{speedup} \;=\; \frac{1}{\,S + P/N\,}.
+    \label{eq:l01-amdahl}
+  \end{equation}
+\end{definition}
+
+逐次部分の割合が小さく並列部分が大きいときは，高速化率は $N$ にほぼ
+比例して増える．逐次部分の割合が無視できないときはスケーラビリティが
+崩れる．$N \to \infty$ で項 $P/N$ は消え，どれだけハードウェアを追加
+しても高速化率は $1/S$ に近づく．\tip{上限は $1/S$ である．逐次部分の
+割合が \SI{10}{\percent} なら高速化率は $10\times$ で，
+\SI{1}{\percent} なら $100\times$ で頭打ちになる．}
+
+\begin{example}
+  \label{ex:l01-amdahl}
+  逐次部分の割合が $S = 0.1$ のプログラムを考える．$N = 8$ プロセッサ
+  では\cref{eq:l01-amdahl}より $1/(0.1 + 0.9/8) = 1/0.2125 \approx 4.7$，
+  $N = 64$ では $1/(0.1 + 0.9/64) \approx 8.8$，$N = 1024$ では
+  $1/(0.1 + 0.9/1024) \approx 9.9$ となる．8 から 1024プロセッサへ，
+  すなわちハードウェアを $128\times$ に増やしても，高速化率はかろうじて
+  2倍になるにすぎない．逐次の \SI{10}{\percent} だけで，8プロセッサ
+  上の並列部分全体と同じだけの時間がすでにかかるからである．
+\end{example}
+
+\cref{fig:l01-amdahl}は\cref{eq:l01-amdahl}を，いくつかの $N$ について
+逐次部分の割合に対して描いたものである．曲線は $S$ が約 $0.3$ を
+下回るまで寄り集まったままで，逐次部分の割合が小さいときにだけ
+分かれる．並列プログラマの最初の仕事がプロセッサを増やすことではなく
+逐次部分を縮めることであるのはこのためである．\caution{アムダールの
+法則は問題サイズを固定する（強スケーリング）．Gustafson の法則
+（BPG §4.1.3.2 Weak Scaling and Gustafson's Law
+\cite{nvidia2026cudabestpractices}）は問題を $N$ とともに大きくし，
+$N + (1 - N)\,s$ を与える．ここで $s$ は\emph{並列}実行における逐次
+部分の割合であり，逐次部分の重要性は下がる．BPG は $N$ とともに
+成長するワークロードとしてメッシュ，グリッド，一部のモンテカルロ
+シミュレーションを挙げる．}
+
+\begin{figure}[tb]  % JA: no float page here (the two figures would form one and strand the text)
+  \centering
+  \input{figures/l01-amdahl}
+  \caption{アムダールの法則による高速化率を，$N = 2$，$4$，$8$，$16$，
+    $100$ プロセッサについて逐次部分の割合 $S$ の関数として示す．
+    $S = 0.1$ では $N = 100$ でも $9.2\times$ にしかならない．}
+  \label{fig:l01-amdahl}
+\end{figure}
+
+\subsection{タスク分割とデータ分割}
+
+十分な並列の仕事をもつプログラムが与えられたとき，それを分配する方法は
+2つある．ここでの例は，配列 $A$ に対して合計と最小値・最大値の両方を
+2つのコアで求めるものである（\cref{fig:l01-decomposition}）．
+\begin{description}
+  \item[タスク分割] \term[たすくぶんかつ]{タスク分割}[task decomposition]
+    は異なる\emph{演算}を異なるコアに与える．コア 1 が合計を，コア 2 が
+    最小値と最大値を計算し，$A$ 全体を両方へ送らなければならない．
+  \item[データ分割] \term[でーたぶんかつ]{データ分割}[data decomposition]
+    は異なる\emph{データ}をコアに与え，各コアは自分の部分に対して
+    すべての演算を行う．コア 1 は $A$ の前半について合計と走査を行い，コア 2 は
+    後半を扱う．その後，部分結果を結合しなければならない．この結合
+    ステップが\term[りだくしょん]{リダクション}[reduction]，すなわち
+    結合的な演算子（合計，最小値，最大値）で多数の値を1つに畳み込む
+    演算である．\margin{第2章ではリダクションを OpenMP の節と MPI の
+    集団通信として示す．第5章では GPU 上でそれを実装するワープレベルの
+    プリミティブに触れる．}
+\end{description}
+データ分割は自然にスケールする．コアが増えれば各コアが $A$ のより
+小さな部分を受け持つだけである．一方，タスク分割は異なる演算の数で
+制限される．データ分割の代価はリダクションであり，それ自体を木として
+並列化しない限り，アムダールの法則の意味で逐次の仕事である．
+
+\begin{figure}[tb]  % JA: see fig:l01-amdahl
+  \centering
+  \input{figures/l01-decomposition}
+  \caption{タスク分割は配列全体を各コアへ送り，各コアに異なる演算を
+    与える．データ分割は各コアに配列の一部を与え，部分結果を
+    リダクションで結合する．}
+  \label{fig:l01-decomposition}
+\end{figure}
+
+\subsection{フリンの分類}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l01-flynn}}
+  \caption{フリンの分類．GPU は単一命令・複数データの象限に SIMT
+    として位置する．}
+  \label{fig:l01-flynn}
+\end{marginfigure}
+
+\term[ふりんのぶんるい]{フリンの分類}[Flynn's taxonomy]はマシンを，
+同時に処理する命令ストリームの数とデータストリームの数で分類する
+（\cref{fig:l01-flynn}）．SISD，SIMD，MISD（multiple instruction,
+single data：商用例がほとんどない象限），そして\term{MIMD}[MIMD]
+（multiple instruction, multiple data：マルチコア CPU のように，独立な
+プロセッサが独立なデータに対して独立な命令ストリームを走らせる）で
+ある．CPU は SISD（1コアでスカラコード）にも，SIMD（そのベクトル
+ユニット）にも，MIMD（その多数のコア）にもなりうる．GPU は SIMD の
+象限に\term{SIMT}[SIMT]（single instruction, multiple threads）の名で
+置かれる．SIMD と同様に1回フェッチした命令が多数の演算を駆動するが，
+その演算は別々のスレッドに属し，各スレッドが自身のレジスタをもち，
+ベクトルユニットではなく多数の ALU 上で実行される．グループは1つの
+プログラムカウンタとアクティブマスクを共有する
+（\cref{sec:l01-gpu-architecture}，第6章）．この区別は
+\cref{sec:l01-gpu-architecture}と第4章で展開する．\caution{CPG §4.1
+SIMT Architecture は境界を次のように引く．SIMD はベクトル幅を
+ソフトウェアに露出するが，SIMT はしない．SIMT のスレッドは通常の
+スカラスレッドとして書かれる．Volta 以降はハードウェアもスレッド
+ごとにプログラムカウンタを保持する（Independent Thread Scheduling）
+\cite{nvidia2024cudaguide}．第6章で再び扱う．}
+
+\subsection{SIMT ハードウェア上の SPMD}
+
+SPMD スタイルではすべてのスレッドが同じプログラムを実行し，触れる
+データだけが異なる．データ分割がその自然なパターンである．SPMD は
+GPU をプログラムする典型的な方法であり，SIMT はそれを実行する
+ハードウェアの実行モデルである．プログラマは1つのスレッドのための
+1つのスカラプログラムを書き，ハードウェアはその各命令をスレッドの
+グループ全体に対して1回だけフェッチする．
+
+CUDA プログラムはホストコードとカーネル，すなわち GPU 上で走る関数から
+なる．すべてのスレッドが同じカーネルを実行し，自身のスレッド
+インデックスを使って自分のデータを選ぶ．下のカーネルはスレッド当たり
+1要素を2乗する．インデックス計算と起動構文は第3章で説明する．
+\Needspace{8\baselineskip}
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void square(const float *A, float *B, int n)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) B[i] = A[i] * A[i];
+}
+\end{lstlisting}
+同じスタイルで配列を合計するのはそれほど単純ではない．すべての
+スレッドが1つの共有変数に対して \texttt{sum += A[i]} を実行する
+カーネルは競合である．数千のスレッドが同じ場所を同時に読み，加え，
+書くからである．合計にはリダクションが必要で，スレッドごとの部分和と
+結合ステップから構成する（OpenMP は第2章，GPU のプリミティブは
+第5章）．\caution{カーネルのすべてのスレッドからの
+\texttt{sum += A[i]} は，単に遅いのではなく誤りである．結果は
+インタリーブに依存する．共有のアキュムレータはすべてリダクションと
+して扱うこと．}
+
+\section{GPU アーキテクチャ入門}
+\label{sec:l01-gpu-architecture}
+
+GPU は多数のコアからなるマルチプロセッサであり，各コアは多数の
+スレッドを走らせる．本節ではそのようなコアの部品を名づけ，その
+パイプラインを素描し，スレッドを実行する単位を定義する．\source{M1，
+GPU architecture overview and warps；K12 §1.2.1；A18 ch.~1；CPG §4.1
+SIMT Architecture．}
+
+\subsection{ストリーミング・マルチプロセッサとレーン}
+
+NVIDIA は GPU のコアを
+\term[すとりーみんぐまるちぷろせっさ]{ストリーミング・マルチプロセッサ}[streaming multiprocessor (SM)]，
+または SIMT マルチプロセッサと呼ぶ．\margin{K12 §1.2.1：NVIDIA は
+コアを SM，AMD は compute unit（CU）と呼ぶ．各々は，ストリーミング
+プロセッサとも呼ばれる複数の SIMD ユニットを保持する
+\cite{kim2012gpgpu}．}SM の内部（\cref{fig:l01-sm}）には，命令
+キャッシュ，デコーダ，共有メモリのブロック，保持するスレッドのための
+プログラムカウンタとレジスタファイルの集合，そして多数の実行ユニットが
+ある．各実行ユニットは\term[えすあいえむてぃーれーん]{SIMTレーン}[SIMT lane]，
+すなわち各命令の1スレッド分を実行する1つの ALU である．NVIDIA は
+レーンを
+\term[すとりーみんぐぷろせっさくーだこあ]{ストリーミングプロセッサ（CUDAコア）}[stream processor (CUDA core)]
+として宣伝しており，CPU のコアとの混同を招く．\caution{本コースでは
+\emph{コア} $\ne$ ストリーミングプロセッサである．コアとは SM で
+あり，ストリーミングプロセッサはその1レーンである．
+\enquote{\num{16896} コア}の H100 は，SM 当たり128レーンの 132 SM
+の GPU である．}したがって本書では語彙を固定する．\emph{コア}とは SM
+であり，SIMT レーンをコアと呼ぶことはない．
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-sm}
+  \caption{キャッシュを共有するストリーミング・マルチプロセッサの格子
+    としての GPU と，1個の SM の中身：プログラムカウンタ，命令
+    キャッシュ，デコーダ，共有メモリ，ストリーミングプロセッサ（SIMT
+    レーン），キャッシュ．}
+  \label{fig:l01-sm}
+\end{figure}
+
+\subsection{GPU パイプライン}
+
+SM のパイプライン（\cref{fig:l01-gpu-pipeline}）は，
+\cref{sec:l01-processor-paradigms}の CPU パイプラインの段を多数の
+スレッド向けに配置したものである．フェッチ段は，以下で定義する
+スレッドグループであるワープごとに1つのプログラムカウンタを保持し，
+スケジューラが選んだワープのためにフェッチする．\margin{\emph{ワープ}
+の語は織物（\enquote{最初の並列スレッド技術}）に由来する：CPG §4.1
+SIMT Architecture \cite{nvidia2024cudaguide}．}選択はラウンドロビン
+方式か，キャッシュミスと分岐結果を参照する貪欲方式による．デコードと
+レジスタ読み出しが続く．次にスコアボードをもつ第2のスケジューラが
+ソースオペランドの揃ったグループを選び，レーンが命令を実行し，
+メモリアクセスユニットがロードとストアを処理し，ライトバック段が結果を
+レジスタへ返す．\margin{第4章ではこのパイプラインをスコアボードと
+レジスタバンクとともにサイクル単位でたどる．第7章では
+スケジューリング方式を比較する．}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-gpu-pipeline}
+  \caption{GPU パイプライン：ワープごとに1つのプログラムカウンタを
+    もつフェッチ，デコード，レジスタ読み出し，発行可能なワープを選ぶ
+    スコアボード付きスケジューラ，SIMT レーン，メモリアクセス，
+    ライトバック．}
+  \label{fig:l01-gpu-pipeline}
+\end{figure}
+
+\subsection{ワープ}
+
+\begin{definition}[ワープ]
+  \label{def:l01-warp}
+  \term[わーぷ]{ワープ}[warp]とは，ハードウェアが1つの単位として
+  実行するスレッドのグループである．命令はワープごとに1回フェッチ
+  され，そのすべてのスレッドに対して，レーン当たり1スレッドで実行
+  される．グループ内のスレッド数が\term[わーぷさいず]{ワープサイズ}[warp size]
+  である．AMD は同じ単位を\term[うぇーぶふろんと]{ウェーブフロント}[wavefront]
+  と呼ぶ．本書では2つの語を同じ意味で用いる．
+\end{definition}
+
+ワープは GPU における実行の基本単位である．そのサイズは NVIDIA の
+ハードウェアでは長く 32 のままだが，アーキテクチャはそれを固定して
+おらず，将来のハードウェアでは変わるかもしれない．\margin{Compute
+Capability 5.0 から 9.0 までのすべてでワープサイズは 32：CPG
+Table~21, Technical Specifications per Compute Capability
+\cite{nvidia2024cudaguide}．}カーネル起動はスレッド数を指定し，
+スレッドはスレッドブロックにまとめられる（第3章）．ハードウェアは
+各ブロックをワープサイズのワープに切り分ける．ワープのソース
+オペランドが揃うとワープ全体が命令を実行し，次に別の発行可能な
+ワープが選ばれ，これが繰り返される．ワープは SM と同じ幅である必要は
+ない．8レーンの SM 上の32スレッドのワープは4サイクルかけて発行
+される．\margin{G80（2006年）は SM 当たり8レーンだったので，
+32スレッドのワープは1命令に4サイクルを要した：K12 §1.4.1
+\cite{kim2012gpgpu}．現在の SM は 128個の FP32 レーンを4つの
+パーティションに分けてもつ \cite{nvidia2022hopper}．}
+
+\begin{example}
+  \label{ex:l01-warps}
+  3命令のカーネルを，ワープサイズが 4 で4レーンをもつ SM 上に
+  12スレッド（1スレッドブロック）で起動する
+  （\cref{fig:l01-warp-execution}）．スレッドはワープ $W_0$，$W_1$，
+  $W_2$ を形成する．\tip{ブロック当たりスレッド数 $\div$ ワープサイズを
+  切り上げたものがブロック当たりのワープ数である．ワープサイズ 32 で
+  100スレッドのブロックは4つのワープを作り，最後のワープは $4/32$
+  しか埋まらない．}ラウンドロビンのスケジューラで，1サイクルに
+  1ワープ命令，ストールなしとすると，実行順序は次のようになる．
+  \begin{center}
+    \begin{tabular}{lccccccccc}
+      \toprule
+      サイクル & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 \\
+      \midrule
+      ワープ & $W_0$ & $W_1$ & $W_2$ & $W_0$ & $W_1$ & $W_2$ & $W_0$ & $W_1$ & $W_2$ \\
+      命令 & 1 & 1 & 1 & 2 & 2 & 2 & 3 & 3 & 3 \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  9回の命令フェッチで $12 \times 3 = 36$ 個のスレッド命令が実行される．
+  $W_0$ の命令 2 が命令 1 の積を待たなければならないとすれば（乗算器の
+  レイテンシが両者の間の3サイクルより長い場合），スケジューラは
+  サイクル 4 で $W_0$ を飛ばし，$W_1$ と $W_2$ を先に発行する．これが
+  \cref{sec:l01-processor-paradigms}のマルチスレッディングをワープの
+  粒度で行ったものである．
+\end{example}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-warp-execution}
+  \caption{起動された12スレッドが4スレッドずつ3つのワープを形成する．
+    ワープ 0 が命令 1 のために SIMT 実行ユニットの4レーンを
+    占め，その間，他のワープは待つ．}
+  \label{fig:l01-warp-execution}
+\end{figure}
+
+\begin{keypoint}
+  GPU は SM からなるマルチプロセッサであり，SM は多数のレーンをもつ
+  マルチスレッド化された SIMT コアであり，ワープは1回の命令フェッチを
+  共有し1つの単位としてスケジュールされるスレッドのグループ（NVIDIA
+  の GPU では32スレッド）である．占有率からワープダイバージェンス，
+  メモリコアレッシングに至るまで，以後の性能の議論はすべてワープを
+  単位として行う．
+\end{keypoint}
+
+\section{GPU アーキテクチャの歴史的変遷}
+\label{sec:l01-history}
+
+GPU アーキテクチャは4つの段階を経てきた．\source{M1，graphics
+pipeline and GPU evolution；K12 §1.1；A18 ch.~1；HWP
+\cite{nvidia2022hopper}．}
+\begin{enumerate}
+  \item \emph{従来のパイプライン型 GPU}．頂点処理とピクセル処理に
+    別々の固定機能ユニットをもつ．
+  \item \emph{プログラマブル GPU}．頂点ユニットとピクセルユニットが
+    プログラマブルなシェーダになった．
+  \item シェーダが統合型の，CUDA でプログラム可能なコアへ進み，
+    汎用計算（GPGPU）が開かれた．
+  \item \emph{現代の GPU}．プログラマブルなコアの傍らに，テンソルコア
+    のような機械学習アクセラレータ部品を加える．
+\end{enumerate}
+
+\subsection{従来の 3D グラフィックスパイプライン}
+
+初期の GPU の\term[ぐらふぃっくすぱいぷらいん]{グラフィックスパイプライン}[graphics pipeline]
+（\cref{fig:l01-graphics-pipeline}）は，3D プリミティブ，典型的には
+頂点で与えられた三角形を入力に取る．ジオメトリステージが頂点を変換し
+照明を付け，スクリーン平面上の 2D プリミティブへ投影する．ラスタ化
+ステージが各 2D プリミティブをそれが覆うピクセルへ変換し，その色を
+計算する．各頂点に適用されるプログラム（もとは固定機能）が
+\term[ちょうてんしぇーだ]{頂点シェーダ}[vertex shader]，各ピクセル
+（またはフラグメント）に適用されるものが
+\term[ぴくせるしぇーだ]{ピクセルシェーダ}[pixel shader]で
+ある．\margin{どちらのステージも多数の独立な頂点やピクセルに同じ
+演算を適用する．GPGPU が後に利用したデータ並列性は，グラフィックスの
+ワークロードに最初から組み込まれていた．}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-graphics-pipeline}
+  \caption{従来の 3D グラフィックスパイプライン：ジオメトリ処理が 3D
+    プリミティブを 2D プリミティブに変え，ラスタ化がそれをピクセルに
+    変える．}
+  \label{fig:l01-graphics-pipeline}
+\end{figure}
+
+シェーダは最初は固定機能ユニットであり，次にプログラマブルになり，
+最後に別々の頂点ユニットとピクセルユニットが，どちらの種類のシェーダ
+プログラムも実行できるプロセッサである
+\term[とうごうがたしぇーだ]{統合型シェーダ}[unified shader]の1つの
+プールに置き換えられた．統合型シェーダは NVIDIA の Tesla
+アーキテクチャの特徴であり，これによって GPU はグラフィックス以外の
+計算に使えるようになった．\margin{K12 §1.1 は転換点を G80 ファミリ
+（GeForce~8800，2006年），すなわちプログラマブルな統合
+グラフィックス・計算プロセッサと CUDA に置く \cite{kim2012gpgpu}．}
+\term{GPGPU}[GPGPU]（general-purpose computing on GPUs）の語は，その
+非グラフィックス用途を表すために作られた．今日ではデータセンタの GPU
+サイクルの大半が非グラフィックスの仕事に使われるので区別の意味は
+失われたが，語はタイトルなどに生き残っている．\sidenote{CUDA 以前の
+GPGPU とは，計算をグラフィックス演算として表現することだった．
+データはテクスチャに格納し，計算は DirectX や OpenGL を通じて
+シェーディング言語のピクセルシェーダとして書き，Brook のような
+ストリーム拡張がその上に薄い層を加えた（K12 §1.1
+\cite{kim2012gpgpu}）．統合型シェーダと CUDA がその間接性を取り
+除いた．}
+
+\subsection{プログラマブル GPU の進化}
+
+プログラマブルになった GPU は，汎用の，次いで機械学習のワークロードが
+必要とする機能を世代ごとに獲得していった．
+\begin{itemize}
+  \item キャッシュ階層（L1 と L2 キャッシュ）．グラフィックス
+    パイプラインはテクスチャへのストリーミングアクセスしか必要と
+    しなかった．
+  \item \term[ばいせいど]{倍精度}[double precision (FP64)]演算を
+    \term[たんせいど]{単精度}[single precision (FP32)]に加えて備える
+    こと．高性能計算のためである．\margin{FP32 の半分の速度の FP64 は
+    データセンタ向けの機能である．A100 は FP32 の \num{19.5}~TFLOP/s
+    に対して FP64 で \num{9.7}~TFLOP/s を出す \cite{nvidia2020ampere}．}
+  \item より多様なワークロードのための，アトミック操作と高速な整数
+    演算．
+  \item \term[こうたいいきめもり]{広帯域メモリ（HBM）}[high bandwidth memory (HBM)]．
+    インターポーザ上で GPU の隣に積層され，非常に広いインタフェースで
+    接続された DRAM ダイであり，メモリ帯域をボードレベルのメモリバスが
+    提供するものをはるかに超えて引き上げた．
+  \item \term[はんせいど]{半精度}[half precision (FP16)]．16ビットの
+    浮動小数点形式で，精度の低下を許容できる機械学習ワークロードに
+    対して演算スループットを倍にし，メモリトラフィックを半減する．
+  \item \term[てんそるこあ]{テンソルコア}[tensor core]．レーン当たり
+    1つのスカラ演算ではなく，小さな行列積和（例えば
+    $4 \times 4 \times 4$ の積を1ステップで）を実行する実行ユニットで，
+    ニューラルネットワークの密な線形代数のためのものである．
+  \item \term{Transformer Engine}[Transformer Engine]．FP8 のテンソル
+    コア演算と，層ごとに数値形式を選びスケーリングし直すソフトウェア
+    およびハードウェアを組み合わせた Hopper の機構であり
+    \cite{nvidia2022hopper}，トランスフォーマモデルのためのもので
+    ある．\caution{講義では\enquote{transformer cores}と言う．Hopper に
+    トランスフォーマ専用のコアはない．Transformer Engine はテンソル
+    コアの FP8 経路と層ごとの形式管理である \cite{nvidia2022hopper}．}
+\end{itemize}
+
+\subsection{現代の GPU：NVIDIA H100}
+
+H100（Hopper，2022年）は上のリストの現状を示す．FP64，FP32，FP16，
+INT8，FP8 の演算をサポートする．テンソルコアと Transformer Engine が
+機械学習に用いられる．レジスタファイルはより大きい．\caution{講義 vs
+ホワイトペーパー：SM 当たりのレジスタファイルは A100 でも H100 でも
+\SI{256}{\kibi\byte} であり，SM 数とともに総量だけが
+\SI{27}{\mebi\byte} から \SI{33}{\mebi\byte} へ増える（HWP Table~3
+\cite{nvidia2022hopper}）．}
+\term[てんそるめもりあくせられーた]{テンソルメモリアクセラレータ}[Tensor Memory Accelerator (TMA)]
+がグローバルメモリと共有メモリの間で多次元のデータブロックを非同期に
+移動し，スレッドをアドレス生成から解放する．SM 数と SM 当たりの
+浮動小数点ユニット数は再び増えた．そして NVLink Switch System が多数の
+GPU を1つのマシンへ接続する．\margin{第12章では FP8 とテンソルコアの
+数値形式を，第9章では NVLink 相互接続とマルチ GPU システムを扱う．}
+\cref{tab:l01-generations}は，この進化が変えてきた数値を通して
+データセンタ向けの4世代をたどる．\caution{H100 の列は V1.02
+ホワイトペーパーの暫定値である \cite{nvidia2022hopper}．出荷製品は
+細部で異なる（PCIe 版 H100 は 114 SM）．}
+
+\begin{table}[htbp]
+  \centering
+  \caption{NVIDIA のデータセンタ向け4世代（A100 ホワイトペーパー
+    \cite{nvidia2020ampere}；H100 ホワイトペーパー V1.02，SXM5，暫定値
+    \cite{nvidia2022hopper}）．}
+  \label{tab:l01-generations}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{36mm}rrrr}
+    \toprule
+    & P100 & V100 & A100 & H100 \\
+    \midrule
+    年 & 2016 & 2017 & 2020 & 2022 \\
+    SM 数 & 56 & 80 & 108 & 132 \\
+    FP32 レーン数/SM & 64 & 64 & 64 & 128 \\
+    テンソルコア数/SM & --- & 8 & 4 & 4 \\
+    レジスタファイル/SM & \SI{256}{\kibi\byte} & \SI{256}{\kibi\byte} & \SI{256}{\kibi\byte} & \SI{256}{\kibi\byte} \\
+    L2 キャッシュ & \SI{4}{\mebi\byte} & \SI{6}{\mebi\byte} & \SI{40}{\mebi\byte} & \SI{50}{\mebi\byte} \\
+    \addlinespace
+    HBM 帯域 & \SI{720}{\giga\byte\per\second} & \SI{900}{\giga\byte\per\second} & \SI{1555}{\giga\byte\per\second} & \SI{3000}{\giga\byte\per\second} \\
+    トランジスタ数 & \num{15.3e9} & \num{21.1e9} & \num{54.2e9} & \num{80e9} \\
+    プロセス & \SI{16}{\nano\metre} & \SI{12}{\nano\metre} & \SI{7}{\nano\metre} & 4N \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{keypoint}[章のまとめ]
+  CPU は ILP，深いパイプライン，大きなキャッシュで1スレッドの
+  レイテンシを最小化する．GPU は多数の小さなマルチスレッドコアで
+  スループットを最大化し，ホスト CPU の下でアクセラレータとして働き，
+  SIMT ハードウェア上で SPMD スタイルでプログラムされる．アムダールの
+  法則は高速化率を $1/S$ で頭打ちにするので，並列プログラムは逐次
+  部分の割合を縮めなければならない．リダクションを伴うデータ分割が
+  スケールするパターンである．GPU のコアはストリーミング・
+  マルチプロセッサ，そのレーンはストリーミングプロセッサであり，
+  ワープ（NVIDIA の GPU では32スレッド）がフェッチとスケジューリング
+  の単位である．GPU は固定機能のグラフィックスパイプラインから，
+  プログラマブルおよび統合型のシェーダを経て，キャッシュ，FP64，
+  HBM，FP16，テンソルコア，Transformer Engine を備えた汎用プロセッサ
+  へと成長した．
+\end{keypoint}
+
+\end{document}

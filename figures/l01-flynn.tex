@@ -1,0 +1,22 @@
+% Flynn's taxonomy as a 2x2 grid (Lesson 1).
+% Rows: single or multiple instruction streams; columns: single or
+% multiple data streams.  Redraws the outline figure m1l3_flynn.
+% Usage: \input{figures/l01-flynn}  (inside marginfigure, \resizebox to
+% \linewidth)
+% Width: margin (50 mm); the drawing is about 50 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    cell/.style={draw, minimum width=19mm, minimum height=9mm, align=center,
+                 fill=ln-box, inner sep=1pt}]
+  \node[cell] at (19,12) {SISD};
+  \node[cell, fill=ln-accent!15] at (39,12) {SIMD / SIMT};
+  \node[cell] at (19,2) {MISD};
+  \node[cell] at (39,2) {MIMD};
+  \node[anchor=south, align=center, text=ln-muted] at (19,17)
+    {\iflangja{単一データ}{single data}};
+  \node[anchor=south, align=center, text=ln-muted] at (39,17)
+    {\iflangja{複数データ}{multiple data}};
+  \node[anchor=east, align=right, text=ln-muted] at (9,12)
+    {\iflangja{単一\\命令}{single\\instruction}};
+  \node[anchor=east, align=right, text=ln-muted] at (9,2)
+    {\iflangja{複数\\命令}{multiple\\instruction}};
+\end{tikzpicture}

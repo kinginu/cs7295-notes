@@ -1,0 +1,26 @@
+% Traditional 3D graphics pipeline (Lesson 1).
+% 3D primitives -> geometry stage (vertex shader) -> 2D primitives ->
+% rasterisation stage (pixel/fragment shader) -> pixels.
+% Redraws the outline figure m1l5_trad3dpipeline.
+% Usage: \input{figures/l01-graphics-pipeline}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    data/.style={draw, rounded corners=2mm, fill=white, minimum height=7mm,
+                 minimum width=16mm, align=center, inner sep=2pt},
+    stage/.style={draw, fill=ln-box, minimum height=9mm, minimum width=22mm,
+                  align=center, inner sep=2pt}]
+  \node[data] (in) at (8,10) {\iflangja{3D\\プリミティブ}{3D\\primitives}};
+  \node[stage, right=4mm of in] (geo) {\iflangja{ジオメトリ\\ステージ}{Geometry\\stage}};
+  \node[data, right=4mm of geo] (mid) {\iflangja{2D\\プリミティブ}{2D\\primitives}};
+  \node[stage, right=4mm of mid] (ras) {\iflangja{ラスタ化\\ステージ}{Rasterisation\\stage}};
+  \node[data, right=4mm of ras, minimum width=12mm] (out) {\iflangja{ピクセル}{pixels}};
+  \draw[->] (in) -- (geo);
+  \draw[->] (geo) -- (mid);
+  \draw[->] (mid) -- (ras);
+  \draw[->] (ras) -- (out);
+  \node[below=1.5mm of geo, text=ln-muted, align=center]
+    {\iflangja{頂点シェーダ}{vertex shader}};
+  \node[below=1.5mm of ras, text=ln-muted, align=center]
+    {\iflangja{ピクセル（フラグメント）\\シェーダ}{pixel (fragment)\\shader}};
+\end{tikzpicture}

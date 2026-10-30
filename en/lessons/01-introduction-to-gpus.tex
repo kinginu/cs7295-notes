@@ -1,0 +1,709 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{Introduction of GPU}
+\lessoninfo{
+  video={Module 1, lessons 1--5},
+  sources={NVIDIA A100 \cite{nvidia2020ampere} and H100 \cite{nvidia2022hopper} whitepapers (generation figures)},
+  textbook={K12 \cite{kim2012gpgpu} ch.~1; A18 \cite{aamodt2018gpu} ch.~1; CPG \cite{nvidia2024cudaguide} §1 Introduction, §2 Programming Model, §4 Hardware Implementation; PMPP \cite{hwu2022pmpp} ch.~1; PPP \cite{mattson2004patterns} ch.~2 (optional); BPG \cite{nvidia2026cudabestpractices} §4.1.3 Understanding Scaling},
+  keywords={throughput, latency, virtual ISA, SIMD, SPMD, SIMT, multithreading, Amdahl's law, reduction, Flynn's taxonomy, streaming multiprocessor, warp, unified shader, tensor core},
+}
+
+This lesson sets the frame for the whole book.  It contrasts the
+design goals of CPUs and GPUs, reviews the techniques by which a CPU
+core extracts parallelism (superscalar issue, out-of-order execution,
+multithreading, multiprocessing), states Amdahl's law and the two ways of
+decomposing a program into parallel work, and then introduces the
+vocabulary of GPU hardware: the streaming multiprocessor, the SIMT lane
+and the warp.  It closes with the evolution of the GPU from a
+fixed-function graphics pipeline to the programmable, tensor-core-equipped
+accelerator of today.  Lesson~2 builds on the decomposition ideas with
+OpenMP and MPI, and Lesson~3 turns the warp and the SPMD style into
+concrete CUDA programs.
+
+\section{CPUs and GPUs}
+\label{sec:l01-cpu-vs-gpu}
+
+A \term{GPU}[GPU] (graphics processing unit) was born as a processor
+for 3D graphics and has grown into a general parallel processor: today
+it is the hardware most associated with machine-learning acceleration and
+high-performance computing.\source{M1, CPU vs GPU; K12 §1.2; CPG §1.1 The
+Benefits of Using GPUs.}  A \term{CPU}[CPU] (central processing unit) is
+built for the opposite point of the design space, and the contrast
+between the two, summarised in \cref{tab:l01-cpu-gpu}, organises the
+rest of this book.
+
+\begin{table}[htbp]
+  \centering
+  \caption{CPU and GPU design points.}
+  \label{tab:l01-cpu-gpu}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{36mm}
+                  >{\raggedright\arraybackslash}p{36mm}
+                  >{\raggedright\arraybackslash}p{36mm}}
+    \toprule
+    & CPU & GPU \\
+    \midrule
+    Target applications & latency-sensitive & throughput-sensitive \\
+    Precise exceptions & yes & no \\
+    Role & host & accelerator \\
+    ISA & public (open) & open or closed; PTX as a public virtual ISA \\
+    Programming model & SISD, SIMD & SPMD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{description}
+  \item[Target applications.]  A CPU is optimised for
+    \term{latency}[レイテンシ], the time to finish one task, so a
+    single thread runs as fast as possible.  A GPU is optimised for
+    \term{throughput}[スループット], the amount of work finished per
+    unit time, and reaches it by running thousands of threads at once;
+    any single thread may be slow.\margin{Latency and throughput are
+    independent goals: a design that doubles throughput by running two
+    threads side by side leaves each thread's latency unchanged.}
+  \item[Precise exceptions.]  A \term{precise exception}[精密例外] is
+    an exception after which the architectural state is exactly that of
+    the sequential program at the faulting instruction: every earlier
+    instruction has completed and no later one has changed state.  CPUs
+    guarantee it, because the operating system and debuggers rely on it
+    (page faults, breakpoints, signals).  GPUs do not: a faulting kernel
+    is normally reported as a whole, and the machine state inside the
+    kernel is not recoverable instruction by instruction.
+  \item[Host and accelerator.]  The CPU runs the operating system and
+    the I/O stack; the GPU does neither, so it depends on the CPU to be
+    given work.  The CPU is therefore the \term{host}[ホスト] and the GPU
+    the \term{accelerator}[アクセラレータ], a co-processor attached to the
+    host over an I/O link.\margin{K12 §1.2 (2012) notes that the PCIe
+    link \enquote{provides \SI{4}{\giga\bit\per\second} (Gen~2) or
+    \SI{8}{\giga\bit\per\second} (Gen~3)} per lane and
+    \enquote{often becomes one of the biggest bottlenecks}
+    \cite{kim2012gpgpu}.  Lesson~5 treats host--device transfer.}
+  \item[ISA.]  The \term{instruction set architecture (ISA)}[命令セットアーキテクチャ]
+    of a CPU is public and stable, because compiled software must keep
+    running on every later implementation.  A GPU runs in accelerator
+    mode behind a driver, which translates the program into whatever
+    the current hardware generation executes; the native ISA may be
+    closed and may change from one generation to the next.  To give
+    programmers a stable target NVIDIA published PTX, a
+    \term{virtual ISA}[仮想ISA]: an instruction set that no hardware
+    executes directly, but that the driver compiles to the native ISA of
+    the installed GPU.\margin{PTX itself, its registers and its place in
+    the compiler flow, is the subject of Lesson~10.}
+  \item[Programming model.]  CPUs are programmed as
+    \term{SISD}[SISD] (single instruction, single data: one instruction
+    stream operating on one data item at a time), with
+    \term{SIMD}[SIMD] (single instruction, multiple data) vector
+    extensions where one instruction applies the same operation to a
+    short vector of elements.  GPUs are programmed as
+    \term{SPMD}[SPMD] (single program, multiple data): every thread
+    runs the same program, but on its own data, and may take its own
+    branches.\caution{SPMD describes the \emph{program}, SIMT the
+    \emph{hardware} that runs it: a GPU runs SPMD code on SIMT hardware
+    (\cref{sec:l01-parallel-programs}); the two acronyms are not
+    alternatives.}
+\end{description}
+
+SIMD is efficient for regular data-parallel work (image processing,
+vector arithmetic) because one instruction fetch drives many operations,
+but all lanes execute in lockstep, so data-dependent branches waste
+lanes.  SPMD is more flexible, since each thread follows its own control
+flow, at the cost of managing many threads and their communication.
+Lesson~6 shows how the hardware pays for that flexibility when threads
+of one group diverge.
+
+\begin{note}
+  The course's own objectives are to explain how a GPU works and to
+  optimise programs for it, to prepare for research in GPU
+  architecture and compilers, and to explain the recent hardware
+  accelerators; it builds a foundation for CUDA rather than a survey of
+  its latest features.  It assumes the basic five-stage CPU pipeline and
+  C++ programming, and no prior GPU programming.
+\end{note}
+
+\section{Modern processor paradigms}
+\label{sec:l01-processor-paradigms}
+
+A GPU reuses most of the machinery of a CPU core, so this section
+reviews that machinery and the ways in which CPU designers have raised
+performance.\source{M1, CPU pipeline and ILP; PMPP ch.~1; A18 ch.~1.}
+
+\subsection{The pipeline}
+
+The CPU model used throughout this book has the stages of
+\cref{fig:l01-cpu-pipeline}: a \emph{front end} fetches instructions,
+usually from an instruction cache; a \emph{decode} stage interprets them
+(a complex x86 instruction is cracked here into several micro-operations);
+registers are read after decode; a \emph{scheduler} selects the
+instructions to execute; the \emph{execute} stage performs the
+computation or the memory access; and a \emph{write-back} stage stores
+the result.\margin{Many CPU pipelines also \emph{rename} registers
+between decode and scheduling, so that false dependences through reused
+register names do not serialise instructions.}  The scheduler is where
+the two basic CPU organisations differ.
+\begin{description}
+  \item[{\term[in-order execution]{In-order execution}[インオーダ実行]}] issues instructions in
+    program order: an instruction waits until every earlier one has
+    issued, even when its own operands are ready.
+  \item[{\term[out-of-order execution]{Out-of-order execution}[アウトオブオーダ実行]}] issues any
+    instruction whose operands are ready, regardless of program order,
+    so that an instruction stalled on a cache miss does not block the
+    independent ones behind it.
+\end{description}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-cpu-pipeline}
+  \caption{A five-stage pipeline (fetch, decode, schedule, execute,
+    write-back) fed with one instruction per cycle (a), with two
+    instructions per cycle in a two-wide superscalar (b), and with two
+    instructions per cycle drawn from four threads (c).}
+  \label{fig:l01-cpu-pipeline}
+\end{figure}
+
+\subsection{Instruction-level parallelism}
+
+A single-issue pipeline starts at most one instruction per cycle.  A
+\term{superscalar}[スーパースカラ] processor fetches, decodes and
+executes several instructions per cycle (\cref{fig:l01-cpu-pipeline}b),
+so its \term{instructions per cycle (IPC)}[サイクル当たり命令数]
+exceeds one.\margin{Width in practice: Intel's Golden Cove core (2021)
+decodes up to six x86 instructions per cycle
+\cite[§2.4.1]{intel2026optimization}.}  How many instructions can actually run
+together is bounded by the program's
+\term{instruction-level parallelism (ILP)}[命令レベル並列性]: the
+number of instructions that are independent of each other and could
+execute at the same time.
+
+\begin{example}
+  \label{ex:l01-ilp}
+  A machine has two execution units.  In the pair
+  \begin{center}
+    \begin{tabular}{ll}
+      \toprule
+      (a) independent & (b) dependent \\
+      \midrule
+      \texttt{R1 = R2 * R3} & \texttt{R1 = R2 * R3} \\
+      \texttt{R4 = R5 - R6} & \texttt{R4 = R1 - R6} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  the instructions of (a) read and write disjoint registers, so both
+  issue in the same cycle.  In (b) the second instruction reads
+  \texttt{R1}, which the first one writes, so it cannot start before the
+  first has produced its result: the pair takes two issue slots in
+  sequence and the second unit stays idle.\tip{Two instructions are
+  independent when neither reads or writes a register the other
+  writes.  Out-of-order hardware looks further down the stream for an
+  instruction that passes this test.}
+\end{example}
+
+Out-of-order execution exists to find more independent instructions
+than the next one in program order, and raising ILP has been one of the
+main themes of CPU design.  Two further levers raise single-thread
+performance without more parallelism: a deeper pipeline allows a higher
+clock frequency, but needs better \term{branch prediction}[分岐予測],
+guessing the direction and target of a branch before it executes so
+that the longer pipeline stays full; and larger caches cut the number of
+memory accesses that miss and reach DRAM.\margin{The Pentium~4 took the
+first lever to 20 pipeline stages (2000) \cite{hinton2001pentium4} and
+31 (2004) \cite{boggs2004pentium4}.}
+
+\subsection{Multithreading and multiprocessors}
+
+The next source of parallelism is \term{multithreading}[マルチスレッディング]:
+a core holds the state of several threads at once and, when the current
+thread has no ready instruction, issues from another thread
+(\cref{fig:l01-cpu-pipeline}c).  Independent threads supply ready
+instructions without any search for ILP, and the hardware cost is
+modest, chiefly the extra program counters and registers.
+Multithreading is one of the key ingredients of GPU performance: a GPU
+core keeps tens of thread groups in flight and switches among them every
+cycle.\margin{On the GPU this is fine-grained multithreading with a
+context switch every cycle; Lesson~4 shows how it hides memory latency.}
+
+The last lever is to replicate whole cores: a
+\term{multiprocessor}[マルチプロセッサ] contains several cores, each
+with its own pipeline and usually its own first-level cache, and raises
+throughput in proportion to the number of cores for work that can be
+divided among them.  Both CPUs and GPUs are multiprocessors; they differ
+in how they spend their transistors (\cref{fig:l01-cpu-vs-gpu}).  A CPU
+has a few large cores, each built for ILP and single-thread latency,
+over a large shared cache.  A GPU has many small cores, each
+multithreaded and SIMD-wide, with a comparatively small cache between
+them.\margin{Scale today: AMD's EPYC~9654 CPU has 96 cores (2022)
+\cite{amd2026epyc9654}; NVIDIA's H100 has 132 streaming multiprocessors
+\cite{nvidia2022hopper}, each with 128 lanes.}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-cpu-vs-gpu}
+  \caption{A CPU spends its area on a few large cores and a large cache;
+    a GPU on many small cores and a small cache.}
+  \label{fig:l01-cpu-vs-gpu}
+\end{figure}
+
+\begin{keypoint}
+  CPU performance comes from ILP (superscalar, out-of-order), clock
+  frequency (deep pipelines plus branch prediction), caches,
+  multithreading and multiple cores.  A GPU keeps multithreading and
+  multiple cores, drops most of the ILP machinery, and multiplies the
+  thread count instead.
+\end{keypoint}
+
+\section{How to write parallel programs}
+\label{sec:l01-parallel-programs}
+
+Hardware with many cores only pays off for programs that expose parallel
+work.  This section gives the law that bounds the gain, the two ways of
+splitting a program into parallel parts, and the taxonomy in which GPUs
+are placed.\source{M1, Amdahl's law and decomposition; PPP ch.~2
+\cite{mattson2004patterns}; BPG §4.1.3 Understanding Scaling
+\cite{nvidia2026cudabestpractices}.}
+
+\subsection{Amdahl's law}
+
+\begin{definition}[Amdahl's law]
+  \label{def:l01-amdahl}
+  Let a program spend a fraction $S$ of its sequential execution time in
+  work that cannot be parallelised, the \term{serial fraction}[逐次部分の割合],
+  and the remaining fraction $P = 1 - S$ in work that $N$ processors
+  share evenly.  \term{Amdahl's law}[アムダールの法則] gives the
+  speedup over the sequential execution as\margin{Notation: $S$ and
+  $P$ are fractions of the \emph{sequential} run time, $S + P = 1$;
+  $N$ is the number of processors; the parallel part is assumed to
+  divide perfectly.}
+  \begin{equation}
+    \text{speedup} \;=\; \frac{1}{\,S + P/N\,}.
+    \label{eq:l01-amdahl}
+  \end{equation}
+\end{definition}
+
+When the serial fraction is small and the parallel part is large, the
+speedup grows almost linearly with $N$.  When the serial fraction is
+significant, scalability collapses: as $N \to \infty$ the term $P/N$
+vanishes and the speedup approaches $1/S$, however much hardware is
+added.\tip{The ceiling is $1/S$.  A serial fraction of \SI{10}{\percent}
+caps the speedup at $10\times$; \SI{1}{\percent} at $100\times$.}
+
+\begin{example}
+  \label{ex:l01-amdahl}
+  A program has a serial fraction $S = 0.1$.  With $N = 8$ processors
+  \cref{eq:l01-amdahl} gives $1/(0.1 + 0.9/8) = 1/0.2125 \approx 4.7$;
+  with $N = 64$ it gives $1/(0.1 + 0.9/64) \approx 8.8$; with
+  $N = 1024$, $1/(0.1 + 0.9/1024) \approx 9.9$.  Going from 8 to 1024
+  processors, a $128\times$ increase in hardware, barely doubles the
+  speedup, because the serial \SI{10}{\percent} alone already costs as
+  much as the whole parallel part on 8 processors.
+\end{example}
+
+\Cref{fig:l01-amdahl} plots \cref{eq:l01-amdahl} against the serial
+fraction for several $N$.  The curves stay bunched together until $S$
+falls below about $0.3$ and only separate for small serial fractions,
+which is why the first task of a parallel programmer is to shrink the
+serial part, not to add processors.\caution{Amdahl's law assumes a
+fixed problem size (strong scaling).  Gustafson's law, BPG §4.1.3.2
+Weak Scaling and Gustafson's Law \cite{nvidia2026cudabestpractices},
+grows the problem with $N$ and gives $N + (1 - N)\,s$, where $s$ is
+the serial fraction of the \emph{parallel} run: the serial part then
+matters less.  The BPG names meshes, grids and some Monte Carlo
+simulations as workloads that grow with $N$.}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-amdahl}
+  \caption{Speedup under Amdahl's law as a function of the serial
+    fraction $S$ for $N = 2$, $4$, $8$, $16$ and $100$ processors.  At
+    $S = 0.1$ even $N = 100$ gives only $9.2\times$.}
+  \label{fig:l01-amdahl}
+\end{figure}
+
+\subsection{Task and data decomposition}
+
+Given a program with enough parallel work, there are two ways of
+distributing it.  The running example is an array $A$ over which both
+the sum and the minimum and maximum are wanted, on two cores
+(\cref{fig:l01-decomposition}).
+\begin{description}
+  \item[{\term[task decomposition]{Task decomposition}[タスク分割]}] gives different
+    \emph{operations} to different cores: core~1 computes the sum, core~2
+    the minimum and maximum, and the whole of $A$ must be sent to both.
+  \item[{\term[data decomposition]{Data decomposition}[データ分割]}] gives different
+    \emph{data} to the cores, each of which performs every operation on
+    its part: core~1 sums and scans the first half of $A$, core~2 the
+    second half.  The partial results then have to be combined; the
+    combining step is a \term{reduction}[リダクション], an operation
+    that folds many values into one with an associative operator (sum,
+    minimum, maximum).\margin{Lesson~2 shows the reduction as an OpenMP
+    clause and as an MPI collective; Lesson~5 touches the
+    warp-level primitives that implement it on a GPU.}
+\end{description}
+Data decomposition scales naturally: with more cores each simply takes
+a smaller part of $A$, while task decomposition is limited by the number
+of distinct operations.  Its price is the reduction, which is serial
+work in the sense of Amdahl's law unless it is itself parallelised as a
+tree.
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-decomposition}
+  \caption{Task decomposition sends the whole array to each core and
+    gives each a different operation; data decomposition gives each core
+    part of the array and combines the partial results with a reduction.}
+  \label{fig:l01-decomposition}
+\end{figure}
+
+\subsection{Flynn's taxonomy}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l01-flynn}}
+  \caption{Flynn's taxonomy.  GPUs sit in the single-instruction,
+    multiple-data quadrant as SIMT.}
+  \label{fig:l01-flynn}
+\end{marginfigure}
+
+\term{Flynn's taxonomy}[フリンの分類] classifies a machine by the number
+of instruction streams and the number of data streams it processes at a
+time (\cref{fig:l01-flynn}): SISD, SIMD, MISD (multiple instruction,
+single data, a quadrant with almost no commercial examples) and
+\term{MIMD}[MIMD] (multiple instruction, multiple data), in which
+independent processors run independent instruction streams on
+independent data, as in a multicore CPU.  A CPU can be SISD (one core, scalar code),
+SIMD (its vector units) or MIMD (its many cores).  A GPU is placed in
+the SIMD quadrant under the name \term{SIMT}[SIMT] (single instruction,
+multiple threads): like SIMD, one fetched instruction drives many
+operations, but the operations belong to distinct threads, each with its
+own registers, executed on many ALUs rather than on a vector unit; the
+group shares one program counter and an active mask
+(\cref{sec:l01-gpu-architecture}, Lesson~6).  The distinction is
+developed in \cref{sec:l01-gpu-architecture} and in
+Lesson~4.\caution{CPG §4.1 SIMT Architecture draws the line as: SIMD
+exposes the vector width to software, SIMT does not; a SIMT thread is
+written as an ordinary scalar thread.  Since Volta the hardware also
+keeps a program counter per thread (Independent Thread Scheduling)
+\cite{nvidia2024cudaguide}; Lesson~6 returns to it.}
+
+\subsection{SPMD on SIMT hardware}
+
+In the SPMD style all threads run the same program and differ only in
+the data they touch; data decomposition is its natural pattern.  SPMD is
+the typical way of programming a GPU, and SIMT is the execution model of
+the hardware that runs it: the programmer writes one scalar program for
+one thread, the hardware fetches each of its instructions once for a
+whole group of threads.
+
+A CUDA program consists of host code and a kernel, the function that
+runs on the GPU.  Every thread executes the same kernel and uses its
+thread index to select its own data.  The kernel below squares one
+element per thread; the index arithmetic and the launch syntax are
+explained in Lesson~3.
+\Needspace{8\baselineskip}
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void square(const float *A, float *B, int n)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) B[i] = A[i] * A[i];
+}
+\end{lstlisting}
+Summing the array in the same style is not as simple: a kernel in which
+every thread executes \texttt{sum += A[i]} on one shared variable is a
+race, since thousands of threads read, add and write the same location
+concurrently.  The sum needs a reduction, built from per-thread partial
+sums and a combining step (Lesson~2 for OpenMP, Lesson~5 for the GPU
+primitives).\caution{\texttt{sum += A[i]} from every thread of a kernel
+is incorrect, not merely slow: the result depends on the interleaving.
+Treat any shared accumulator as a reduction.}
+
+\section{Introduction to GPU architecture}
+\label{sec:l01-gpu-architecture}
+
+A GPU is a multiprocessor of many cores, each of which runs many threads.
+This section names the parts of such a core, sketches its pipeline and
+defines the unit in which it executes threads.\source{M1, GPU
+architecture overview and warps; K12 §1.2.1; A18 ch.~1; CPG §4.1 SIMT
+Architecture.}
+
+\subsection{Streaming multiprocessors and lanes}
+
+NVIDIA calls the core of a GPU a
+\term{streaming multiprocessor (SM)}[ストリーミング・マルチプロセッサ],
+also a SIMT multiprocessor.\margin{K12 §1.2.1: NVIDIA calls the core an
+SM and AMD a compute unit (CU); each holds a number of SIMD units, also
+called stream processors \cite{kim2012gpgpu}.}  Inside an SM
+(\cref{fig:l01-sm}) sit an instruction cache, a decoder, a block of
+shared memory, a set of program counters and register files for the
+threads it holds, and many execution units.  Each execution unit is a
+\term{SIMT lane}[SIMTレーン]: one ALU that executes one thread's share
+of each instruction.  NVIDIA markets a lane as a
+\term{stream processor (CUDA core)}[ストリーミングプロセッサ（CUDAコア）],
+which invites confusion with a CPU core.\caution{In this course
+\emph{core} $\ne$ stream processor.  A core is the SM; a stream
+processor is one lane of it.  A \enquote{\num{16896}-core} H100 is a
+132-SM GPU with 128 lanes per SM.}  This book therefore fixes the
+vocabulary: a \emph{core} is an SM, and a SIMT lane is never called a
+core.
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-sm}
+  \caption{A GPU as a grid of streaming multiprocessors sharing a cache,
+    and the contents of one SM: program counters, instruction cache,
+    decoder, shared memory, stream processors (SIMT lanes) and caches.}
+  \label{fig:l01-sm}
+\end{figure}
+
+\subsection{The GPU pipeline}
+
+The pipeline of an SM (\cref{fig:l01-gpu-pipeline}) has the stages of
+the CPU pipeline of \cref{sec:l01-processor-paradigms}, arranged for
+many threads.  The fetch stage keeps one program counter per warp, the
+thread group defined below, and fetches for whichever warp a scheduler
+selects,\margin{The word \emph{warp} comes from weaving, \enquote{the
+first parallel thread technology}: CPG §4.1 SIMT Architecture
+\cite{nvidia2024cudaguide}.} by a
+round-robin policy or by a greedy policy informed by cache misses and
+branch outcomes.  Decode and register read follow.  A second scheduler
+with a scoreboard then picks a group whose source operands are ready,
+the lanes execute the instruction, a memory-access unit handles loads
+and stores, and the write-back stage returns results to the
+registers.\margin{Lesson~4 traces this pipeline cycle by cycle with its
+scoreboard and register banks; Lesson~7 compares the scheduling
+policies.}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-gpu-pipeline}
+  \caption{The GPU pipeline: fetch with one program counter per warp,
+    decode, register read, a scheduler with a scoreboard that selects a
+    ready warp, the SIMT lanes, memory access and write-back.}
+  \label{fig:l01-gpu-pipeline}
+\end{figure}
+
+\subsection{Warps}
+
+\begin{definition}[Warp]
+  \label{def:l01-warp}
+  A \term{warp}[ワープ] is a group of threads that the hardware executes
+  as a unit: one instruction is fetched per warp and executed for all
+  of its threads, one thread per lane.  The number of threads in the
+  group is the \term{warp size}[ワープサイズ].  AMD calls the same unit
+  a \term{wavefront}[ウェーブフロント]; this book uses the two words
+  interchangeably.
+\end{definition}
+
+The warp is the fundamental unit of execution on a GPU.  Its size has
+stayed at 32 on NVIDIA hardware for a long time, but the architecture
+does not fix it, and future hardware may change it.\margin{Warp size 32
+for every compute capability from 5.0 to 9.0: CPG Table~21, Technical
+Specifications per Compute Capability \cite{nvidia2024cudaguide}.}  A
+kernel launch names a number of threads, grouped into thread blocks
+(Lesson~3); the hardware cuts each block into warps of the warp size.  When a warp's source operands are ready, the
+whole warp executes the instruction; then another ready warp is
+selected, and so on.  The warp need not be as
+wide as the SM: a 32-thread warp on an SM with 8 lanes issues over four
+cycles.\margin{G80 (2006) had 8 lanes per SM, so a 32-thread warp took
+four cycles per instruction: K12 §1.4.1 \cite{kim2012gpgpu}.  Current
+SMs have 128 FP32 lanes split into four partitions
+\cite{nvidia2022hopper}.}
+
+\begin{example}
+  \label{ex:l01-warps}
+  A kernel of three instructions is launched with 12 threads (one
+  thread block) on an SM whose warp size is 4 and which has 4 lanes (\cref{fig:l01-warp-execution}).
+  The threads form warps $W_0$, $W_1$, $W_2$.\tip{Threads per block
+  $\div$ warp size, rounded up, is the number of warps per block; a
+  block of 100 threads with warp size 32 makes four warps, the last one
+  only $4/32$ full.}  With a round-robin
+  scheduler, one warp instruction per cycle and no stalls, the
+  execution order is
+  \begin{center}
+    \begin{tabular}{lccccccccc}
+      \toprule
+      cycle & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 \\
+      \midrule
+      warp & $W_0$ & $W_1$ & $W_2$ & $W_0$ & $W_1$ & $W_2$ & $W_0$ & $W_1$ & $W_2$ \\
+      instruction & 1 & 1 & 1 & 2 & 2 & 2 & 3 & 3 & 3 \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  Nine instruction fetches execute $12 \times 3 = 36$ thread
+  instructions.  If instruction~2 of $W_0$ had to wait for the product of
+  instruction~1 (a multiplier latency longer than the three cycles
+  between them), the scheduler would skip $W_0$ in cycle~4 and issue $W_1$ and
+  $W_2$ first: this is the multithreading of
+  \cref{sec:l01-processor-paradigms} at the granularity of warps.
+\end{example}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-warp-execution}
+  \caption{Twelve launched threads form three warps of four; warp~0
+    occupies the four lanes of the SIMT execution unit for instruction~1
+    while the other warps wait.}
+  \label{fig:l01-warp-execution}
+\end{figure}
+
+\begin{keypoint}
+  A GPU is a multiprocessor of SMs; an SM is a multithreaded SIMT core
+  of many lanes; a warp is the group of threads (32 on NVIDIA GPUs) that
+  shares one instruction fetch and is scheduled as a unit.  All
+  later performance discussion, from occupancy to divergence and
+  coalescing, is in terms of warps.
+\end{keypoint}
+
+\section{History trend of GPU architectures}
+\label{sec:l01-history}
+
+GPU architecture has passed through four stages.\source{M1, graphics
+pipeline and GPU evolution; K12 §1.1; A18 ch.~1; HWP \cite{nvidia2022hopper}.}
+\begin{enumerate}
+  \item \emph{Traditional pipelined GPUs}, with separate fixed-function
+    units for vertex processing and for pixel processing;
+  \item \emph{programmable GPUs}, in which the vertex and pixel units
+    became programmable shaders;
+  \item the progression of the shaders into unified, CUDA-programmable
+    cores, which opened general-purpose computing (GPGPU);
+  \item \emph{modern GPUs}, which add machine-learning accelerator
+    components such as tensor cores alongside the programmable cores.
+\end{enumerate}
+
+\subsection{The traditional 3D graphics pipeline}
+
+The \term{graphics pipeline}[グラフィックスパイプライン] of the early
+GPU (\cref{fig:l01-graphics-pipeline}) takes 3D primitives, typically
+triangles given by their vertices, as input.  A geometry stage transforms
+and lights the vertices and projects them into 2D primitives on the
+screen plane; a rasterisation stage converts each 2D primitive into the
+pixels it covers and computes their colours.  The program, or originally
+the fixed function, applied to each vertex is the
+\term{vertex shader}[頂点シェーダ]; the one applied to each pixel (or
+fragment) is the \term{pixel shader}[ピクセルシェーダ].\margin{Both
+stages apply the same operation to a large number of independent
+vertices or pixels: the data parallelism that GPGPU later exploited was
+built into the graphics workload from the start.}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l01-graphics-pipeline}
+  \caption{The traditional 3D graphics pipeline: geometry processing turns
+    3D primitives into 2D primitives, rasterisation turns them into
+    pixels.}
+  \label{fig:l01-graphics-pipeline}
+\end{figure}
+
+The shaders were at first fixed-function units, then became
+programmable, and finally the separate vertex and pixel units were
+replaced by one pool of \term{unified shader}[統合型シェーダ]s, processors
+that run either kind of shader program.  The unified shader is the
+hallmark of NVIDIA's Tesla architecture, and with it the GPU became
+usable for computation other than graphics.\margin{K12 §1.1 places the
+inflection point at the G80 family (GeForce~8800, 2006), a programmable
+unified graphics-and-compute processor, together with CUDA
+\cite{kim2012gpgpu}.}  The term \term{GPGPU}[GPGPU] (general-purpose
+computing on GPUs) was coined to mark that non-graphics use; now that
+most GPU cycles in data centres go to non-graphics work the
+distinction has lost its purpose, although the term survives in
+titles.\sidenote{Before CUDA, GPGPU meant expressing a computation as a
+graphics operation: data stored in textures, computation written as a
+pixel shader in a shading language through DirectX or OpenGL, with
+stream extensions such as Brook adding a thin layer on top (K12 §1.1
+\cite{kim2012gpgpu}).  The unified shader and CUDA removed that
+indirection.}
+
+\subsection{Evolution of the programmable GPU}
+
+Once programmable, the GPU acquired, generation by generation, the
+features that general-purpose and then machine-learning workloads
+needed:
+\begin{itemize}
+  \item cache hierarchies (L1 and L2 caches), where the graphics pipeline
+    had needed only streaming access to textures;
+  \item \term{double precision (FP64)}[倍精度] arithmetic in addition to
+    \term{single precision (FP32)}[単精度], for high-performance
+    computing;\margin{FP64 at half the FP32 rate is a data-centre feature: the
+    A100 delivers \num{9.7}~TFLOP/s FP64 against \num{19.5}~TFLOP/s
+    FP32 \cite{nvidia2020ampere}.}
+  \item atomic operations and fast integer arithmetic, for more diverse
+    workloads;
+  \item \term{high bandwidth memory (HBM)}[広帯域メモリ（HBM）], DRAM dies
+    stacked beside the GPU on an interposer and connected through a
+    very wide interface, which raised memory bandwidth far beyond what
+    a board-level memory bus provides;
+  \item \term{half precision (FP16)}[半精度], a 16-bit floating-point
+    format that doubles arithmetic throughput and halves memory traffic
+    for machine-learning workloads that tolerate the reduced precision;
+  \item the \term{tensor core}[テンソルコア], an execution unit that
+    performs a small matrix multiply-add (for instance a
+    $4 \times 4 \times 4$ product in one step) rather than a scalar
+    operation per lane, for the dense linear algebra of neural
+    networks;
+  \item the \term{Transformer Engine}[Transformer Engine], Hopper's
+    combination of FP8 tensor-core arithmetic with software and hardware
+    that choose the number format and rescale layer by layer
+    \cite{nvidia2022hopper}, for transformer models.\caution{The lecture says \enquote{transformer cores}.
+    Hopper has no separate core for transformers: the Transformer
+    Engine is the tensor cores' FP8 path plus the per-layer format
+    management \cite{nvidia2022hopper}.}
+\end{itemize}
+
+\subsection{A modern GPU: NVIDIA H100}
+
+The H100 (Hopper, 2022) illustrates the current state of the list.  It
+supports FP64, FP32, FP16, INT8 and FP8 arithmetic; its tensor cores
+and Transformer Engine serve machine learning; its register files are
+larger;\caution{Lecture vs whitepaper: the register file per SM is
+\SI{256}{\kibi\byte} on A100 and H100 alike; only the total grows with
+the SM count, from \SI{27}{\mebi\byte} to \SI{33}{\mebi\byte} (HWP
+Table~3 \cite{nvidia2022hopper}).} a \term{Tensor Memory Accelerator (TMA)}[テンソルメモリアクセラレータ]
+moves multidimensional blocks of data between global and shared memory
+asynchronously, relieving the threads of address generation; the number
+of SMs and of floating-point units per SM has grown again; and an
+NVLink Switch System connects many GPUs into one
+machine.\margin{Lesson~12 treats FP8 and the tensor-core formats;
+Lesson~9 the NVLink interconnect and multi-GPU systems.}
+\Cref{tab:l01-generations} follows four data-centre generations through
+the figures that this evolution changed.\caution{The H100 column holds
+the preliminary figures of the V1.02 whitepaper
+\cite{nvidia2022hopper}; shipped products differ in detail (the PCIe
+H100 has 114 SMs).}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Four NVIDIA data-centre generations (A100 whitepaper
+    \cite{nvidia2020ampere}; H100 whitepaper V1.02, SXM5, preliminary
+    \cite{nvidia2022hopper}).}
+  \label{tab:l01-generations}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{30mm}rrrr}
+    \toprule
+    & P100 & V100 & A100 & H100 \\
+    \midrule
+    Year & 2016 & 2017 & 2020 & 2022 \\
+    SMs & 56 & 80 & 108 & 132 \\
+    FP32 lanes per SM & 64 & 64 & 64 & 128 \\
+    Tensor cores per SM & --- & 8 & 4 & 4 \\
+    Register file per SM & \SI{256}{\kibi\byte} & \SI{256}{\kibi\byte} & \SI{256}{\kibi\byte} & \SI{256}{\kibi\byte} \\
+    L2 cache & \SI{4}{\mebi\byte} & \SI{6}{\mebi\byte} & \SI{40}{\mebi\byte} & \SI{50}{\mebi\byte} \\
+    \addlinespace
+    HBM bandwidth & \SI{720}{\giga\byte\per\second} & \SI{900}{\giga\byte\per\second} & \SI{1555}{\giga\byte\per\second} & \SI{3000}{\giga\byte\per\second} \\
+    Transistors & \num{15.3e9} & \num{21.1e9} & \num{54.2e9} & \num{80e9} \\
+    Process & \SI{16}{\nano\metre} & \SI{12}{\nano\metre} & \SI{7}{\nano\metre} & 4N \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{keypoint}[Lesson summary]
+  A CPU minimises the latency of one thread with ILP, deep pipelines
+  and large caches; a GPU maximises throughput with many small
+  multithreaded cores, acts as an accelerator under a host CPU, and is
+  programmed in the SPMD style on SIMT hardware.  Amdahl's law caps the
+  speedup at $1/S$, so a parallel program must shrink its serial
+  fraction; data decomposition with a reduction is the pattern that
+  scales.  The GPU's core is the streaming multiprocessor, its lanes
+  are stream processors, and the warp (32 threads on NVIDIA GPUs) is the
+  unit of fetch and scheduling.  The GPU grew from a fixed-function
+  graphics pipeline through programmable and unified shaders to a
+  general processor with caches, FP64, HBM, FP16, tensor cores and a
+  Transformer Engine.
+\end{keypoint}
+
+\end{document}

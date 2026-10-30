@@ -1,0 +1,44 @@
+% GPU pipeline overview (Lesson 1).
+% Fetch (from the I-cache, with one PC per warp and an active mask) ->
+% decode -> register read -> scheduler with a scoreboard -> SIMT lanes ->
+% memory access -> write-back, with the result fed back to the registers.
+% Redraws the outline figure m1l4_gpupipeline.
+% Usage: \input{figures/l01-gpu-pipeline}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    st/.style={draw, fill=ln-box, minimum height=7mm, minimum width=15mm,
+               align=center, inner sep=2pt},
+    mem/.style={draw, fill=ln-accent!15, minimum height=6mm, align=center,
+                inner sep=2pt}]
+  \node[st] (fetch) at (10,20) {\iflangja{フェッチ}{Fetch}};
+  \node[st, right=4mm of fetch] (dec) {\iflangja{デコード}{Decode}};
+  \node[st, right=4mm of dec] (reg) {\iflangja{レジスタ\\読み出し}{Register\\read}};
+  \node[st, right=4mm of reg, minimum width=19mm] (sched)
+    {\iflangja{スケジューラ}{Scheduler}};
+  \node[st, right=4mm of sched, minimum width=19mm, fill=ln-accent!12] (lanes)
+    {\iflangja{レーン $0 \ldots N\!-\!1$}{Lanes $0 \ldots N\!-\!1$}};
+  \draw[->] (fetch) -- (dec);
+  \draw[->] (dec) -- (reg);
+  \draw[->] (reg) -- (sched);
+  \draw[->] (sched) -- (lanes);
+  % memory access and write-back on a second row
+  \node[st, below=5mm of lanes, minimum width=19mm] (ma)
+    {\iflangja{メモリアクセス}{Memory access}};
+  \node[st, left=4mm of ma, minimum width=15mm] (wb)
+    {\iflangja{ライトバック}{Write-back}};
+  \draw[->] (lanes) -- (ma);
+  \draw[->] (ma) -- (wb);
+  \draw[->] (wb.west) -| (reg.south);
+  % per-warp state above fetch, I-cache below it, scoreboard above the scheduler
+  \node[mem, above=4mm of fetch, minimum width=17mm] (pcs)
+    {\iflangja{ワープごとの PC\\アクティブマスク}{per-warp PC,\\active mask}};
+  \draw[<->] (pcs) -- (fetch);
+  \node[mem, below=4mm of fetch, minimum width=15mm] (icache) {\iflangja{命令キャッシュ}{I-cache}};
+  \draw[<->] (icache) -- (fetch);
+  \node[mem, above=4mm of sched, minimum width=19mm] (sb)
+    {\iflangja{スコアボード}{scoreboard}};
+  \draw[<->] (sb) -- (sched);
+  \node[mem, right=3mm of ma, minimum width=10mm] (dmem) {\iflangja{メモリ}{Memory}};
+  \draw[<->] (ma) -- (dmem);
+\end{tikzpicture}

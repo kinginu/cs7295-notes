@@ -1,0 +1,42 @@
+% Warp execution on a SIMT unit (Lesson 1).
+% A kernel of three instructions, 12 threads launched, warp size 4: the
+% threads form three warps; warp 0 occupies the four lanes and executes
+% instruction 1 while warps 1 and 2 wait.
+% Redraws the outline figures m1l4_gpuwarp and m1l4_gpuwarp2.
+% Usage: \input{figures/l01-warp-execution}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % program
+  \draw[fill=white] (0,8) rectangle (26,30);
+  \node[anchor=north west, align=left] at (1,30)
+    {\iflangja{カーネル}{kernel}\\[1pt]
+     \textbf{1:} \texttt{mul r1,r2,r3}\\
+     \textbf{2:} \texttt{add r4,r1,r5}\\
+     \textbf{3:} \texttt{st [r6],r4}};
+  \draw[ln-accent, thick, rounded corners=1pt] (0.8,23.0) rectangle (24,26.1);
+  % threads: three warps of four
+  \node[anchor=west] at (32,30) {\iflangja{起動された12スレッド}{12 threads launched}};
+  \foreach \w/\c in {0/ln-accent!25, 1/ln-tip!25, 2/ln-source!20} {
+    \foreach \t in {0,...,3} {
+      \draw[fill=\c] (32+\w*20+\t*4.2,18) rectangle ++(3.6,4)
+        node[midway] {T};
+    }
+    \draw[ln-muted] (32+\w*20,17.2) -- ++(0,-1.2) -- ++(16.2,0) -- ++(0,1.2);
+    \node[below, inner sep=1pt] at (32+\w*20+8.1,16)
+      {\iflangja{ワープ \w}{warp \w}};
+  }
+  % SIMT execution unit
+  \draw[fill=ln-box] (32,0) rectangle (76,9);
+  \node[anchor=north east, text=ln-muted] at (75.5,9)
+    {\iflangja{実行ユニット（4レーン）}{SIMT execution unit (4 lanes)}};
+  \foreach \t in {0,...,3} {
+    \draw[fill=ln-accent!25] (40+\t*8,1.5) rectangle ++(6,4)
+      node[midway] {SP};
+  }
+  \draw[->, ln-accent, thick] (48.2,15.8) -- (41,5.8)
+    node[pos=0.5, right, inner sep=1pt, text=ln-accent]
+    {\iflangja{ワープ 0 が命令 1 を実行}{warp 0 runs instruction 1}};
+  \node[anchor=west, text=ln-muted, align=left] at (80,4)
+    {\iflangja{ワープ 1，2 は\\待機}{warps 1 and 2\\wait their turn}};
+\end{tikzpicture}

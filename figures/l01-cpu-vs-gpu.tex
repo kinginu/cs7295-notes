@@ -1,0 +1,29 @@
+% CPU vs GPU chip organisation (Lesson 1).
+% Left: a CPU with four large cores over one large cache.  Right: a GPU
+% with sixteen small cores and a thin cache between the rows.
+% Redraws the outline figure m1l2_cpu_gpu (also used for m1l4_gpuarch).
+% Usage: \input{figures/l01-cpu-vs-gpu}
+% Width: body (120 mm); the drawing is about 100 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  % CPU
+  \node[font=\small\sffamily\bfseries] at (20,34) {CPU};
+  \foreach \i in {0,1} \foreach \j in {0,1} {
+    \draw[fill=ln-box] (\i*20,\j*13+5) rectangle ++(19,12)
+      node[midway] {\iflangja{コア}{Core}};
+  }
+  \draw[fill=ln-accent!15] (0,0) rectangle (39,4)
+    node[midway] {\iflangja{キャッシュ}{Cache}};
+  % GPU
+  \node[font=\small\sffamily\bfseries] at (80,34) {GPU};
+  \foreach \i in {0,...,3} \foreach \j in {0,1} {
+    \draw[fill=ln-box] (60+\i*10,\j*6+19) rectangle ++(9,5)
+      node[midway] {\iflangja{コア}{Core}};
+  }
+  \draw[fill=ln-accent!15] (60,15) rectangle (99,18)
+    node[midway] {\iflangja{キャッシュ}{Cache}};
+  \foreach \i in {0,...,3} \foreach \j in {0,1} {
+    \draw[fill=ln-box] (60+\i*10,\j*6+3) rectangle ++(9,5)
+      node[midway] {\iflangja{コア}{Core}};
+  }
+  \draw[fill=ln-accent!15] (60,0) rectangle (99,2) ;
+\end{tikzpicture}

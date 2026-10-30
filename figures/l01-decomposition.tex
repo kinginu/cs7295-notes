@@ -1,0 +1,47 @@
+% Task decomposition versus data decomposition (Lesson 1).
+% (a) Task decomposition: the whole array goes to both cores, one sums and
+% the other finds min/max.  (b) Data decomposition: each core gets half the
+% array, does both operations, and a reduction combines the partial results.
+% Redraws the outline figures m1l3_taskdecompose and m1l3_datadecompose.
+% Usage: \input{figures/l01-decomposition}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    core/.style={draw, rounded corners=1pt, fill=ln-box, minimum width=12mm,
+                 minimum height=5mm},
+    res/.style={draw, fill=ln-accent!12, minimum width=16mm, minimum height=5mm,
+                align=center}]
+  % (a) task decomposition
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,30)
+    {\iflangja{(a) タスク分割}{(a) task decomposition}};
+  \foreach \i in {0,...,7} {
+    \draw[fill=white] (\i*5,20) rectangle ++(5,5) node[midway] {\i};
+  }
+  \node[anchor=east, inner sep=1pt] at (0,22.5) {$A$};
+  \node[core] (c1) at (12,8) {\iflangja{コア 1}{Core 1}};
+  \node[core] (c2) at (32,8) {\iflangja{コア 2}{Core 2}};
+  \draw[->] (10,20) -- (c1);
+  \draw[->] (30,20) -- (c2);
+  \node[res, below=2mm of c1] {\iflangja{合計}{sum}};
+  \node[res, below=2mm of c2] {\iflangja{最小・最大}{min, max}};
+  % (b) data decomposition
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (58,30)
+    {\iflangja{(b) データ分割}{(b) data decomposition}};
+  \foreach \i in {0,...,3} {
+    \draw[fill=ln-accent!10] (58+\i*5,20) rectangle ++(5,5) node[midway] {\i};
+  }
+  \foreach \i in {4,...,7} {
+    \draw[fill=ln-tip!12] (60+\i*5,20) rectangle ++(5,5) node[midway] {\i};
+  }
+  \node[anchor=east, inner sep=1pt] at (58,22.5) {$A$};
+  \node[core] (d1) at (68,8) {\iflangja{コア 1}{Core 1}};
+  \node[core] (d2) at (92,8) {\iflangja{コア 2}{Core 2}};
+  \draw[->] (68,20) -- (d1);
+  \draw[->] (92,20) -- (d2);
+  \node[res, below=2mm of d1] (p1) {\iflangja{部分結果 1}{partial 1}};
+  \node[res, below=2mm of d2] (p2) {\iflangja{部分結果 2}{partial 2}};
+  \node[res, fill=ln-source!12, minimum width=20mm] (tot) at (80,-14)
+    {\iflangja{リダクション：合計，最小，最大}{reduction: sum, min, max}};
+  \draw[->] (p1) -- (tot);
+  \draw[->] (p2) -- (tot);
+\end{tikzpicture}
