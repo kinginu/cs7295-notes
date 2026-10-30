@@ -1,0 +1,739 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{並列プログラミング}
+\lessoninfo{
+  video={M2，レッスン 1--4（並列プログラミングパターン；OpenMP vs.\ MPI，第1--2部；MPI によるプログラミング）},
+  sources={\cite{barney2026parallel}（必修）；\cite{openmp2021spec}；\cite{mpi2023standard}},
+  textbook={PPP \cite{mattson2004patterns} ch.~3--5，App.~A--B（任意）；PMPP \cite{hwu2022pmpp} ch.~20},
+  keywords={並列プログラミングパターン，マスタ／ワーカ，ループ並列性，フォーク／ジョイン，パイプライン，共有メモリ，分散メモリ，OpenMP，スレッド，リダクション，データ競合，クリティカルセクション，スケジューリング，バリア，MPI，ステンシル，ハロー},
+}
+
+第1章では，GPU をスループット指向の機械として導入し，プログラムを並列な
+仕事に分割する2つの方法，タスク分割とデータ分割を示した．本章では，第3章の
+GPU 固有のモデルに先立ち，その仕事を従来型のマルチプロセッサ上でどのように
+コードとして表現するかを示す．まず並列プログラムに繰り返し現れる
+\emph{パターン}を集め，次に並列プログラムを書く対象となる2つのメモリモデルを
+対比する．共有メモリでは，スレッドが1つのアドレス空間を通じて通信し，OpenMP
+でプログラムする．分散メモリでは，プロセスが MPI でメッセージを交換する．
+CUDA は両者を組み合わせるので，どちらも CUDA にとって重要である．ブロック内の
+すべてのスレッドが共有するメモリがある一方で，明示的に移動しなければならない
+データもある．本章はステンシル計算で締めくくる．そこでのプロセス間の境界交換
+は，GPU では第3章のハローの読み込みとして再び現れる．
+
+\section{並列プログラミングパターン}
+\label{sec:l02-patterns}
+
+並列アプリケーションは，逐次アプリケーションから3つの手順で作られる．仕事を
+断片に分割し，断片が互いに独立に処理できるようにデータ構造を調整し，断片を
+プロセッサに配る（\cref{fig:l02-parallel-app}）．\source{M2，並列プログラミング
+パターン；PPP ch.~3--5．}\term[へいれつぷろぐらみんぐぱたーん]{並列プログラミングパターン}[parallel programming pattern]
+とは，この分割と配布を組織する再利用可能な方法である．以下に挙げる少数の
+パターンが，後の章の GPU カーネルを含むほとんどの並列プログラムを覆う．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-parallel-app}
+  \caption{並列アプリケーションの作成．仕事を分割し，データ構造を調整し，
+    断片を配る．橙と緑の帯は，本体とは異なる分け方をするプログラムの部分
+    である．}
+  \label{fig:l02-parallel-app}
+\end{figure}
+
+\subsection{4つのステップ}
+
+並列プログラムの設計は4つのステップで進む．\sidenote{これらのステップは
+\cite{mattson2004patterns} の4つの\emph{設計空間}，Finding Concurrency，
+Algorithm Structure，Supporting Structures，Implementation Mechanisms に
+従う．同書は以下のパターンを異なる空間に置く（Pipeline は Algorithm
+Structure に，SPMD，Master/Worker，Loop Parallelism，Fork/Join は
+Supporting Structures に）が，本コースはそれらを並べて挙げる．}
+\begin{enumerate}
+  \item \textbf{並行性を見つける．} 計算の\term[へいこうせい]{並行性}[concurrency]とは，
+    その各部分が互いに独立に進行できる度合いである．最初のステップでは，
+    そのような独立性がどこに（どのタスクに，どのデータに）存在するかを
+    見つける．
+  \item \textbf{アルゴリズムを構造化し}，並行性を活用できるようにする．
+    並列な仕事の単位は何か，それらがどう通信するかを決める．
+  \item 対象に適した言語とツール群で\textbf{実装する}．OpenMP，MPI，CUDA
+    である．
+  \item 並列システム上で\textbf{実行し最適化する}．性能目標を満たすまで
+    測定と調整を繰り返す．
+\end{enumerate}
+
+\subsection{5つのパターン}
+
+\begin{description}
+  \item[マスタ／ワーカ]  \term[ますたわーかぱたーん]{マスタ／ワーカパターン}[master/worker pattern]
+    では，1つのマスタのスレッドまたはプロセスが問題を設定し，仕事の断片を
+    \term[たすくきゅー]{タスクキュー}[task queue]（\enquote{タスクの袋}）に入れ，
+    ワーカのプールを起動し，待ち，結果を集め，計算を終了する
+    （\cref{fig:l02-master-worker}）．各ワーカはタスクをデキューして実行する
+    ことを繰り返す．ワーカは前のタスクを終えるとすぐ次のタスクを取るので，
+    負荷は自然に均衡する．このパターンは，大きさが不揃いか未知の独立な断片に
+    分かれる仕事に向く．\margin{\cref{sec:l02-scheduling} の OpenMP
+    \texttt{dynamic} スケジュールは，ループ反復のチャンクをタスクとする
+    タスクキューである．}
+  \item[ループ並列性]  \term[るーぷへいれつせい]{ループ並列性}[loop parallelism]
+    では，ループの反復が互いに独立なとき，それらを並行に実行する．例えば
+\begin{lstlisting}[language=C++, numbers=none]
+for (int i = 0; i < 16; i++) c[i] = a[i] + b[i];
+\end{lstlisting}
+    である．マスタ／ワーカのタスクと異なり，反復は通常，異なるデータに
+    対する同一の操作であり，これが\term*{データ分割}（第1章）のパターンと
+    なる．\margin{同じベクトル加算が第3章の最初の CUDA カーネルである．
+    反復1つにつきスレッド1つ．}
+  \item[SPMD]  すべての処理要素が，データの自分の担当部分に対して同じ
+    プログラムを実行する．\term*{SPMD}（第1章）は GPU プログラミングの通常の
+    選択であり，数千のスレッドが1つのカーネルを実行し，スレッドインデックス
+    で自分のデータを選ぶ．
+  \item[フォーク／ジョイン]  \term[ふぉーくじょいんぱたーん]{フォーク／ジョインパターン}[fork/join pattern]
+    では，親タスクが子タスクをフォークし，処理を続けるか待ち，先へ進む前に
+    それらをジョインする（完了を待つ）（\cref{fig:l02-fork-join}）．単一の
+    入口から逐次フェーズと並列フェーズを混在させる．OpenMP の並列領域は
+    フォーク／ジョインである．
+  \item[パイプライン]  \term[ぱいぷらいんぱたーん]{パイプラインパターン}[pipeline pattern]
+    は，多段の計算の各段を1つのプロセッサに割り当て，データ項目を段から段へ
+    流す．CPU パイプラインが命令を流すのとまったく同じである
+    （\cref{fig:l02-pipeline}）．データストリームに向く．信号処理，第1章の
+    グラフィックスパイプライン，圧縮ワークフロー（伸長，処理，圧縮）など
+    である．
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-master-worker}
+  \caption{マスタ／ワーカパターン．マスタはタスクキューを満たして待つ．
+    ワーカはキューが空になるまでタスクをデキューし，結果を返す．}
+  \label{fig:l02-master-worker}
+\end{figure}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l02-fork-join}}
+  \caption{フォーク／ジョインパターン．1つの制御の流れが4つの並列タスクに
+    フォークし，再びジョインする．}
+  \label{fig:l02-fork-join}
+\end{marginfigure}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-pipeline}
+  \caption{パイプラインパターン．4つの仕事が5つの段を通過する．ステップ4と
+    5では，5段のうち4段が異なる仕事で埋まる（5つ以上の仕事が流れていれば
+    全段が埋まる）．$s$ 段と $n$ 個の仕事に対して，パイプラインは $sn$
+    ステップではなく $s+n-1$ ステップで済む．ここでは20ではなく8である．}
+  \label{fig:l02-pipeline}
+\end{figure}
+
+\begin{keypoint}
+  パターンは排他的ではない．GPU プログラムは，カーネルのレベルでは SPMD，
+  その内部ではループ並列性（反復1つにつきスレッド1つ），カーネルを起動して
+  待つホストのレベルではフォーク／ジョインである．
+\end{keypoint}
+
+\section{OpenMP による共有メモリプログラミング}
+\label{sec:l02-openmp}
+
+並列プログラムの断片どうしがどう通信するかは，それらがメモリを共有するか
+どうかで決まる．\source{M2，OpenMP vs.\ MPI（第1部）；PPP App.~A；
+\cite{barney2026parallel}，メモリアーキテクチャとプログラミングモデル．}
+
+\subsection{共有メモリと分散メモリ}
+
+\begin{definition}[共有メモリプログラミング]
+  \term[きょうゆうめもりぷろぐらみんぐ]{共有メモリプログラミング}[shared-memory programming]
+  では，すべてのプロセッサが1つのメモリを読み書きする．プロセッサ1がある
+  アドレスに書いた値は，プロセッサ2がそのアドレスを読むと見える
+  （\cref{fig:l02-memory-models}，左）．通信は通常のロードとストアに暗黙に
+  含まれる．
+\end{definition}
+
+\begin{definition}[分散メモリプログラミング]
+  \term[ぶんさんめもりぷろぐらみんぐ]{分散メモリプログラミング}[distributed-memory programming]
+  では，各プロセッサが自分のメモリを持ち，他のプロセッサからは見えない．
+  他のプロセッサのメモリにあるデータは，\emph{メッセージ}で要求し送って
+  もらわなければならない（\cref{fig:l02-memory-models}，右）．プロセッサ2は
+  プロセッサ1と3に，それぞれのメモリのあるアドレスの内容を求め，3つの値を
+  加算し，結果を自分のメモリに書き戻す．
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-memory-models}
+  \caption{共有メモリ（左）と分散メモリ（右）．同じアドレス \texttt{0x100}
+    が，左では1つの場所を，右では無関係な3つの場所を指す．}
+  \label{fig:l02-memory-models}
+\end{figure}
+
+\caution{本章の\enquote{共有メモリ}は CPU の意味，すなわちすべてのスレッドに対する
+1つのアドレス空間である．第3章の CUDA の \texttt{\_\_shared\_\_} メモリは，
+1ブロックのスレッドだけが共有する小さなオンチップのスクラッチパッドである．}
+
+共有メモリの方がプログラムしやすいモデルである．データ共有に明示的な転送が
+不要だからである．しかしスケールしない．すべてのプロセッサが同じメモリを
+奪い合い，アクセスの同期はプログラマの責任となる．分散メモリはプロセッサ数と
+ともにスケールし，ローカルアクセスを速く保てるが，その代償としてプログラマが
+すべての転送を指定しなければならない．\margin{最大級のマシンはハイブリッド
+である．ノード内は共有メモリ，ノード間はメッセージで，よくある組み合わせは
+MPI と OpenMP，または MPI と CUDA である．\cite{barney2026parallel}．}
+
+\subsection{OpenMP}
+
+\begin{definition}[OpenMP]
+  \term[おーぷんえむぴー]{OpenMP}[OpenMP] は，C，C++，Fortran における
+  共有メモリ並列プログラミングのオープンな標準である．
+  \term[こんぱいらしじぶん]{コンパイラ指示文}[compiler directive]
+  （\texttt{\#pragma omp \ldots}），ライブラリルーチン
+  （\texttt{omp\_\ldots()}），\term[かんきょうへんすう]{環境変数}[environment variable]
+  （\texttt{OMP\_\ldots}）の集まりであり，逐次プログラムを書き直すのではなく
+  注釈を付けることで並列に実行させる．\margin{OpenMP 1.0 は1997年（Fortran）
+  と1998年（C/C++）に登場した．ここで引用する仕様は 5.2（2021年），最新は
+  6.0（2024年）である．\texttt{openmp.org}．}
+\end{definition}
+
+ツールが何であれ，共有メモリプログラムは5つのことを決めなければならない．
+\emph{並列化}そのもの（どのループや領域を並列に実行するか），
+\emph{スレッド数}，それらのスレッドへの仕事の\emph{スケジューリング}，
+\emph{データ共有}の方針（どの変数を共有し，どれをプライベートにするか），
+そして共有データの一貫性を保つ\emph{同期}である．OpenMP はそれぞれに指示文
+または指示節を持つ．本節では最初の1つを，\cref{sec:l02-scheduling} で残りの
+4つを扱う．
+
+\subsection{スレッド}
+
+\begin{definition}[スレッド]
+  \term[すれっど]{スレッド}[thread]とは，命令の列を実行する実体である．
+  自分のレジスタと自分のスタックを持ち，アドレス空間の残り（コード，大域
+  データ，ヒープ）を同じプロセスの他のスレッドと共有する．\margin{Linux では
+  新しいスレッドのスタックは，既定でプログラム開始時の \texttt{ulimit -s}
+  のソフトリミット，多くのディストリビューションでは \SI{8}{\mebi\byte}
+  である．\texttt{pthread\_attr\_setstacksize} でスレッドごとに上書き
+  できる．\cite{manpages2026pthreadcreate}．}
+\end{definition}
+
+スレッドはソフトウェアの概念であり，コアではない．1つのコアが複数の
+スレッドを，オペレーティングシステムによるタイムスライスやハードウェアによる
+インタリーブで実行することがある．したがってこの語は CPU と GPU で異なる
+ものを意味する．CPU のスレッドは独立にスケジュールされる重量級の制御の流れ
+であるのに対し，GPU のスレッドはワープの1レーンであり，他の31レーンと
+ロックステップで実行される（第1章）．本章では簡単のため，コア1つにつき
+スレッド1つを仮定する．\margin{マルチスレッディングは CPU コアに2つ以上の
+ハードウェアスレッドコンテキストを与える（第1章）．GPU の SM は現行の
+データセンタ GPU で最大64個の常駐ワープを保持し
+（\cite[Table 21]{nvidia2024cudaguide}；第3章），各ワープはハードウェアが
+スケジュールするスレッドの群である．}
+
+\subsection{総和を手作業で並列化する}
+
+本節を通して用いる例は，10要素の配列の総和である．逐次版は次のとおり．
+\begin{lstlisting}[language=C++, numbers=none]
+#include <iostream>
+int main() {
+  const int size = 10;
+  int data[size];
+  for (int i = 0; i < size; ++i) data[i] = i + 1;
+  int sum = 0;
+  for (int i = 0; i < size; ++i) sum += data[i];
+  std::cout << "sum = " << sum << '\n';   // 55
+  return 0;
+}
+\end{lstlisting}
+2コアにわたるデータ分割は配列を半分に分ける．\texttt{data[0..4]} はコア1の
+スレッドへ，\texttt{data[5..9]} はコア2のスレッドへ行く
+（\cref{fig:l02-data-decomposition}）．手作業で行うと，並列版は3つのステップ
+からなる．
+\begin{enumerate}
+  \item スレッドを2つ作る．
+  \item 各スレッドに配列の半分を渡し，その上で\emph{部分和}を計算する
+    （値 $1,\ldots,10$ に対して15と40）．
+  \item 2つの部分和を総和 $15+40=55$ にまとめる．
+\end{enumerate}
+このまとめは\term*{リダクション}（第1章）である．多数の値を結合的な演算で
+1つにまとめる．\margin{数千の GPU スレッドではリダクションは木になる．部分和
+が $\log_2$ 回のラウンドにわたって対ごとにまとめられ，ワープ内では第5章の
+シャッフル演算で行われる．}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-data-decomposition}
+  \caption{総和のデータ分割．各スレッドが自分の半分を加算し，2つの部分和が
+    総和にリダクションされる．}
+  \label{fig:l02-data-decomposition}
+\end{figure}
+
+\subsection{共有メモリでのリダクションと競合}
+
+共有メモリでは，リダクションは自然に，各スレッドが自分の部分和を初期値0の
+1つの共有変数 \texttt{sum} に加算する形で書かれる．文 \texttt{sum += partial}
+は3つの機械操作，すなわち \texttt{sum} のロード，加算，\texttt{sum} への
+ストアである．2つのスレッドが\cref{tab:l02-race}のように交互に実行されると，
+両方が初期値0をロードし，2番目のストアが最初のストアを上書きする．結果は
+55ではなく40（ストアの順序が逆なら15）になる．
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{共有変数 \texttt{sum} への保護されていない2つの更新の
+    インタリーブ．一方の部分和が失われる．}
+  \label{tab:l02-race}
+  \begin{tabular}{llll}
+    \toprule
+    ステップ & スレッド1（部分和 15） & スレッド2（部分和 40） & \texttt{sum} \\
+    \midrule
+    1 & \texttt{sum} をロード $\to 0$ &                               & 0 \\
+    2 &                               & \texttt{sum} をロード $\to 0$ & 0 \\
+    3 & 加算：$0+15=15$               &                               & 0 \\
+    4 &                               & 加算：$0+40=40$               & 0 \\
+    5 & 15 をストア                   &                               & 15 \\
+    6 &                               & 40 をストア                   & 40 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[データ競合，クリティカルセクション]
+  \term[でーたきょうごう]{データ競合}[data race]は，2つのスレッドが順序付け
+  なしに同じ変数にアクセスし，少なくとも一方のアクセスが書き込みであるとき
+  に生じる．結果はインタリーブに依存する．共有データにアクセスするため
+  一度に1つのスレッドだけが実行しなければならないコードの部分を
+  \term[くりてぃかるせくしょん]{クリティカルセクション}[critical section]
+  という．
+\end{definition}
+
+\caution{C と C++ ではデータ競合は単なる誤った数値ではなく未定義動作である．
+コンパイラはデータ競合が起きないと仮定してよく，例えば \texttt{sum} を
+ループ全体にわたってレジスタに置いたままにできる．}
+
+\begin{definition}[ミューテックス]
+  \term[みゅーてっくす]{ミューテックス}[mutex]
+  （\term[そうごはいじょ]{相互排除}[mutual exclusion]に由来）とは，高々1つの
+  スレッドしか保持できない\term[ろっく]{ロック}[lock]である．スレッドは
+  クリティカルセクションに入る前にミューテックスを\emph{ロック}（獲得）し，
+  出るときに\emph{アンロック}（解放）する．ミューテックスが既に保持されて
+  いれば，スレッドは待つ．\texttt{sum} の更新をミューテックスの中に置けば，2つの
+  加算は順に行われ，結果は55になる．
+\end{definition}
+
+POSIX システムでこれを低水準に書く方法が
+\term[ぽじっくすすれっど]{POSIX スレッド}[POSIX threads (pthreads)]であり，
+C の呼び出しからなるライブラリである．\margin{Pthreads は IEEE POSIX 1003.1c
+（1995年）で，コンパイラの支援のないライブラリである．すべてのスレッドと
+すべてのロックが明示的である．\cite{barney2026parallel}．}
+\begin{itemize}
+  \item \texttt{pthread\_create} は与えられた関数でスレッドを開始する．
+  \item \texttt{pthread\_join} はスレッドの終了を待つ．
+  \item \texttt{pthread\_mutex\_lock} と \texttt{pthread\_mutex\_unlock}
+    はクリティカルセクションを囲む．
+\end{itemize}
+スレッドの生成，データの分配，ロック，ジョインはすべてプログラマのコード
+であり，そのそれぞれがバグの入り込む場所である．
+
+\subsection{OpenMP 版}
+
+OpenMP はそのすべてを1つの指示文の裏に隠す．\tip{OpenMP の支援なしに
+（\texttt{-fopenmp} なしで）コンパイルすると，プラグマは無視されプログラムは
+逐次版になる．動作する逐次プログラムに OpenMP を1ループずつ加えていける．}
+\begin{lstlisting}[language=C++, numbers=none]
+#include <iostream>
+#include <omp.h>
+int main() {
+  const int size = 1000;
+  int data[size];
+  for (int i = 0; i < size; ++i) data[i] = i + 1;
+  int sum = 0;
+  #pragma omp parallel for reduction(+:sum)
+  for (int i = 0; i < size; ++i) sum += data[i];
+  std::cout << "sum = " << sum << '\n';   // 500500
+  return 0;
+}
+\end{lstlisting}
+\texttt{parallel for} はループ並列性パターンを呼び出す．スレッドのチームを
+作り，反復をそれらに分配し，ループの終わりでスレッドをジョインする．
+指示節 \texttt{reduction(+:sum)} はコンパイラに，\texttt{sum} が \texttt{+}
+によるリダクションであることを伝える．各スレッドは単位元0で初期化された
+プライベートなコピーを得てそこに累積し，ループが終わるとコピーが共有変数
+\texttt{sum} に，保護された形でまとめられる（\texttt{*}，\texttt{max}，
+\texttt{min}，およびビット演算子と論理演算子も使える）．
+
+\begin{definition}[指示文と指示節]
+  OpenMP の指示文は次の形をとる．
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp directive [clause [clause] ...]
+\end{lstlisting}
+  \textit{directive} は構文を指名し（\texttt{parallel}，\texttt{for}，
+  \texttt{critical}，\ldots），\term[しじせつ]{指示節}[clause]がそれを
+  修飾する（\texttt{reduction(+:sum)}，\texttt{num\_threads(4)}，
+  \texttt{schedule(dynamic)}）．コンパイラは各指示文を OpenMP ランタイム
+  ライブラリへの呼び出しに置き換え，ランタイムがスレッドを生成し，
+  スケジュールし，ジョインする．
+\end{definition}
+
+\section{スケジューリング，データ共有，同期}
+\label{sec:l02-scheduling}
+
+共有メモリプログラムの残り4つの課題，スレッド数，スケジュール，共有の方針，
+同期には，それぞれ OpenMP の構文がある．\source{M2，OpenMP vs.\ MPI
+（第2部）；PPP App.~A；\cite{openmp2021spec}．}
+
+\subsection{スレッド数}
+
+並列領域のスレッド数は3つの場所のいずれかで設定する．
+\begin{itemize}
+  \item プログラムの外で，環境変数 \texttt{OMP\_NUM\_THREADS} により．
+  \item プログラムの中で，ライブラリ呼び出し
+    \texttt{omp\_set\_num\_threads()} により．
+  \item 1つの領域に対して，指示節 \texttt{num\_threads(}$n$\texttt{)} により．
+\end{itemize}
+何も設定しなければ，既定はマシンのハードウェア並列度，すなわち
+オペレーティングシステムが報告する論理プロセッサ（ハードウェアスレッド）の
+数である．\margin{既定値は実装定義である \cite{openmp2021spec}．GCC の
+libgomp はプロセスが使える CPU 1つにつきスレッド1つを起動する
+\cite{gcc2026libgomp}ので，コア当たり2ハードウェアスレッドの16コア CPU
+では32スレッドが起動する．}コア数より多いスレッドも許される．
+オペレーティングシステムがそれらをタイムスライスする．次の例はこの状況から
+始まる．
+
+\subsection{ループのスケジューリング}
+
+\texttt{parallel for} は，どのスレッドがどの反復を実行するかを決めなければ
+ならない．この決定が重要になるのは，スレッドの進む速さが同じでないとき
+である．
+
+\begin{example}[進み方の不揃いなスレッド]
+  \label{ex:l02-schedule}
+  等しいコストの \num{600000} 回の反復からなるループを，4コアのマシンで
+  6スレッドで実行する．オペレーティングシステムはコア0と1にそれぞれ
+  2スレッド，コア2と3にそれぞれ1スレッドを置くので，2つずつ載ったコア上の
+  4スレッドはそれぞれコアの半分しか受け取れない．コア1つ丸ごとで
+  \num{100000} 回の反復に要する時間を $t$ とする．
+  \begin{itemize}
+    \item \emph{静的分割}，スレッド当たり \num{100000} 回：コア2と3の
+      スレッドは時刻 $t$ に，他の4つは $2t$ に終わる．ループは $2t$ で
+      終わり，その半分の間2つのコアが遊ぶ．
+    \item \emph{理想}：\num{600000} 回を4コアに分散すると，コア当たり
+      \num{150000} 回，すなわち $1.5t$ である．
+    \item \emph{動的，チャンク \num{1000}}：各スレッドは1つのチャンクを
+      終えると次のチャンクを取る．コア1つ丸ごとを持つスレッドは半分のコア
+      のスレッドの2倍の頻度でチャンクを取るので，6つすべてが $1.5t$ から
+      およそ1チャンク以内に終わる．チャンク要求は \num{600} 回である．
+  \end{itemize}
+  ここでは静的スケジュールは動的スケジュールより \SI{33}{\percent} 長く
+  かかり，それは純粋にスレッドの不均等な配置による．
+\end{example}
+
+OpenMP の \texttt{schedule(}\textit{kind}\texttt{, }\textit{chunk}\texttt{)}
+指示節がスケジュールの種類を選ぶ．実際に使われる3つは次のとおりである
+（\cref{fig:l02-schedule}）．\margin{さらに2種類がある．\texttt{auto} は
+選択をコンパイラまたはランタイムに任せ，\texttt{runtime} は環境変数
+\texttt{OMP\_SCHEDULE} から取る．\cite{openmp2021spec}．}
+\begin{description}
+  \item[static]  \term[せいてきすけじゅーりんぐ]{静的スケジューリング}[static scheduling]
+    は，ループ開始前に反復をチャンクに分け，固定のラウンドロビン順で
+    スレッドに割り当てる．チャンクサイズを指定しなければ，各スレッドは約
+    $N/\text{スレッド数}$ 回の連続した1ブロックを得る．実行時コストはなく，
+    適応もしない．
+  \item[dynamic]  \term[どうてきすけじゅーりんぐ]{動的スケジューリング}[dynamic scheduling]
+    は，与えられた\term[ちゃんくさいず]{チャンクサイズ}[chunk size]（既定1）
+    のチャンクを要求に応じて配る．チャンクを終えたスレッドが次を求める．
+    チャンクサイズ1は最もよく適応するが，反復ごとに要求のコスト，すなわち
+    共有カウンタのアトミック更新を払う．\num{1000} ならそのコストを千回の
+    反復で償却する．
+  \item[guided]  \term[がいどつきすけじゅーりんぐ]{ガイド付きスケジューリング}[guided scheduling]
+    は，大きなチャンクから始めてループが進むにつれ縮める（例えば
+    \num{1000} から \num{100} まで）．序盤の大きなチャンクが要求コストを
+    低く保ち，終盤の小さなチャンクが終了時刻を揃える．\margin{guided の
+    チャンクは残り反復数をスレッド数で割った値に比例し，最後のチャンクを
+    除いて \textit{chunk} 引数を下回らない．\cite{openmp2021spec}．}
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-schedule}
+  \caption{4スレッドに対する3つのループスケジュール．static は各スレッドに
+    1ブロックを事前に割り当てる．dynamic はスレッドが求めた順に固定サイズの
+    チャンクを配る．guided は縮んでいくチャンクを配る．}
+  \label{fig:l02-schedule}
+\end{figure}
+
+動的スケジューリングとガイド付きスケジューリングは，実行時にスレッドを
+不均等にするあらゆるものに適応する．\cref{ex:l02-schedule}のような不均等な
+配置，異種混在クラスタ内の遅いマシン，コストの異なる反復，他のプログラム
+からの干渉などである．すべてのスレッドを最後まで忙しくしておくことが
+\term[ふかぶんさん]{負荷分散}[load balancing]である．並列ループの時間は，
+その最も遅いスレッドの時間である．\tip{反復が等しい規則的なループは
+\texttt{static}．不規則または未知のコストなら，要求のコストがチャンクより
+はるかに小さくなる大きさのチャンクで \texttt{dynamic}．反復数が大きければ
+\texttt{guided}．}
+
+\subsection{データ共有}
+
+総和では，各スレッドの部分和はそのスレッド自身のコピーでなければならず，
+一方で総和は1つの場所である．OpenMP は前者を
+\term[ぷらいべーとへんすう]{プライベート変数}[private variable]
+（\texttt{reduction} のコピーのように，スレッドごとに1つのインスタンス），
+後者を\term[きょうゆうへんすう]{共有変数}[shared variable]（全員が見る
+1つのインスタンス）と呼ぶ．プログラマは \texttt{private(\ldots)} と
+\texttt{shared(\ldots)} 指示節で方針を述べる．既定では，並列領域の外で
+宣言された変数は共有，ループインデックスはプライベートである．
+\caution{既定のまま共有で残され，ループ内で書かれる変数はデータ競合である．
+\texttt{default(none)} はすべての変数を明示的に列挙するよう強制し，
+書き忘れをコンパイルエラーにする．}
+
+\subsection{同期}
+
+同期こそが共有メモリプログラムを正しくする．異なるスレッドの共有データへの
+アクセスを順序付けるからである．OpenMP は3つの構文を提供する．
+
+\begin{description}
+  \item[バリア]  \term[ばりあ]{バリア}[barrier]とは，チームのすべての
+    スレッドが到達するまで，どのスレッドも先へ進めない地点である
+    （\cref{fig:l02-barrier}）．バリアの後の仕事（緑）は，その前のすべての
+    仕事（青）が終わるまで始まらない．\texttt{\#pragma omp barrier} と書く．
+    \texttt{parallel} 領域の終わりは常に暗黙のバリアであり，\texttt{for}，
+    \texttt{sections}，\texttt{single} 構文の終わりも，\texttt{nowait}
+    指示節で取り除かない限り同様である．\margin{CUDA の
+    \texttt{\_\_syncthreads()}（第3章）は1ブロックのスレッドにわたる
+    バリアである．グリッド全体にわたるバリアは，協調起動を伴う cooperative
+    groups によってのみ存在する（第5章）．}
+  \item[クリティカル]  \texttt{\#pragma omp critical [(\textit{name})]} は
+    続くブロックをクリティカルセクションにする．一度に1つのスレッドがそれを
+    実行し，他は入口で待つ（\cref{fig:l02-critical}）．領域に4スレッドあれば，
+    ブロックの4回の実行は途切れなく順に直列化される．異なる名前の
+    クリティカルセクションは並行に実行されうる．名前のないものはすべて
+    1つのロックを共有する．
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp parallel num_threads(4)
+{
+  // 並列部分 ...
+  #pragma omp critical
+  {
+    shared_total += local_value;   // 一度に1スレッドだけ
+  }
+}
+\end{lstlisting}
+  \item[アトミック]  \texttt{\#pragma omp atomic} は，続く1つの更新を
+    \term[あとみっくそうさ]{アトミック操作}[atomic operation]にする．その
+    ロード，加算，ストアは全体として起こるか，まったく起こらないかの
+    どちらかであり，他のスレッドの更新がその間に割り込むことはない．
+    ハードウェアの read-modify-write 命令があればそれで，なければロックで
+    実装され，適用できる場合にはクリティカルセクションより安価である．
+    \margin{CUDA の \texttt{atomicAdd()} が GPU で同じ役割を果たす．第5章
+    では控えめに使うべき操作の1つに挙げる．}
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp parallel for
+for (int i = 0; i < n; ++i) {
+  #pragma omp atomic
+  counter++;          // ロード，加算，ストアを一体として
+}
+\end{lstlisting}
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-barrier}
+  \caption{バリア．5つのスレッドすべてがフェーズ1を終えるまで，どの
+    スレッドもフェーズ2を始めない．}
+  \label{fig:l02-barrier}
+\end{figure}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-critical}
+  \caption{4つのスレッドと1つのクリティカルセクション．赤の実行は決して
+    重ならず，残りの仕事は重なる．}
+  \label{fig:l02-critical}
+\end{figure}
+
+\caution{\texttt{atomic} が扱うのは \texttt{x++}，\texttt{x += e} などの形の
+1つのスカラ更新である．2つの文や，一貫性を保たなければならない2つの変数の
+更新には \texttt{critical} が要る．}
+
+\Needspace{12\baselineskip}% JA only: keeps the heading, its sentence and the sections listing on one page
+\subsection{ループ以外の仕事}
+
+並列な仕事のすべてがループとは限らない．
+\term[へいれつせくしょん]{並列セクション}[parallel sections]は，独立な
+コードブロックを並行に，セクション1つにつきスレッド1つで実行する．
+\margin{OpenMP 3.0（2008年）は \texttt{\#pragma omp task} を加えた．
+\texttt{sections} を動的なタスク集合に一般化したもので，
+\cref{sec:l02-patterns} のマスタ／ワーカパターンである．
+\cite{openmp2021spec}．}
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp parallel sections
+{
+  #pragma omp section
+  { work_1(); }
+  #pragma omp section
+  { work_2(); }
+}
+\end{lstlisting}
+さらに2つの構文は，並列性を作るのではなく制限する．
+\begin{description}
+  \item[ordered]  \texttt{for ordered} と宣言したループの内側で，
+    \texttt{\#pragma omp ordered} の付いたブロックは，各反復の残りが並列に
+    実行されても反復順に実行される．\caution{\texttt{ordered} ブロックの
+    中身はすべて直列化される．本体の大半が ordered であるループは並列に
+    しても何も得られない．}  5つのスレッドから\enquote{スレッド $k$ が反復 $i$ を
+    実行中}と印字するループは，\texttt{ordered} なしでは行を任意の順
+    （例えば 1，2，4，3，5）で，ありでは 1，2，3，4，5 の順で印字する．
+  \item[single]  \texttt{\#pragma omp single} は，ブロックをチームの
+    ちょうど1つのスレッド（どれかは不定）で実行し，他のスレッドはそれを
+    飛ばして直後の暗黙のバリアで待つ．並列領域内での1回限りの初期化や
+    メッセージの表示に典型的である．\tip{他のスレッドが \texttt{single}
+    ブロックを待つ必要がなければ，\texttt{single nowait} でそのバリアを
+    外せる．次の \texttt{for} や \texttt{barrier} がなお全体を順序付ける．}
+\end{description}
+
+\begin{keypoint}
+  OpenMP は共有メモリプログラムの5つの決定を明示化する．
+  \texttt{parallel for}（何を），\texttt{OMP\_NUM\_THREADS}（いくつで），
+  \texttt{schedule}（誰がどの反復を），\texttt{private}/\texttt{shared}
+  （誰のデータを），そして \texttt{barrier}/\texttt{critical}/\texttt{atomic}
+  （どの順序で）．同じ5つの決定は CUDA では，カーネル，起動構成，ブロック
+  スケジューラ，メモリ空間，\texttt{\_\_syncthreads()} として再び現れる．
+\end{keypoint}
+
+\section{MPI によるプログラミング}
+\label{sec:l02-mpi}
+
+CUDA プログラミングは\cref{sec:l02-openmp}の2つのモデルを組み合わせる．GPU
+のすべてのコアで共有されるメモリ領域がある一方，外からは見えず明示的な通信を
+必要とする領域もある．したがって GPU プログラマには，共有メモリの習慣と
+同じくらい分散メモリの習慣が必要であり，それがここでメッセージパッシングを
+導入する理由である．\source{M2，MPI によるプログラミング；PPP App.~B；
+\cite{barney2026parallel}，メッセージパッシングモデル；PMPP ch.~20．}
+
+\subsection{プロセスとメッセージ}
+
+\begin{definition}[MPI]
+  \term[えむぴーあい]{MPI}[MPI (Message Passing Interface)] は
+  \term[めっせーじぱっしんぐ]{メッセージパッシング}[message passing]の標準
+  ライブラリである．それぞれが自分のアドレス空間を持つ
+  \term[ぷろせす]{プロセス}[process]の集合が，同じノード上または異なる
+  ノード上で，メッセージの送受信だけによってデータを交換する．
+  各プロセスは\term[らんく]{ランク}[rank]，すなわち0からプロセス数より
+  1小さい値までの整数で識別される．\margin{MPI Forum は1992年，MPI-1 は
+  1994年．ここで引用するのは 4.1 版（2023年），最新は 5.0（2025年）である．
+  \cite{barney2026parallel}．}
+\end{definition}
+
+ライブラリの大半は2種類の操作に収まる（\cref{fig:l02-mpi-messages}）．
+\begin{description}
+  \item[1対1]  \term[いったいいちつうしん]{1対1通信}[point-to-point communication]
+    にはちょうど2つのプロセスが関わる．\margin{メッセージのコストは
+    レイテンシ（0バイトのメッセージの送信，典型的にはマイクロ秒）に，サイズ
+    を帯域幅で割った値を加えたものである．多数の小さなメッセージは1つの
+    大きなメッセージよりはるかに悪い．\cite{barney2026parallel}．}プロセス0
+    が整数と宛先ランク1を指定して \texttt{MPI\_Send()} を呼び，プロセス1が
+    送信元ランク0を指定して \texttt{MPI\_Recv()} を呼んで値を得る．
+    メッセージは宛先が発行した対応する受信にのみ配達される．すべての転送に
+    両側が関与する．
+  \item[集団]  \term[しゅうだんつうしん]{集団通信}[collective communication]
+    にはグループのすべてのプロセスが一度に関わる．最も単純なのは
+    \term[ぶろーどきゃすと]{ブロードキャスト}[broadcast]，
+    \texttt{MPI\_Bcast()} である．ルートプロセスの値が他のすべてのプロセス
+    に配達される．すべてのプロセスが同じ関数を呼ぶ．\margin{他の集団通信：
+    \emph{scatter}（1つの配列をランク間で分割），\emph{gather}（その逆），
+    \emph{reduce}（ランクごとの1つの値をまとめる，例えば大域総和）．
+    \cite{mpi2023standard}．}
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-mpi-messages}
+  \caption{MPI の1対1通信（左）と集団通信（右）．}
+  \label{fig:l02-mpi-messages}
+\end{figure}
+
+最小限のプログラムで両方の呼び出しを示す．同じ実行ファイルがプロセスごとに
+1回起動され（\texttt{mpirun -np 4 ./a.out} は4つ起動する），どのコピーも
+先頭から実行し，コピーを区別して各自の仕事を決める唯一のものがランクである
+（これも SPMD である）．
+\begin{lstlisting}[language=C, numbers=none]
+#include <mpi.h>
+int main(int argc, char **argv) {
+  int rank, value = 0;
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  if (rank == 0) {
+    value = 42;
+    MPI_Send(&value, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
+  } else if (rank == 1) {
+    MPI_Recv(&value, 1, MPI_INT, 0, 0, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+  }
+  MPI_Bcast(&value, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Finalize();
+  return 0;
+}
+\end{lstlisting}
+
+\subsection{分散データ上のステンシル}
+
+\begin{definition}[ステンシル]
+  \term[すてんしる]{ステンシル}[stencil]計算は，格子の各要素を，その近傍の
+  固定パターンから更新する．ここでの例は各要素 $C$ を北，西，東，南の
+  4近傍の平均で置き換える（\cref{fig:l02-stencil-halo}，左）．
+  \begin{equation}
+    C' = \frac{N + W + E + S}{4}.
+    \label{eq:l02-stencil}
+  \end{equation}
+\end{definition}
+
+ステンシルは高性能計算でよく現れる（差分法ソルバ，画像フィルタ）．
+\margin{ステンシルは点の数で呼ばれる．これは5点ステンシルであり（多くの
+変種は中心も読む），\cref{eq:l02-stencil}は離散ラプラス方程式，すなわち
+定常熱伝導に対する1回の Jacobi 反復である．$3\times3$ フィルタによる画像
+畳み込みは9点ステンシルで，第3章で扱う．}
+
+格子を4つのプロセスに分散すると，各プロセスは1つの四分区画を所有し，それに
+しかアクセスできない（\cref{fig:l02-stencil-halo}，左）．プロセス2の領域の
+端にある要素 $C$ は，プロセス0に属する近傍1と，プロセス3に属する近傍3を
+必要とする．ロードで取ってくることはできず，メッセージで届かなければ
+ならない．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-stencil-halo}
+  \caption{4つのプロセスに分散した格子上のステンシル．左：要素 $C$ とその
+    4近傍は3つの領域にまたがる．右：更新前にプロセス0と3から受け取った
+    ハローセル（灰色）を含むプロセス2の領域．}
+  \label{fig:l02-stencil-halo}
+\end{figure}
+
+\begin{definition}[ハローと境界交換]
+  プロセスが読むが所有しない隣接領域のセルが，そのプロセスの
+  \term[はろーりょういき]{ハロー領域}[halo (ghost cells)]をなす．半径1の
+  ステンシルでは，共有する各辺に沿った1行または1列である
+  （\cref{fig:l02-stencil-halo}，右）．更新ステップのたびに，プロセスは
+  \term[きょうかいこうかん]{境界交換}[boundary exchange]を行う．各プロセス
+  は隣が必要とする端のセルを送り，隣から自分のハローを受け取る．その後は
+  ステンシルのすべての読み出しがローカルになる．\margin{各プロセスは
+  ステップごとに，隣接する辺1つにつき1つのメッセージを送り，1つ受け取る．
+  $2\times2$ 分割では送信2回と受信2回である．ステンシルの半径を2倍にすると
+  ハローの幅が2倍になるが，メッセージ数は変わらない．}
+\end{definition}
+
+データ依存がプロセス間の境界をまたぐときは必ず，この交換が分散メモリの代価
+となる．同じ構造が第3章で再び現れる．CUDA のスレッドブロックは格子のタイル
+を共有メモリに所有し，計算の前にタイルの周囲のハローを読み込まなければ
+ならない．ただしそこではハローはメッセージで受け取るのではなく，グローバル
+メモリから読む．\caution{プロセスは，ハローセルを運ぶメッセージが届く前に
+そのセルを読んではならず，端のセルを更新する前に送ってもならない．分散
+ステンシルは通信と計算を交互に行い，ハローがまだ転送中の間に更新できるのは
+内部のセルだけである．}
+
+\begin{keypoint}[章のまとめ]
+  並列プログラムは少数のパターンを再利用する．タスクキューを持つマスタ／
+  ワーカ，ループ並列性，SPMD，フォーク／ジョイン，パイプラインである．共有
+  メモリではスレッドが1つのアドレス空間を通じて通信し，OpenMP は逐次
+  プログラムに，並列ループ，スレッド数，スケジューリング（static，dynamic，
+  guided），データ共有（private，shared），同期（barrier，critical，atomic）
+  の指示文で注釈を付ける．共有変数の保護されていない更新はデータ競合である．
+  分散メモリでは，ランクで識別されるプロセスが MPI でメッセージを交換する．
+  1対1（\texttt{MPI\_Send}/\texttt{MPI\_Recv}）または集団
+  （\texttt{MPI\_Bcast}）である．分散ステンシルは毎ステップの前にハローセル
+  の境界交換を必要とし，これが第3章の CUDA タイルのハロー読み込みのモデル
+  となる．
+\end{keypoint}
+
+\end{document}

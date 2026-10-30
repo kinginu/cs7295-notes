@@ -1,0 +1,40 @@
+% Shared memory (left): every processor reads and writes one memory, so a
+% value written by P1 is read by P2.  Distributed memory (right): each
+% processor owns a memory; P2 obtains the values of the same address in
+% the other memories through messages and adds them.
+% Redraws lowyx m2l2_shared_mem and m2l2_shared_mem_distributed.
+% Usage: \input{figures/l02-memory-models}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]},
+                    proc/.style={draw=ln-accent, thick, minimum width=13mm, minimum height=6mm},
+                    mem/.style={draw=ln-muted, fill=ln-box, minimum height=7mm, align=center}]
+  % ---- shared memory
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,24)
+    {\iflangja{共有メモリ}{Shared memory}};
+  \foreach \i in {1,2,3} {
+    \node[proc] (p\i) at ({8+(\i-1)*16},16) {P\i};
+  }
+  \node[mem, minimum width=42mm] (sm) at (24,2)
+    {\iflangja{メモリ}{Memory}\\\texttt{mem[0x100] = 10}};
+  \draw[->] (p1.south) -- (sm.north -| p1.south)
+    node[midway, left, align=right, text=ln-muted] {\iflangja{10を\\書く}{writes 10}};
+  \draw[<-] (p2.south) -- (sm.north -| p2.south)
+    node[midway, right, text=ln-muted] {\iflangja{10を読む}{reads 10}};
+  \draw[<->] (p3.south) -- (sm.north -| p3.south);
+  % ---- distributed memory
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (54,24)
+    {\iflangja{分散メモリ}{Distributed memory}};
+  \foreach \i/\v/\c in {1/3/orange!45, 2/5/blue!25, 3/8/red!35} {
+    \node[proc] (q\i) at ({62+(\i-1)*22},16) {P\i};
+    \node[mem, fill=\c, minimum width=17mm] (dm\i) at ({62+(\i-1)*22},2)
+      {\iflangja{メモリ}{Memory} \i\\\texttt{mem[0x100] = \v}};
+    \draw[<->] (q\i.south) -- (dm\i.north);
+  }
+  % messages to P2
+  \draw[->, ln-accent, thick] (dm1.north east) to[bend left=15] (q2.west);
+  \draw[->, ln-accent, thick] (dm3.north west) to[bend right=15] (q2.east);
+  \node[draw=ln-accent, fill=white, inner sep=1pt, font=\scriptsize\sffamily, text=ln-accent] at (73.5,10.5) {$\boxtimes$};
+  \node[draw=ln-accent, fill=white, inner sep=1pt, font=\scriptsize\sffamily, text=ln-accent] at (94.5,10.5) {$\boxtimes$};
+  \node[above=1pt of q2, text=ln-accent] {$3+5+8=16$};
+  \node[anchor=west, text=ln-muted] at (54,-6) {$\boxtimes$ = \iflangja{メッセージ}{message}};
+\end{tikzpicture}

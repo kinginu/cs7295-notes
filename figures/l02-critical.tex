@@ -1,0 +1,19 @@
+% A critical section with four threads: each thread runs its critical
+% section (red) once, and the four executions never overlap in time.
+% Redraws lowyx m2l3_critical.
+% Usage: \input{figures/l02-critical}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \foreach \i/\s in {1/10, 2/22, 3/34, 4/46} {
+    \pgfmathsetmacro{\y}{-\i*6}
+    \node[anchor=east] at (-1,\y) {Th \i};
+    \fill[blue!25] (0,\y-2) rectangle (70,\y+2);
+    \fill[red!60, draw=red!70!black] (\s,\y-2) rectangle (\s+10,\y+2);
+    \node[text=white, font=\scriptsize\sffamily\bfseries] at (\s+5,\y) {CS};
+  }
+  \draw[->] (0,-28) -- (72,-28) node[below left, text=ln-muted] {\iflangja{時間}{time}};
+  \fill[blue!25] (78,-10) rectangle (82,-7);
+  \node[anchor=west] at (83,-8.5) {\iflangja{並列部分}{parallel work}};
+  \fill[red!60] (78,-16) rectangle (82,-13);
+  \node[anchor=west] at (83,-14.5) {\iflangja{クリティカルセクション}{critical section}};
+\end{tikzpicture}

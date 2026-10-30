@@ -1,0 +1,18 @@
+% The fork/join pattern: a single flow of control forks into parallel
+% tasks inside a parallel region and joins back to one flow.
+% Redraws lowyx m2l1_forkjoin_pattern.
+% Usage: \input{figures/l02-fork-join}   (margin width, 50 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \fill[yellow!35, draw=ln-muted, dashed] (14,-9) rectangle (36,9);
+  \node[anchor=south, text=ln-muted] at (25,9.5) {\iflangja{並列領域}{parallel region}};
+  \draw[thick, ln-accent] (0,0) -- (14,0);
+  \foreach \y in {-6,-2,2,6} {
+    \draw[thick, ln-accent] (14,0) -- (18,\y) -- (32,\y) -- (36,0);
+  }
+  \draw[->, thick, ln-accent] (36,0) -- (50,0);
+  \node[below, text=ln-muted] at (14,-9.5) {\iflangja{フォーク}{fork}};
+  \node[below, text=ln-muted] at (36,-9.5) {\iflangja{ジョイン}{join}};
+  \node[above, text=ln-muted] at (7,0.5) {\iflangja{逐次}{serial}};
+  \node[above, text=ln-muted] at (43,0.5) {\iflangja{逐次}{serial}};
+\end{tikzpicture}

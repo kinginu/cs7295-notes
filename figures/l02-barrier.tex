@@ -1,0 +1,19 @@
+% A barrier: five threads finish the first phase (blue) at different
+% times; none starts the second phase (green) before all have arrived.
+% Redraws lowyx m2l3_barrier.
+% Usage: \input{figures/l02-barrier}   (margin width, 50 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \fill[blue!15] (0,-1) rectangle (24,14);
+  \fill[green!20] (28,-1) rectangle (48,14);
+  \fill[yellow!70, draw=ln-muted] (24,-2) rectangle (28,15);
+  \node[above, text=ln-muted] at (26,15) {\iflangja{バリア}{barrier}};
+  \foreach \y/\e in {12/20, 9/14, 6/23, 3/17, 0/10} {
+    \draw[thick, blue!60!black] (0,\y) -- (\e,\y);
+    \draw[densely dotted, blue!60!black] (\e,\y) -- (24,\y);
+    \draw[->, thick, green!50!black] (28,\y) -- (46,\y);
+  }
+  \node[below, text=ln-muted] at (12,-2) {\iflangja{フェーズ1（待ち）}{phase 1 (then wait)}};
+  \node[below, text=ln-muted] at (38,-2) {\iflangja{フェーズ2}{phase 2}};
+  \draw[->] (0,-8) -- (48,-8) node[below left, text=ln-muted] {\iflangja{時間}{time}};
+\end{tikzpicture}

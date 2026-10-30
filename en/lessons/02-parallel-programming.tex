@@ -1,0 +1,769 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{Parallel Programming}
+\lessoninfo{
+  video={M2, lessons 1--4 (Parallel Programming Patterns; OpenMP vs.\ MPI, parts 1--2; Programming with MPI)},
+  sources={\cite{barney2026parallel} (required); \cite{openmp2021spec}; \cite{mpi2023standard}},
+  textbook={PPP \cite{mattson2004patterns} ch.~3--5, App.~A--B (optional); PMPP \cite{hwu2022pmpp} ch.~20},
+  keywords={parallel programming pattern, master/worker, loop parallelism, fork/join, pipeline, shared memory, distributed memory, OpenMP, thread, reduction, data race, critical section, scheduling, barrier, MPI, stencil, halo},
+}
+
+Lesson~1 introduced the GPU as a throughput machine and the two ways of
+splitting a program into parallel work, task decomposition and data
+decomposition.  This lesson shows how that work is expressed in code on a
+conventional multiprocessor, before the GPU-specific model of Lesson~3.
+It first collects the recurring \emph{patterns} of parallel programs, then
+contrasts the two memory models a parallel program can be written against:
+shared memory, where threads communicate through one address space and are
+programmed with OpenMP, and distributed memory, where processes exchange
+messages with MPI.  Both matter for CUDA, which combines them: some memory
+is shared by every thread of a block, while other data must be moved
+explicitly.  The chapter closes with a stencil computation whose boundary
+exchange between processes returns, on the GPU, as the halo loading of
+Lesson~3.
+
+\section{Parallel programming patterns}
+\label{sec:l02-patterns}
+
+A parallel application is built from a serial one in three moves: the work
+is divided into pieces, the data structures are adjusted so that the pieces
+can be worked on independently, and the pieces are distributed to the
+processors (\cref{fig:l02-parallel-app}).\source{M2, parallel programming
+patterns; PPP ch.~3--5.}  A \term{parallel programming pattern}[並列プログラミングパターン]
+is a reusable way of organising this division and distribution; the handful
+of patterns below cover most parallel programs, including the GPU kernels
+of the later lessons.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-parallel-app}
+  \caption{Creating a parallel application: divide the work, adjust the
+    data structures, distribute the pieces.  The orange and green bars are
+    parts of the program that split differently from the main body.}
+  \label{fig:l02-parallel-app}
+\end{figure}
+
+\subsection{Four steps}
+
+Designing a parallel program proceeds in four steps.\sidenote{The steps
+follow the four \emph{design spaces} of \cite{mattson2004patterns}: Finding
+Concurrency, Algorithm Structure, Supporting Structures and Implementation
+Mechanisms.  The book places the patterns below in different spaces
+(Pipeline in Algorithm Structure; SPMD, Master/Worker, Loop Parallelism and
+Fork/Join in Supporting Structures); the course lists them side by side.}
+\begin{enumerate}
+  \item \textbf{Discover concurrency.}  The \term{concurrency}[並行性] of a
+    computation is the extent to which its parts may proceed independently
+    of one another; the first step finds where such independence exists
+    (which tasks, which data).
+  \item \textbf{Structure the algorithm} so that the concurrency can be
+    exploited: decide what the units of parallel work are and how they
+    communicate.
+  \item \textbf{Implement} it in a language and toolset suited to the
+    target: OpenMP, MPI, CUDA.
+  \item \textbf{Execute and optimise} on the parallel system, measuring
+    and tuning until the performance goal is met.
+\end{enumerate}
+
+\subsection{Five patterns}
+
+\begin{description}
+  \item[Master/worker]  In the \term{master/worker pattern}[マスタ／ワーカパターン]
+    one master thread or process sets up the problem, places the pieces of
+    work in a \term{task queue}[タスクキュー] (a \enquote{bag of tasks}),
+    launches a pool of workers, waits, collects their results and
+    terminates the computation (\cref{fig:l02-master-worker}).  Each worker
+    repeatedly dequeues a task and runs it; since workers take the next
+    task as soon as they finish the previous one, the load balances itself.
+    The pattern suits work that splits into independent pieces of unequal
+    or unknown size.\margin{The OpenMP \texttt{dynamic} schedule of
+    \cref{sec:l02-scheduling} is a task queue whose tasks are chunks of
+    loop iterations.}
+  \item[Loop parallelism]  In \term{loop parallelism}[ループ並列性] the
+    iterations of a loop run concurrently when they are independent, as in
+\begin{lstlisting}[language=C++, numbers=none]
+for (int i = 0; i < 16; i++) c[i] = a[i] + b[i];
+\end{lstlisting}
+    Unlike master/worker tasks, the iterations are usually identical
+    operations on different data, which makes this the pattern of
+    \term*{data decomposition} (Lesson~1).\margin{The same vector addition is
+    the first CUDA kernel of Lesson~3: one thread per iteration.}
+  \item[SPMD]  Every processing element runs the same program on its own
+    portion of the data; \term*{SPMD} (Lesson~1) is the usual choice for GPU
+    programming, where thousands of threads run one kernel and pick their
+    data by their thread index.
+  \item[Fork/join]  In the \term{fork/join pattern}[フォーク／ジョインパターン]
+    a parent task forks child tasks, continues or waits, and joins them
+    (waits for their completion) before going on
+    (\cref{fig:l02-fork-join}).  It mixes serial and parallel phases from
+    a single entry point; an OpenMP parallel region is a fork/join.
+  \item[Pipeline]  The \term{pipeline pattern}[パイプラインパターン]
+    assigns each processor one stage of a multi-stage computation and
+    streams the data items through the stages, exactly as a CPU pipeline
+    streams instructions (\cref{fig:l02-pipeline}).  It suits data
+    streams: signal processing, the graphics pipeline of Lesson~1, or a
+    compression workflow (decompress, process, compress).
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-master-worker}
+  \caption{The master/worker pattern.  The master fills the task queue
+    and waits; workers dequeue tasks until the queue is empty and return
+    their results.}
+  \label{fig:l02-master-worker}
+\end{figure}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l02-fork-join}}
+  \caption{The fork/join pattern: one flow of control forks into four
+    parallel tasks and joins again.}
+  \label{fig:l02-fork-join}
+\end{marginfigure}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-pipeline}
+  \caption{The pipeline pattern.  Four work items pass through five
+    stages; at steps 4 and~5 four of the five stages are busy with
+    different items (with five or more items in flight every stage would
+    be).  With $s$ stages and $n$ items the pipeline takes $s+n-1$ steps
+    instead of $sn$: here 8 instead of 20.}
+  \label{fig:l02-pipeline}
+\end{figure}
+
+\begin{keypoint}
+  Patterns are not exclusive: a GPU program is SPMD at the level of the
+  kernel, loop parallelism inside it (one thread per iteration), and
+  fork/join at the level of the host that launches the kernel and waits
+  for it.
+\end{keypoint}
+
+\section{Shared-memory programming with OpenMP}
+\label{sec:l02-openmp}
+
+How the pieces of a parallel program communicate depends on whether they
+share a memory.\source{M2, OpenMP vs.\ MPI (part 1); PPP App.~A;
+\cite{barney2026parallel}, memory architectures and programming models.}
+
+\subsection{Shared versus distributed memory}
+
+\begin{definition}[Shared-memory programming]
+  In \term{shared-memory programming}[共有メモリプログラミング] all
+  processors read and write one memory: a value that processor~1 writes to
+  an address is seen by processor~2 when it reads that address
+  (\cref{fig:l02-memory-models}, left).  Communication is implicit in
+  ordinary loads and stores.
+\end{definition}
+
+\begin{definition}[Distributed-memory programming]
+  In \term{distributed-memory programming}[分散メモリプログラミング] each
+  processor has its own memory, invisible to the others.  Data that lives
+  in another processor's memory must be requested and sent in a
+  \emph{message} (\cref{fig:l02-memory-models}, right): processor~2 asks
+  processors 1 and 3 for the contents of an address in their memories,
+  adds the three values and writes the result back into its own memory.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-memory-models}
+  \caption{Shared memory (left) and distributed memory (right).  The same
+    address \texttt{0x100} names one location on the left and three
+    unrelated locations on the right.}
+  \label{fig:l02-memory-models}
+\end{figure}
+
+\caution{\enquote{Shared memory} in this lesson is the CPU sense, one
+address space for all threads.  CUDA's \texttt{\_\_shared\_\_} memory of
+Lesson~3 is a small on-chip scratchpad shared only by the threads of one
+block.}
+
+Shared memory is the easier model to program, because data sharing needs no
+explicit transfer, but it does not scale: every processor contends for the
+same memory, and the programmer is responsible for synchronising the
+accesses.  Distributed memory scales with the number of processors and
+keeps local accesses fast, at the price of making the programmer specify
+every transfer.\margin{The largest machines are hybrids: shared memory
+inside a node, messages between nodes; the common pairings are MPI with
+OpenMP, or MPI with CUDA.  \cite{barney2026parallel}.}
+
+\subsection{OpenMP}
+
+\begin{definition}[OpenMP]
+  \term{OpenMP}[OpenMP] is an open standard for shared-memory parallel
+  programming in C, C++ and Fortran.  It is a collection of
+  \term{compiler directive}[コンパイラ指示文]s (\texttt{\#pragma omp \ldots}),
+  library routines (\texttt{omp\_\ldots()}) and
+  \term{environment variable}[環境変数]s (\texttt{OMP\_\ldots}) with which
+  a serial program is annotated, rather than rewritten, to run in
+  parallel.\margin{OpenMP 1.0 appeared in 1997 (Fortran) and 1998 (C/C++);
+  the specification cited here is 5.2 (2021), the current one 6.0 (2024).
+  \texttt{openmp.org}.}
+\end{definition}
+
+Whatever the tool, a shared-memory program has to settle five things: the
+\emph{parallelisation} itself (which loop or region runs in parallel), the
+\emph{number of threads}, the \emph{scheduling} of work onto those threads,
+the \emph{data sharing} policy (which variables are shared, which are
+private), and the \emph{synchronisation} that keeps shared data
+consistent.  OpenMP has a directive or clause for each; this section
+covers the first and \cref{sec:l02-scheduling} the other four.
+
+\subsection{Threads}
+
+\begin{definition}[Thread]
+  A \term{thread}[スレッド] is an entity that runs a sequence of
+  instructions.  It has its own registers and its own stack, and it shares
+  the rest of the address space (code, global data, heap) with the other
+  threads of the same process.\margin{On Linux a new thread's stack
+  defaults to the \texttt{ulimit -s} soft limit at program start,
+  \SI{8}{\mebi\byte} on most distributions;
+  \texttt{pthread\_attr\_setstacksize} overrides it per thread.
+  \cite{manpages2026pthreadcreate}.}
+\end{definition}
+
+A thread is a software concept, not a core: one core may run several
+threads, time-sliced by the operating system or interleaved by the
+hardware.  The word therefore means
+different things on a CPU and on a GPU: a CPU thread is a heavyweight,
+independently scheduled flow of control, whereas a GPU thread is one lane of
+a warp that executes in lockstep with 31 others (Lesson~1).  This lesson
+assumes, for simplicity, one thread per core.\margin{Multithreading gives
+a CPU core two or more hardware thread contexts (Lesson~1); a GPU SM holds
+up to 64 resident warps on current data-centre GPUs
+(\cite[Table 21]{nvidia2024cudaguide}; Lesson~3), each a hardware-scheduled
+group of threads.}
+
+\subsection{Parallelising a sum by hand}
+
+The running example is the sum of a ten-element array.  Serially:
+\begin{lstlisting}[language=C++, numbers=none]
+#include <iostream>
+int main() {
+  const int size = 10;
+  int data[size];
+  for (int i = 0; i < size; ++i) data[i] = i + 1;
+  int sum = 0;
+  for (int i = 0; i < size; ++i) sum += data[i];
+  std::cout << "sum = " << sum << '\n';   // 55
+  return 0;
+}
+\end{lstlisting}
+Data decomposition over two cores splits the array in half:
+\texttt{data[0..4]} goes to a thread on core~1 and \texttt{data[5..9]} to a
+thread on core~2 (\cref{fig:l02-data-decomposition}).  Done by hand, the
+parallel version has three steps:
+\begin{enumerate}
+  \item create two threads;
+  \item give each thread its half of the array, on which it computes a
+    \emph{partial sum} (15 and 40 for the values $1,\ldots,10$);
+  \item merge the two partial sums into the total, $15+40=55$.
+\end{enumerate}
+The merge is a \term*{reduction} (Lesson~1): many values combined by an
+associative operation into one.\margin{With thousands of GPU threads the
+reduction becomes a tree: partial sums are combined in pairs over
+$\log_2$ rounds, within a warp through the shuffle operations of
+Lesson~5.}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-data-decomposition}
+  \caption{Data decomposition of the sum: each thread adds its half, then
+    the two partial sums are reduced to the total.}
+  \label{fig:l02-data-decomposition}
+\end{figure}
+
+\subsection{Reduction in shared memory and the race}
+
+In shared memory the reduction is naturally written as each thread adding
+its partial sum into one shared variable \texttt{sum}, initially~0.  The
+statement \texttt{sum += partial} is three machine operations: load
+\texttt{sum}, add, store \texttt{sum}.  If the two threads interleave as in
+\cref{tab:l02-race}, both load the initial~0, and the second store
+overwrites the first: the result is 40 (or 15, if the stores happen in the
+other order) instead of~55.
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{An interleaving of two unprotected updates of the shared
+    \texttt{sum}; one partial sum is lost.}
+  \label{tab:l02-race}
+  \begin{tabular}{llll}
+    \toprule
+    Step & Thread 1 (partial 15) & Thread 2 (partial 40) & \texttt{sum} \\
+    \midrule
+    1 & load \texttt{sum} $\to 0$ &                            & 0 \\
+    2 &                            & load \texttt{sum} $\to 0$ & 0 \\
+    3 & add: $0+15=15$             &                            & 0 \\
+    4 &                            & add: $0+40=40$             & 0 \\
+    5 & store 15                   &                            & 15 \\
+    6 &                            & store 40                   & 40 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[Data race, critical section]
+  A \term{data race}[データ競合] occurs when two threads access the same
+  variable without ordering and at least one access is a write; the
+  outcome depends on the interleaving.  A piece of code that accesses
+  shared data and must therefore be executed by one thread at a time is a
+  \term{critical section}[クリティカルセクション].
+\end{definition}
+
+\caution{In C and C++ a data race is undefined behaviour, not merely a
+wrong number: the compiler may assume it does not happen and, for
+instance, keep \texttt{sum} in a register across the whole loop.}
+
+\begin{definition}[Mutex]
+  A \term{mutex}[ミューテックス] (from \term{mutual exclusion}[相互排除])
+  is a \term{lock}[ロック] that at most one thread can hold.  A thread
+  \emph{locks} (acquires) the mutex before entering the critical section
+  and \emph{unlocks} (releases) it on leaving; a thread that finds the
+  mutex held waits.  With the update of \texttt{sum} inside a mutex, the
+  two additions happen one after the other and the result is~55.
+\end{definition}
+
+The low-level way to write this on a POSIX system is
+\term{POSIX threads (pthreads)}[POSIXスレッド], a C library of
+calls:\margin{Pthreads is IEEE POSIX 1003.1c (1995), a library with no
+compiler support; every thread and every lock is explicit.
+\cite{barney2026parallel}.}
+\begin{itemize}
+  \item \texttt{pthread\_create} starts a thread on a given function;
+  \item \texttt{pthread\_join} waits for a thread to finish;
+  \item \texttt{pthread\_mutex\_lock} and \texttt{pthread\_mutex\_unlock}
+    bracket the critical section.
+\end{itemize}
+Thread creation, data distribution, locking and joining are all the
+programmer's code, and each is a place for a bug.
+
+\subsection{The OpenMP version}
+
+OpenMP hides all of that behind one directive.\tip{Compiled without
+OpenMP support (no \texttt{-fopenmp}), the pragma is ignored and the
+program is the serial one; OpenMP can be added to a working serial program
+one loop at a time.}
+\begin{lstlisting}[language=C++, numbers=none]
+#include <iostream>
+#include <omp.h>
+int main() {
+  const int size = 1000;
+  int data[size];
+  for (int i = 0; i < size; ++i) data[i] = i + 1;
+  int sum = 0;
+  #pragma omp parallel for reduction(+:sum)
+  for (int i = 0; i < size; ++i) sum += data[i];
+  std::cout << "sum = " << sum << '\n';   // 500500
+  return 0;
+}
+\end{lstlisting}
+\texttt{parallel for} invokes the loop-parallelism pattern: it creates a
+team of threads, divides the iterations among them and joins the threads at
+the end of the loop.  \texttt{reduction(+:sum)} tells the compiler that \texttt{sum} is a
+reduction over \texttt{+}: every thread gets a private copy initialised to
+the identity~0, accumulates into it, and the copies are combined into the
+shared \texttt{sum} when the loop ends, with the combination protected
+(\texttt{*}, \texttt{max}, \texttt{min} and the bitwise and logical
+operators are allowed as well).
+
+\begin{definition}[Directive and clause]
+  An OpenMP directive has the form
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp directive [clause [clause] ...]
+\end{lstlisting}
+  The \textit{directive} names the construct (\texttt{parallel},
+  \texttt{for}, \texttt{critical}, \ldots); a \term{clause}[指示節]
+  modifies it (\texttt{reduction(+:sum)}, \texttt{num\_threads(4)},
+  \texttt{schedule(dynamic)}).  The compiler replaces each directive with
+  calls into the OpenMP runtime library, which creates, schedules and joins
+  the threads.
+\end{definition}
+
+\section{Scheduling, data sharing and synchronisation}
+\label{sec:l02-scheduling}
+
+The remaining four tasks of a shared-memory program, the thread count, the
+schedule, the sharing policy and the synchronisation, each have an OpenMP
+construct.\source{M2, OpenMP vs.\ MPI (part 2); PPP App.~A;
+\cite{openmp2021spec}.}
+
+\subsection{How many threads}
+
+The number of threads in a parallel region is set in one of three places:
+\begin{itemize}
+  \item outside the program, by the environment variable
+    \texttt{OMP\_NUM\_THREADS};
+  \item inside the program, by the library call
+    \texttt{omp\_set\_num\_threads()};
+  \item on one region, by the clause \texttt{num\_threads(}$n$\texttt{)}.
+\end{itemize}
+If nothing is set, the default is the hardware
+parallelism of the machine, i.e.\ the number of logical processors
+(hardware threads) the operating system reports.\margin{The default is
+implementation-defined \cite{openmp2021spec}; GCC's libgomp starts one
+thread per CPU available to the process \cite{gcc2026libgomp}, so a
+16-core CPU with two hardware threads per core starts 32 threads.}  More threads than cores is allowed: the operating
+system time-slices them, which is the situation the next example starts
+from.
+
+\subsection{Loop scheduling}
+
+A \texttt{parallel for} must decide which thread executes which
+iterations.  The decision matters when the threads do not progress at the
+same rate.
+
+\begin{example}[Threads that progress unevenly]
+  \label{ex:l02-schedule}
+  A loop of \num{600000} iterations of equal cost runs with 6 threads on a
+  machine with 4 cores.  The operating system places two threads on each
+  of cores 0 and~1 and one thread on each of cores 2 and~3, so the four
+  threads on the doubled-up cores each receive half a core.  Let $t$ be the
+  time a whole core needs for \num{100000} iterations.
+  \begin{itemize}
+    \item \emph{Static split}, \num{100000} iterations per thread: the
+      threads on cores 2 and~3 finish at time $t$, the four others at
+      $2t$.  The loop ends at $2t$, with two cores idle for half of it.
+    \item \emph{Ideal}: \num{600000} iterations spread over 4 cores is
+      \num{150000} per core, i.e.\ $1.5t$.
+    \item \emph{Dynamic, chunks of \num{1000}}: each thread takes the next
+      chunk when it finishes one.  A thread with a whole core takes chunks
+      twice as often as a thread with half a core, so all six finish within
+      about one chunk of $1.5t$, after \num{600} chunk requests.
+  \end{itemize}
+  The static schedule takes \SI{33}{\percent} longer than the dynamic
+  one here, purely from the uneven placement of the threads.
+\end{example}
+
+OpenMP's \texttt{schedule(}\textit{kind}\texttt{, }\textit{chunk}\texttt{)}
+clause selects the kind of schedule; the three used in practice are
+(\cref{fig:l02-schedule}):\margin{Two further kinds: \texttt{auto} leaves
+the choice to the compiler or runtime, \texttt{runtime} takes it from the
+environment variable \texttt{OMP\_SCHEDULE}.  \cite{openmp2021spec}.}
+\begin{description}
+  \item[static]  \term{static scheduling}[静的スケジューリング] divides the
+    iterations into chunks before the loop starts and assigns them to the
+    threads in a fixed round-robin order; with no chunk size, each thread
+    gets one contiguous block of about $N/\text{threads}$ iterations.  No
+    run-time cost, no adaptation.
+  \item[dynamic]  \term{dynamic scheduling}[動的スケジューリング] hands out
+    chunks of the given \term{chunk size}[チャンクサイズ] (default~1) on
+    request: a thread that finishes its chunk asks for the next.  Chunk
+    size~1 adapts best but pays the cost of a request, an atomic update
+    of a shared counter, for every iteration; \num{1000} amortises that
+    cost over a thousand iterations.
+  \item[guided]  \term{guided scheduling}[ガイド付きスケジューリング]
+    starts with large chunks and shrinks them as the loop proceeds (for
+    instance from \num{1000} down to \num{100}): the early large chunks
+    keep the request cost low, the late small ones even out the finish
+    times.\margin{The guided chunk is proportional to the remaining
+    iterations divided by the number of threads, never below the
+    \textit{chunk} argument except for the final chunk.
+    \cite{openmp2021spec}.}
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-schedule}
+  \caption{Three loop schedules for four threads.  Static assigns one
+    block per thread in advance; dynamic hands out fixed chunks in the
+    order the threads ask for them; guided hands out shrinking chunks.}
+  \label{fig:l02-schedule}
+\end{figure}
+
+Dynamic and guided scheduling adapt to anything that makes threads
+unequal at run time: uneven placement as in \cref{ex:l02-schedule}, a
+slower machine in a heterogeneous cluster, iterations of varying cost, or
+interference from other programs.  Keeping all threads busy until the end
+is \term{load balancing}[負荷分散]; the time of a parallel loop is the
+time of its slowest thread.\tip{Regular loops with equal iterations:
+\texttt{static}.  Irregular or unknown cost: \texttt{dynamic} with a chunk
+large enough that a request costs far less than a chunk; \texttt{guided}
+when the iteration count is large.}
+
+\subsection{Data sharing}
+
+In the sum, each thread's partial sum must be its own copy, while the
+total is one location.  OpenMP calls the first a
+\term{private variable}[プライベート変数] (one instance per thread, as
+with the \texttt{reduction} copies) and the second a
+\term{shared variable}[共有変数] (one instance seen by all).  The
+programmer states the policy with the \texttt{private(\ldots)} and
+\texttt{shared(\ldots)} clauses; by default, variables declared outside the
+parallel region are shared and the loop index is
+private.\caution{A variable left shared by the default and written in the
+loop is a data race.  \texttt{default(none)} forces every variable to be
+listed explicitly and turns the omission into a compile error.}
+
+\subsection{Synchronisation}
+
+Synchronisation is what makes the shared-memory program correct: it orders
+the accesses of different threads to shared data.  OpenMP provides three
+constructs.
+
+\begin{description}
+  \item[Barrier]  A \term{barrier}[バリア] is a point that every thread
+    of the team must reach before any of them continues
+    (\cref{fig:l02-barrier}): the work after the barrier (green) does not
+    start until all the work before it (blue) has finished.  It is written
+    \texttt{\#pragma omp barrier}; the end of a \texttt{parallel} region
+    is always an implicit barrier, and so is the end of a \texttt{for},
+    \texttt{sections} or \texttt{single} construct unless a
+    \texttt{nowait} clause removes it.\margin{CUDA's
+    \texttt{\_\_syncthreads()} (Lesson~3) is a barrier over the threads
+    of one block; a barrier over the whole grid exists only through
+    cooperative groups with a cooperative launch (Lesson~5).}
+  \item[Critical]  \texttt{\#pragma omp critical [(\textit{name})]} makes
+    the following block a critical section: one thread at a time executes
+    it, the others wait at its entry (\cref{fig:l02-critical}).  With four
+    threads in the region, the four executions of the block are
+    serialised back to back.  Critical sections with different names may
+    run concurrently; unnamed ones all share one lock.
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp parallel num_threads(4)
+{
+  // parallel work ...
+  #pragma omp critical
+  {
+    shared_total += local_value;   // one thread at a time
+  }
+}
+\end{lstlisting}
+  \item[Atomic]  \texttt{\#pragma omp atomic} makes the single update
+    that follows it an \term{atomic operation}[アトミック操作]: its load,
+    add and store happen as a whole or not at all, so no other thread's
+    update can slip between them.  It is implemented with a hardware
+    read-modify-write instruction where one exists and with a lock
+    otherwise, and is cheaper than a critical section when it
+    applies.\margin{CUDA's \texttt{atomicAdd()} plays the same role on
+    the GPU; Lesson~5 lists it among the operations to use sparingly.}
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp parallel for
+for (int i = 0; i < n; ++i) {
+  #pragma omp atomic
+  counter++;          // load, add, store as one unit
+}
+\end{lstlisting}
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-barrier}
+  \caption{A barrier: no thread starts phase 2 before all five have
+    finished phase 1.}
+  \label{fig:l02-barrier}
+\end{figure}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-critical}
+  \caption{Four threads and one critical section: the red executions never
+    overlap, the rest of the work does.}
+  \label{fig:l02-critical}
+\end{figure}
+
+\caution{\texttt{atomic} covers one scalar update of the forms
+\texttt{x++}, \texttt{x += e} and the like.  Two statements, or an update
+of two variables that must stay consistent, need \texttt{critical}.}
+
+\subsection{Work outside loops}
+
+Not all parallel work is a loop: \term{parallel sections}[並列セクション]
+runs independent blocks of code concurrently, one thread per
+section:\margin{OpenMP 3.0 (2008) added \texttt{\#pragma omp task}, which
+generalises \texttt{sections} to a dynamic set of tasks, the master/worker
+pattern of \cref{sec:l02-patterns}.  \cite{openmp2021spec}.}
+\begin{lstlisting}[language=C++, numbers=none]
+#pragma omp parallel sections
+{
+  #pragma omp section
+  { work_1(); }
+  #pragma omp section
+  { work_2(); }
+}
+\end{lstlisting}
+Two further constructs restrict, rather than create, parallelism:
+\begin{description}
+  \item[ordered]  Inside a loop declared \texttt{for ordered}, the block
+    marked \texttt{\#pragma omp ordered} executes in iteration order even
+    though the rest of each iteration runs in parallel.\caution{Everything
+    inside the \texttt{ordered} block is serialised; a loop whose body is
+    mostly ordered gains nothing from being parallel.}  A loop that prints
+    \enquote{thread $k$ is doing iteration $i$} from five threads prints
+    its lines in an arbitrary order (1, 2, 4, 3, 5, say) without
+    \texttt{ordered} and as 1, 2, 3, 4, 5 with it.
+  \item[single]  \texttt{\#pragma omp single} runs the block on exactly
+    one thread of the team, unspecified which, while the others skip it
+    and wait at the implicit barrier after it; typical for a one-time
+    initialisation or a message inside a parallel region.\tip{When the
+    other threads need not wait for the \texttt{single} block,
+    \texttt{single nowait} drops its barrier; the next \texttt{for} or
+    \texttt{barrier} still orders everything.}
+\end{description}
+
+\begin{keypoint}
+  OpenMP makes the five decisions of a shared-memory program explicit:
+  \texttt{parallel for} (what), \texttt{OMP\_NUM\_THREADS} (how many),
+  \texttt{schedule} (who does which iteration), \texttt{private}/\texttt{shared}
+  (whose data), and \texttt{barrier}/\texttt{critical}/\texttt{atomic}
+  (in what order).  The same five decisions return in CUDA as the kernel,
+  the launch configuration, the block scheduler, the memory spaces and
+  \texttt{\_\_syncthreads()}.
+\end{keypoint}
+
+\section{Programming with MPI}
+\label{sec:l02-mpi}
+
+CUDA programming combines the two models of \cref{sec:l02-openmp}: some
+memory regions are shared among all the cores of a GPU, while others are
+invisible from outside and need explicit communication.  A GPU programmer
+therefore needs the distributed-memory habits as much as the shared-memory
+ones, which is why message passing is introduced here.\source{M2,
+programming with MPI; PPP App.~B; \cite{barney2026parallel}, message
+passing model; PMPP ch.~20.}
+
+\subsection{Processes and messages}
+
+\begin{definition}[MPI]
+  \term{MPI (Message Passing Interface)}[MPI] is the standard library for
+  \term{message passing}[メッセージパッシング]: a set of
+  \term{process}[プロセス]es, each with its own address space, on the
+  same node or on different nodes, exchange data only by sending and
+  receiving messages.
+  Each process is identified by its \term{rank}[ランク], an integer from
+  0 to the number of processes minus~1.\margin{MPI Forum 1992; MPI-1
+  1994; version 4.1 (2023) is cited here, 5.0 (2025) is current.
+  \cite{barney2026parallel}.}
+\end{definition}
+
+Two kinds of operation cover most of the library
+(\cref{fig:l02-mpi-messages}):
+\begin{description}
+  \item[Point-to-point]  \term{point-to-point communication}[1対1通信]
+    involves exactly two processes:\margin{A message costs a latency
+    (sending a 0-byte message, typically microseconds) plus the size
+    divided by the bandwidth; many small messages are far worse than one
+    large one.  \cite{barney2026parallel}.} process~0 calls
+    \texttt{MPI\_Send()} with an integer and the destination rank~1;
+    process~1 calls \texttt{MPI\_Recv()} naming source rank~0 and obtains
+    the value.  The message is delivered only to a matching receive posted
+    by the destination; both sides take part in every transfer.
+  \item[Collective]  \term{collective communication}[集団通信] involves
+    every process of a group at once.  The simplest is the
+    \term{broadcast}[ブロードキャスト], \texttt{MPI\_Bcast()}: the root
+    process's value is delivered to all the other processes; all of them
+    call the same function.\margin{Other collectives: \emph{scatter}
+    (split one array among the ranks), \emph{gather} (the reverse) and
+    \emph{reduce} (combine one value per rank, e.g.\ a global sum).
+    \cite{mpi2023standard}.}
+\end{description}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-mpi-messages}
+  \caption{Point-to-point (left) and collective (right) communication in
+    MPI.}
+  \label{fig:l02-mpi-messages}
+\end{figure}
+
+A minimal program shows both calls.  The same executable is started
+once per process (\texttt{mpirun -np 4 ./a.out} starts four), every copy
+runs it from the top, and the rank is the only thing that tells the
+copies apart and decides what each one does (SPMD again).
+\begin{lstlisting}[language=C, numbers=none]
+#include <mpi.h>
+int main(int argc, char **argv) {
+  int rank, value = 0;
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  if (rank == 0) {
+    value = 42;
+    MPI_Send(&value, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
+  } else if (rank == 1) {
+    MPI_Recv(&value, 1, MPI_INT, 0, 0, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+  }
+  MPI_Bcast(&value, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Finalize();
+  return 0;
+}
+\end{lstlisting}
+
+\subsection{A stencil over distributed data}
+
+\begin{definition}[Stencil]
+  A \term{stencil}[ステンシル] computation updates every element of a
+  grid from a fixed pattern of its neighbours.  The example here replaces
+  each element $C$ by the average of its four neighbours, north, west,
+  east and south (\cref{fig:l02-stencil-halo}, left):
+  \begin{equation}
+    C' = \frac{N + W + E + S}{4}.
+    \label{eq:l02-stencil}
+  \end{equation}
+\end{definition}
+
+Stencils are common in high-performance computing (finite-difference
+solvers, image filters).\margin{Stencils are named by their point count:
+this is the 5-point stencil (most variants read the centre too), and
+\cref{eq:l02-stencil} is one Jacobi sweep for the discrete Laplace
+equation, i.e.\ steady-state heat conduction.  Image convolution with a
+$3\times3$ filter is a 9-point stencil, Lesson~3.}
+
+When the grid is distributed over four processes, each process owns one
+quadrant and can access only that (\cref{fig:l02-stencil-halo}, left).  An
+element $C$ at the edge of process~2's region needs neighbour~1, which
+belongs to process~0, and neighbour~3, which belongs to process~3.  No
+load can fetch them; they must arrive by message.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l02-stencil-halo}
+  \caption{A stencil on a grid distributed over four processes.  Left:
+    the element $C$ and its four neighbours straddle three regions.
+    Right: process~2's region with the halo cells (grey) received from
+    processes 0 and~3 before the update.}
+  \label{fig:l02-stencil-halo}
+\end{figure}
+
+\begin{definition}[Halo and boundary exchange]
+  The cells of a neighbouring region that a process reads but does not
+  own form its \term{halo (ghost cells)}[ハロー領域]: for a stencil of
+  radius~1, one row or column along each shared edge
+  (\cref{fig:l02-stencil-halo}, right).  Before each update step the
+  processes perform a \term{boundary exchange}[境界交換]: every process
+  sends the edge cells its neighbours need and receives its halo from
+  them, after which every stencil read is local.\margin{Each process sends
+  and receives one message per neighbouring edge per step: with a
+  $2\times2$ decomposition, two sends and two receives.  Doubling the
+  stencil radius doubles the halo width, not the message count.}
+\end{definition}
+
+Whenever a data dependence crosses the boundary between processes, this
+exchange is the price of distributed memory.  The same structure returns
+in Lesson~3: a CUDA thread block owns a tile of the grid in its shared
+memory and must load the halo around the tile before computing, except
+that there the halo is read from global memory rather than received in a
+message.\caution{A process may not read a halo cell before the message
+carrying it has arrived, nor send its edge cells before it has updated
+them: a distributed stencil alternates communication and computation,
+and only the interior cells can be updated while the halo is still in
+flight.}
+
+\begin{keypoint}[Lesson summary]
+  Parallel programs reuse a few patterns: master/worker with a task
+  queue, loop parallelism, SPMD, fork/join and pipeline.  In shared
+  memory, threads communicate through one address space and OpenMP
+  annotates a serial program with directives for parallel loops, thread
+  count, scheduling (static, dynamic, guided), data sharing (private,
+  shared) and synchronisation (barrier, critical, atomic); an unprotected
+  update of a shared variable is a data race.  In distributed memory,
+  processes identified by rank exchange messages with MPI, point-to-point
+  (\texttt{MPI\_Send}/\texttt{MPI\_Recv}) or collectively
+  (\texttt{MPI\_Bcast}).  A distributed stencil needs a boundary exchange
+  of halo cells before every step, the model for the halo loading of a
+  CUDA tile in Lesson~3.
+\end{keypoint}
+
+\end{document}

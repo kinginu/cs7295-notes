@@ -1,0 +1,37 @@
+% The master/worker pattern: a master sets up the problem, fills a task
+% queue (bag of tasks), launches workers, waits for them and collects the
+% results.  Workers dequeue tasks until the queue is empty.
+% Redraws lowyx m2l1_master_worker_pattern.
+% Usage: \input{figures/l02-master-worker}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \node[draw=ln-accent, thick, align=left, anchor=west, inner sep=3pt,
+        text width=31mm] (m) at (0,8)
+    {\textbf{\iflangja{マスタ}{Master}}\\[1pt]
+     1\ \iflangja{計算を開始}{initiate the computation}\\
+     2\ \iflangja{問題を設定}{set up the problem}\\
+     3\ \iflangja{タスクの袋を作る}{create the bag of tasks}\\
+     4\ \iflangja{ワーカを起動}{launch the workers}\\
+     5\ \iflangja{待つ}{wait}\\
+     6\ \iflangja{結果を集める}{collect the results}\\
+     7\ \iflangja{計算を終了}{terminate}};
+  % task queue
+  \node[draw=ln-muted, dashed, inner sep=0pt, minimum width=30mm,
+        minimum height=11mm] (q) at (58,12) {};
+  \node[above=1pt of q, text=ln-muted] {\iflangja{タスクキュー（タスクの袋）}{task queue (bag of tasks)}};
+  \foreach \i/\c in {0/yellow!60, 1/orange!60, 2/green!50, 3/blue!30, 4/red!35, 5/purple!30} {
+    \fill[\c, draw=ln-muted] (45+\i*4.6,8.5) rectangle (48.6+\i*4.6,15.5);
+  }
+  \node[font=\scriptsize\sffamily] at (46.8,12) {t};
+  % workers
+  \foreach \i in {0,1,2} {
+    \node[draw=ln-accent, thick, minimum width=14mm, minimum height=6mm]
+      (w\i) at (98,20-\i*8) {\iflangja{ワーカ}{Worker} \i};
+    \draw[->] (q.east) -- (w\i.west);
+  }
+  \node[text=ln-muted, anchor=west] at (76,24) {\iflangja{デキュー}{dequeue}};
+  \draw[->] (m.east |- q.west) -- (q.west) node[midway, above] {\iflangja{タスク}{tasks}};
+  % results back to the master
+  \draw[->, ln-accent] (w2.south) |- node[pos=0.25, right, text=ln-accent] {\iflangja{結果}{results}}
+    ([yshift=-3mm]m.south) -- (m.south);
+\end{tikzpicture}

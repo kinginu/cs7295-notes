@@ -1,0 +1,27 @@
+% The pipeline pattern: four work items pass through five stages; at any
+% time step up to four items are in different stages, like instructions in
+% a CPU pipeline.  Redraws lowyx m2l1_pipeline_pattern.
+% Usage: \input{figures/l02-pipeline}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \def\cw{8}  % cell width
+  \def\ch{6}  % cell height
+  % time axis
+  \draw[->] (16,1) -- (16+9*\cw,1) node[below left] {\iflangja{時間ステップ}{time step}};
+  \foreach \t in {1,...,8} {
+    \node[above, text=ln-muted] at (16+\t*\cw-\cw/2,1) {\t};
+  }
+  % rows: work items; each row shifted one step right
+  \foreach \r in {0,1,2,3} {
+    \node[anchor=east] at (15,-3-\r*\ch) {\iflangja{仕事}{Work} \the\numexpr\r+1\relax};
+    \foreach \s/\c in {0/red!40, 1/green!45, 2/purple!35, 3/yellow!60, 4/gray!40} {
+      \fill[\c, draw=ln-muted] (16+\r*\cw+\s*\cw,-\ch-\r*\ch)
+        rectangle (16+\r*\cw+\s*\cw+\cw,-\r*\ch);
+      \node at (16+\r*\cw+\s*\cw+\cw/2,-\ch/2-\r*\ch) {S\the\numexpr\s+1\relax};
+    }
+  }
+  % legend
+  \node[anchor=west, text=ln-muted, align=left] at (16,-31)
+    {S1\,--\,S5: \iflangja{パイプラインの段}{pipeline stages}
+     (\iflangja{例：伸長，処理，圧縮}{e.g.\ decompress, process, compress})};
+\end{tikzpicture}

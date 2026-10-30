@@ -1,0 +1,29 @@
+% MPI communication: point-to-point (left, MPI_Send on rank 0 matched by
+% MPI_Recv on rank 1) and a broadcast (right, MPI_Bcast delivers the root's
+% value to every other rank).  Redraws lowyx m2l4_mpi_programming and
+% m2l4_broadcasting.
+% Usage: \input{figures/l02-mpi-messages}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]},
+                    proc/.style={draw=ln-accent, thick, minimum width=17mm, minimum height=7mm, align=center},
+                    env/.style={draw=ln-accent, fill=white, inner sep=1pt, text=ln-accent}]
+  % point-to-point
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,16)
+    {\iflangja{1対1通信}{Point-to-point}};
+  \node[proc] (a) at (9,6) {\iflangja{プロセス}{Process} 0\\\texttt{MPI\_Send}};
+  \node[proc] (b) at (43,6) {\iflangja{プロセス}{Process} 1\\\texttt{MPI\_Recv}};
+  \draw[->, thick, ln-accent] (a.east) -- (b.west);
+  \node[env] at (26,6) {$\boxtimes$};
+  \node[below=1pt of a, text=ln-muted] {\iflangja{ランク}{rank} 0};
+  \node[below=1pt of b, text=ln-muted] {\iflangja{ランク}{rank} 1};
+  % broadcast
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (62,16)
+    {\iflangja{ブロードキャスト}{Broadcast}};
+  \node[proc] (r) at (73,6) {\iflangja{プロセス}{Process} 0\\\texttt{MPI\_Bcast}};
+  \foreach \i/\y in {1/14, 2/6, 3/-2} {
+    \node[proc, minimum width=15mm] (d\i) at (108,\y) {\iflangja{プロセス}{Process} \i};
+    \draw[->, thick, ln-accent] (r.east) -- (d\i.west);
+    \node[env] at (92,{6+(\y-6)*0.52}) {$\boxtimes$};
+  }
+  \node[below=1pt of r, text=ln-muted] {\iflangja{ルート}{root}};
+\end{tikzpicture}

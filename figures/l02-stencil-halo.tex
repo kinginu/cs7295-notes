@@ -1,0 +1,55 @@
+% A four-point stencil on a 10 x 8 grid split among four processes (left):
+% the element C in the blue region needs neighbour 1 from the orange region
+% and neighbour 3 from the green region.  Right: the blue region with its
+% one-cell halo (grey) received from the neighbouring processes.
+% Redraws lowyx m2l4_stencil, m2l4_stencil2 and m2l4_stencil3.
+% Usage: \input{figures/l02-stencil-halo}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \def\s{3.4}  % cell size
+  % ---- left: full grid, four quadrants (rows counted from the top)
+  \foreach \r in {1,...,8} {
+    \foreach \c in {1,...,10} {
+      \ifnum\r<5
+        \ifnum\c<6 \def\col{orange!45}\else \def\col{yellow!60}\fi
+      \else
+        \ifnum\c<6 \def\col{blue!30}\else \def\col{green!45}\fi
+      \fi
+      \fill[\col, draw=white, line width=0.3pt] ({(\c-1)*\s},{-\r*\s}) rectangle ({\c*\s},{-(\r-1)*\s});
+    }
+  }
+  \draw[ln-muted] (0,0) rectangle (10*\s,-8*\s);
+  \draw[ln-muted, thick] (5*\s,0) -- (5*\s,-8*\s);
+  \draw[ln-muted, thick] (0,-4*\s) -- (10*\s,-4*\s);
+  \foreach \c/\r/\t in {5/5/C, 5/4/1, 4/5/2, 6/5/3, 5/6/4} {
+    \node[font=\scriptsize\sffamily\bfseries] at ({(\c-0.5)*\s},{-(\r-0.5)*\s}) {\t};
+  }
+  \node[text=ln-muted] at (2.5*\s,1.8) {P0};
+  \node[text=ln-muted] at (7.5*\s,1.8) {P1};
+  \node[text=ln-muted] at (-2.5,-6*\s) {P2};
+  \node[text=ln-muted] at (10*\s+2.5,-6*\s) {P3};
+  \node[anchor=north, text=ln-muted, align=center] at (5*\s,-8*\s-1)
+    {\iflangja{4プロセスに分割した格子}{grid split among four processes}};
+  % ---- right: the blue region plus its halo
+  \begin{scope}[shift={(52,0)}]
+    \foreach \c in {1,...,5} {
+      \fill[gray!45, draw=white, line width=0.3pt] ({(\c-1)*\s},{-4*\s}) rectangle ({\c*\s},{-3*\s});
+    }
+    \foreach \r in {5,...,8} {
+      \fill[gray!45, draw=white, line width=0.3pt] ({5*\s},{-\r*\s}) rectangle ({6*\s},{-(\r-1)*\s});
+      \foreach \c in {1,...,5} {
+        \fill[blue!30, draw=white, line width=0.3pt] ({(\c-1)*\s},{-\r*\s}) rectangle ({\c*\s},{-(\r-1)*\s});
+      }
+    }
+    \draw[ln-muted] (0,-4*\s) rectangle (5*\s,-8*\s);
+    \foreach \c/\r/\t in {5/5/C, 5/4/1, 4/5/2, 6/5/3, 5/6/4} {
+      \node[font=\scriptsize\sffamily\bfseries] at ({(\c-0.5)*\s},{-(\r-0.5)*\s}) {\t};
+    }
+    \draw[->, thick, ln-accent] (2.5*\s,-1.2*\s) -- (2.5*\s,-2.9*\s)
+      node[pos=0, above, text=ln-accent] {\iflangja{P0から}{from P0}};
+    \draw[->, thick, ln-accent] (8*\s,-6.5*\s) -- (6.2*\s,-6.5*\s)
+      node[pos=0, right, text=ln-accent] {\iflangja{P3から}{from P3}};
+    \node[anchor=north, text=ln-muted, align=center] at (3*\s,-8*\s-1)
+      {\iflangja{P2の領域とハロー（灰色）}{P2's region and its halo (grey)}};
+  \end{scope}
+\end{tikzpicture}

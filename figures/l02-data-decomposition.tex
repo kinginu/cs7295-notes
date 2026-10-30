@@ -1,0 +1,33 @@
+% Data decomposition of a 10-element sum over two cores, one thread per
+% core: each thread adds its half (a partial sum), then the two partial
+% sums are reduced to the total.  Redraws lowyx m2l2_data_decomposition2
+% and m2l2_manual_parallel.
+% Usage: \input{figures/l02-data-decomposition}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \def\cw{9}
+  % the array
+  \foreach \i in {0,...,9} {
+    \pgfmathsetmacro{\v}{int(\i+1)}
+    \ifnum\i<5 \def\c{orange!40}\else \def\c{blue!25}\fi
+    \fill[\c, draw=ln-muted] (20+\i*\cw,20) rectangle (20+\i*\cw+\cw,26);
+    \node at (20+\i*\cw+\cw/2,23) {\v};
+    \node[above, text=ln-muted, font=\scriptsize\sffamily] at (20+\i*\cw+\cw/2,26) {data[\i]};
+  }
+  % braces to cores
+  \draw[->, thick] (42.5,19) -- (42.5,13);
+  \draw[->, thick] (87.5,19) -- (87.5,13);
+  \node[draw=ln-accent, thick, minimum width=30mm, minimum height=9mm, align=center]
+    (c1) at (42.5,7) {\iflangja{コア1，スレッド1}{Core 1, thread 1}\\$1+2+3+4+5$};
+  \node[draw=ln-accent, thick, minimum width=30mm, minimum height=9mm, align=center]
+    (c2) at (87.5,7) {\iflangja{コア2，スレッド2}{Core 2, thread 2}\\$6+7+8+9+10$};
+  \node[below=4mm of c1, fill=orange!40, inner sep=2pt] (s1) {\iflangja{部分和}{partial sum} $=15$};
+  \node[below=4mm of c2, fill=blue!25, inner sep=2pt] (s2) {\iflangja{部分和}{partial sum} $=40$};
+  \draw[->] (c1) -- (s1);
+  \draw[->] (c2) -- (s2);
+  \node[draw=ln-accent, thick, fill=ln-box, inner sep=3pt] (t) at (65,-16)
+    {\iflangja{総和}{total} $=15+40=55$};
+  \draw[->] (s1.south) -- (t.west);
+  \draw[->] (s2.south) -- (t.east);
+  \node[text=ln-muted, anchor=west] at (90,-16) {\iflangja{リダクション}{reduction}};
+\end{tikzpicture}

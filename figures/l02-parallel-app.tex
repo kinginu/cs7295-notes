@@ -1,0 +1,32 @@
+% Creating a parallel application in three steps: the original program's
+% work is divided and its data structures adjusted, then the pieces are
+% distributed to processors.  Redraws lowyx m2l1_parallelapp.
+% Usage: \input{figures/l02-parallel-app}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  % panel 1: original program
+  \node[anchor=south, font=\scriptsize\sffamily\bfseries, align=center]
+    at (12,21) {\iflangja{元のプログラム}{Original program}};
+  \fill[yellow!45, draw=ln-muted] (3,0) rectangle (21,18);
+  \fill[orange!55, draw=ln-muted] (3,-3) rectangle (21,-1);
+  \fill[green!45, draw=ln-muted] (3,-6) rectangle (21,-4);
+  \draw[->, thick] (24,8) -- (31,8);
+  % panel 2: divided work
+  \node[anchor=south, font=\scriptsize\sffamily\bfseries, align=center]
+    at (47.5,21) {\iflangja{仕事を分割し\\データ構造を調整}{Divide the work,\\adjust the data structures}};
+  \foreach \i in {0,...,5} {
+    \fill[yellow!45, draw=ln-muted] (35+\i*4.3,0) rectangle (38.5+\i*4.3,18);
+  }
+  \fill[orange!55, draw=ln-muted] (35,-3) rectangle (47,-1);
+  \fill[orange!55, draw=ln-muted] (48,-3) rectangle (60,-1);
+  \fill[green!45, draw=ln-muted] (35,-6) rectangle (60,-4);
+  \draw[->, thick] (63,8) -- (70,8);
+  % panel 3: processors
+  \node[anchor=south, font=\scriptsize\sffamily\bfseries, align=center]
+    at (93,21) {\iflangja{仕事を配る}{Distribute the work}};
+  \foreach \i in {0,...,5} {
+    \draw[ln-accent, thick] (74+\i*6.6,2) rectangle (79.4+\i*6.6,14);
+    \node at (76.7+\i*6.6,8) {P\i};
+  }
+  \node[text=ln-muted] at (93,-2) {\iflangja{プロセッサ}{processors}};
+\end{tikzpicture}

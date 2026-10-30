@@ -1,0 +1,38 @@
+% How the three OpenMP loop schedules hand out an iteration space to four
+% threads: static gives each thread one contiguous block; dynamic hands out
+% fixed chunks on request, so the assignment order is not predictable;
+% guided starts with large chunks and shrinks them.  Original.
+% Usage: \input{figures/l02-schedule}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \def\W{88}   % width of the iteration space
+  \def\H{5}
+  % iteration axis
+  \draw[->] (26,13) -- (26+\W+3,13);
+  \node[above, text=ln-muted] at (26+\W/2,13) {\iflangja{反復}{iteration}};
+  \node[above, text=ln-muted] at (26,13) {0};
+  \node[above, text=ln-muted] at (26+\W,13) {$N$};
+  % static
+  \node[anchor=east] at (24,8) {\texttt{static}};
+  \foreach \i/\c in {0/blue!35, 1/orange!55, 2/green!45, 3/red!35} {
+    \fill[\c, draw=ln-muted] (26+\i*\W/4,5.5) rectangle (26+\i*\W/4+\W/4,10.5);
+    \node at (26+\i*\W/4+\W/8,8) {T\i};
+  }
+  % dynamic, chunk c: 16 chunks in an irregular thread order
+  \node[anchor=east] at (24,0) {\texttt{dynamic,}$c$};
+  \foreach \i/\c in {0/blue!35, 1/orange!55, 2/green!45, 3/red!35, 4/orange!55, 5/blue!35,
+                     6/red!35, 7/orange!55, 8/green!45, 9/blue!35, 10/orange!55, 11/red!35,
+                     12/blue!35, 13/green!45, 14/orange!55, 15/blue!35} {
+    \fill[\c, draw=ln-muted] (26+\i*\W/16,-2.5) rectangle (26+\i*\W/16+\W/16,2.5);
+  }
+  \draw[<->] (26,-4) -- (26+\W/16,-4) node[midway, below, text=ln-muted] {$c$};
+  % guided: shrinking chunks
+  \node[anchor=east] at (24,-10) {\texttt{guided}};
+  \foreach \a/\b/\c in {0/22/blue!35, 22/39/orange!55, 39/52/green!45, 52/62/red!35,
+                        62/70/orange!55, 70/76/blue!35, 76/80/green!45, 80/83/red!35,
+                        83/85.5/orange!55, 85.5/88/blue!35} {
+    \fill[\c, draw=ln-muted] (26+\a,-12.5) rectangle (26+\b,-7.5);
+  }
+  \node[anchor=west, text=ln-muted, align=left] at (26,-17)
+    {\iflangja{色＝そのチャンクを実行するスレッド T0--T3}{colour = the thread T0--T3 that runs the chunk}};
+\end{tikzpicture}
