@@ -90,7 +90,8 @@ What each chapter summarizes, in the order the chapters follow.
   the lowyx course-review post, OMSCentral reviews and student project
   repositories.  They only define the exclusion boundary and are never the
   source of book text.
-- **Textbook / reference** (cite with the section, e.g. "K12 §1.4.2"):
+- **Textbook / reference** (reference forms and the `textbook=` /
+  `sources=` split: see Conventions specific to this book):
   - Kim et al., *Performance Analysis and Tuning for General Purpose
     Graphics Processing Units (GPGPU)* (`kim2012gpgpu`; "K12"), the
     course's own text: ch. 1 assigned in M1 (§1.4 also backs M4/M6),
@@ -132,8 +133,8 @@ What each chapter summarizes, in the order the chapters follow.
   `huang2014gpumech`, `karkhanis2004firstorder`;
   M9 `arunkumar2017mcmgpu`, `yu2022multitenant`, `ye2024dlsched`;
   M12 `dao2022flashattention`, `dao2023flashattention2`,
-  `cambier2020s2fp8`.  The outline says per unit what each lesson takes
-  from them.  IEEE 754-2019 has no bib entry yet: add one before citing it.
+  `cambier2020s2fp8`; M12 also `ieee754-2019` (IEEE 754-2019).  The
+  outline says per unit what each lesson takes from them.
 
 ## Code
 
@@ -154,6 +155,29 @@ What each chapter summarizes, in the order the chapters follow.
   listings.  The M8 simulator screenshots (MacSim) are project code: never
   reproduce them, use generic pseudocode.  No Python: the lectures show
   none, and Python implementations of the M10/M11 analyses are excluded.
+
+## Conventions specific to this book
+
+- **Units**: memory capacities, page sizes, cache, shared-memory and
+  register-file sizes are binary, set with `\SI` and IEC prefixes
+  (`\SI{228}{\kibi\byte}`, `\SI{2}{\mebi\byte}` pages, `\gibi`).
+  Bandwidths, FLOP/s, clock rates and instruction counts are decimal
+  (GB/s, TB/s, TFLOP/s, GHz: `\SI{3}{\tera\byte\per\second}`).
+- **`\lessoninfo`**: `textbook=` holds only the books and NVIDIA guides
+  (K12, A18, PMPP, CPG, BPG).  Papers, whitepapers, blog posts and other
+  NVIDIA documents (PTX ISA, GEMM guide, MPS overview) go in `sources=`.
+- **Citations**: every external document is `\cite`d with a bib key; the
+  inline forms of style guide §2 (man pages, vendor manuals) are not
+  used.  A document without a bib entry gets one before it is cited.
+- **Reference forms**: `K12 §1.4.2`; `A18 ch.~3` (chapters only, its
+  section headings are unverified); `CPG §3.2 <section title>` (legacy
+  12.4 numbering, title always included); `BPG §9.2 <section title>`;
+  papers and whitepapers by `\cite` plus a page or section where useful
+  (`\cite[§4]{rogers2012ccws}`).
+- **Figure headers**: besides the style guide §4 fields, every figure
+  file's header comment names the outline figure it redraws (the lowyx
+  slide file name from `docs/dossier/outline.md`), or says `original`.
+- **Japanese**: no exceptions to style guide §6.
 
 ## Excluded
 
@@ -204,7 +228,7 @@ with their sources; use it.
 
 - CUDA limits per compute capability (warp size 32, 1024 threads per
   block, 64/48/32 warps per SM, 65,536 registers per SM, 255 registers per
-  thread, shared memory per SM 96–228 KB, 32 banks) — CPG Table 21, HWP
+  thread, shared memory per SM 96–228 KiB, 32 banks) — CPG Table 21, HWP
   Table 4, BPG §10.2;
 - data-centre GPU generations P100/V100/A100/H100 (SMs, FP32 and tensor
   cores per SM, tensor TFLOPS, HBM bandwidth 720 GB/s to 3 TB/s, L2,
@@ -215,7 +239,7 @@ with their sources; use it.
 - interconnect (NVLink generations, NVLink 4 = 7× PCIe Gen 5, MIG up to 7
   instances, MPS client limits) — nvidia.com, HWP, MPS overview;
 - virtual memory (UVM fault latency 20–50 µs, batches 223–553 µs; TLB
-  reach of 2 MB pages; GPU MMU results) — `kim2020batch`,
+  reach of 2 MiB pages; GPU MMU results) — `kim2020batch`,
   `ganguly2019interplay`, `power2014x86`;
 - research results the lectures present (read-once register values up to
   70 %, CCWS −25 % L1D misses, Photon 7.05 days to 1.7 h) —
@@ -243,7 +267,7 @@ Back matter:
   capability table for CC 7.0–9.0 (CPG Table 21; HWP Table 4); C. NVIDIA
   data-centre GPU comparison P100–H100 (AWP Table 4, HWP Table 3; H100
   preliminary); D. PTX cheat sheet (PTX ISA); E. floating-point formats
-  FP64 to INT4 (AWP, HWP; IEEE 754 needs a bib entry); F. data-flow
+  FP64 to INT4 (AWP, HWP, `ieee754-2019`); F. data-flow
   analysis summary table (reaching definitions vs liveness, M11.1);
   G. performance-model formulas (occupancy, Amdahl, bandwidth, Roofline,
   CPI stack, MWP/CWP, GEMM arithmetic intensity); H. reading guide, one
