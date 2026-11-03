@@ -1,0 +1,1019 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPUプログラミングの最適化技法}
+\lessoninfo{
+  video={M5，レッスン 1（Advanced GPU Programming）},
+  sources={\cite{harris2013sharedmem}（必読）；\cite{kipfer2005gpusort}（必読，概念のレベル）；\cite{harris2012datatransfer}，\cite{harris2015streams}，\cite{nvidia2026nsightsystems}，\cite{nvidia2026nsightcompute}（任意）},
+  textbook={A18 \cite{aamodt2018gpu} ch.~3；BPG \cite{nvidia2026cudabestpractices} §9 Performance Metrics，§10 Memory Optimizations，§11 Execution Configuration Optimizations；K12 \cite{kim2012gpgpu} ch.~3，§4.1；CPG \cite{nvidia2024cudaguide} §5 Performance Guidelines；PMPP \cite{hwu2022pmpp} ch.~6},
+  keywords={プロファイリング，ホットスポット，データ転送，ピン留めメモリ，非同期コピー，CUDAストリーム，ゼロコピー，UVA，実効帯域幅，組み込み関数，プレディケート実行，ワープシャッフル，ワープ投票，Cooperative Groups，独立スレッドスケジューリング，cuBLAS，ソーティングネットワーク},
+}
+
+第3章では CUDA プログラミングモデルを，第4章ではそれを実行する
+ハードウェア，すなわちマルチスレッド SM，そのレジスタと共有メモリの
+バンク，パイプライン，グローバルメモリアクセスのコアレッシングを導入した．
+本章はその知識を，CUDA プログラムを高速にするための方法に変える．まず，
+そもそもどのようなプログラムが GPU に向いているかという問いと，
+プログラムがどこで時間を費やしているかを示すプロファイラから始める．
+GPU プログラムの時間は，ホストとデバイスの間のデータ転送，デバイス上の
+メモリアクセス，計算の3つの部分から成り，本章はそれぞれについて
+チェックリストを与える．転送にはピン留めメモリ，非同期コピー，
+ストリーム，メモリアクセスにはコアレッシング，アラインメント，
+バンク競合，計算にはより安価な命令，低い精度，組み込み関数，分岐の削減，
+アトミック操作の削減を挙げる．続いて，古いコストを取り除く新しい CUDA の
+機能（ワープシャッフルと投票，Cooperative Groups，独立スレッド
+スケジューリング，クラスタ，分割バリア），手書きのカーネルより優先すべき
+ライブラリ，ほかの GPU プログラミングプラットフォームを概観し，最後に
+指定文献のソーティングネットワークを扱う．これは GPU に合わせて形を
+変えたアルゴリズムの古典的な例である．第6章と第7章はこの水準より下へ
+進み，ダイバージェンス，レジスタファイル，ワープスケジューリングの背後に
+あるハードウェア機構を扱う．
+
+\section{GPU に向くプログラムと時間の内訳}
+\label{sec:l05-profiling}
+
+すべてのプログラムが GPU の恩恵を受けるわけではない．\source{M5，GPU
+向きのプログラムとプロファイリング；BPG §9.1 Timing；K12 §3.5．}
+GPU でよく動くプログラムは3つの性質を持つ．
+\begin{itemize}
+  \item \textbf{大規模なデータ並列性}：同じ操作が多数の独立なデータ要素に
+    適用され，その数は数千のスレッドを埋めるのに十分である（第1章と
+    第2章）；
+  \item 計算に比べて\textbf{ホスト--デバイス間の通信が少ない}：I/O
+    インタフェースを通して移動するデータが全体のコストに占める割合が
+    小さい；
+  \item \textbf{コアレスされたグローバルメモリアクセス}：隣り合うスレッドが
+    隣り合うアドレスに触れる（第4章）．
+\end{itemize}
+第1の性質を欠くプログラムにはレーンに与える仕事がなく，第2または第3の
+性質を欠くプログラムは，SM がどれほど速くてもバスまたはメモリシステムで
+制限される．\margin{アムダールの法則（第1章）は第2の性質を定量的に
+表したものである．ホスト--デバイス間の転送は，オーバーラップできない
+限り逐次部分の一部である（\cref{sec:l05-transfer}）．}
+
+\subsection{プロファイリング}
+
+最適化は測定から始まる．
+
+\begin{definition}[プロファイリング，ホットスポット]
+  プログラムがどこで時間を費やし，実行中にハードウェアが何をしているかを
+  測定することを\term[ぷろふぁいりんぐ]{プロファイリング}[profiling]
+  といい，その測定を収集するツールを
+  \term[ぷろふぁいら]{プロファイラ}[profiler]という．
+  \term[ほっとすぽっと]{ホットスポット}[hotspot]とは，プログラムの
+  うち全体の時間の大きな割合を占め，したがって最適化する価値のある部分
+  （ループ，関数，カーネル）である．
+\end{definition}
+
+プロファイリングは2つの意味で最初に来る．コードを移植する前には
+\emph{CPU} のプログラムをプロファイルし，GPU が高速化できるホット
+スポットを見つける．データ並列なホットスポットだけを移し，残りはホストに
+とどめる．カーネルがデバイス上で動くようになったら，GPU のプロファイラが
+その内部のボトルネックの位置を示すメトリクスを報告する
+（\cref{tab:l05-metrics}）．\tip{変更のたびに前後で測定する．カーネル
+起動と非同期コピーは処理が終わる前にホストに戻るので，CPU のタイマは
+\texttt{cudaDeviceSynchronize()} で挟むか，CUDA イベント
+（\texttt{cudaEventElapsedTime}）でデバイス上の時間を測る；BPG §9.1
+Timing．}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{本章で扱うプロファイラのメトリクス，悪い値が示すこと，
+    本書で対策を扱う箇所．}
+  \label{tab:l05-metrics}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{28mm}
+                  >{\raggedright\arraybackslash}p{52mm}
+                  >{\raggedright\arraybackslash}p{26mm}}
+    \toprule
+    メトリクス & 悪い値の意味 & 対策 \\
+    \midrule
+    スループット（命令，FLOP/s） & SM が遊んでいる：並列性が不足して
+      いるか，メモリでストールしている & \cref{sec:l05-compute}，第3章 \\
+    ダイバージェント分岐 & ワープのレーンが異なる経路をたどり，
+      順番に実行する & \cref{sec:l05-compute}，第6章 \\
+    コアレスされない（\enquote{ダイバージェントな}）メモリアクセス &
+      1回のワープロードが多数のメモリトランザクションになる &
+      \cref{sec:l05-memory}，第4章 \\
+    占有率 & レイテンシを隠すための常駐ワープが少なすぎる & 第3章 \\
+    帯域幅の利用率 & 達成帯域幅がピークよりはるかに低い：アクセス
+      パターンが悪いか，カーネルがメモリ律速でない &
+      \cref{sec:l05-memory} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[Nsight Systems，Nsight Compute]
+  NVIDIA のプロファイラは，アプリケーション全体のタイムライン（CPU
+  スレッド，CUDA API 呼び出し，メモリコピー，各 GPU 上のカーネル）を
+  記録し，したがって\cref{sec:l05-transfer}の転送とオーバーラップの
+  問題を示す
+  \term[えぬさいとしすてむず]{Nsight Systems}[Nsight Systems]
+  \cite{nvidia2026nsightsystems}と，1つのカーネルを詳細にプロファイル
+  し（命令スループット，メモリトランザクション，占有率，バンク競合，
+  Roofline チャート），\cref{sec:l05-memory,sec:l05-compute}の問題を
+  示す
+  \term[えぬさいとこんぴゅーと]{Nsight Compute}[Nsight Compute]
+  \cite{nvidia2026nsightcompute}である．\margin{2つの Nsight ツールは
+  \texttt{nvprof} と Visual Profiler を置き換えた．これらは Compute
+  Capability 8.0 以降をサポートしない
+  \cite{nvidia2026profilerguide}．}
+\end{definition}
+
+\subsection{実行時間の3つの部分}
+
+GPU プログラムの実行時間は次のように分解される．
+\begin{equation}
+  T = T_{\text{transfer}} + T_{\text{memory}} + T_{\text{compute}},
+  \label{eq:l05-time}
+\end{equation}
+すなわち，ホストとデバイスの間でデータを移す時間，カーネルがデバイス
+メモリを待つ時間，計算に費やす時間である．3つすべてに取り組まなければ
+ならず，意外さの順もこの順である．素朴に移植したプログラムは，カーネルには
+まったく現れない第1項に支配されることが多い．この和は，3つの部分が
+直列化された素朴なプログラムを表している．\cref{sec:l05-transfer}の
+最適化は，第1項を短くするか，ほかの2項とオーバーラップさせる．以下の節は
+3つの項を順に扱う．ただし，それらすべてに先立つ第4の規則がある．計算を
+カバーするベンダのライブラリ（\cref{sec:l05-libraries}）があれば必ず
+それを使う．ライブラリには以下の最適化がすでに含まれているからである．
+
+\section{データ転送の最適化}
+\label{sec:l05-transfer}
+
+ディスクリート GPU は独自のメモリを持ち，ホストは I/O インタフェースを
+通してしかそこに到達できない（\cref{fig:l05-host-device}，左）．\source{M5，
+データ転送の最適化；BPG §10.1 Data Transfer Between Host and Device；
+\cite{harris2012datatransfer}；\cite{harris2015streams}．}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-host-device}\hspace{10mm}\input{figures/l05-pinned-staging}
+  \caption{左：ホストとデバイスのメモリは別々であり，明示的な転送は
+    すべて I/O インタフェースを通る．右：ページング可能なホストメモリ
+    からのコピーは，CPU によるピン留めされた中継バッファへのコピーと
+    DMA の2回のコピーである．ピン留めメモリからは1回の DMA で済む．}
+  \label{fig:l05-host-device}
+\end{figure}
+
+\begin{definition}[データ転送，PCIe]
+  ホストメモリとデバイスメモリの間でバッファをコピーすること
+  （\texttt{cudaMemcpy} とその変種）を
+  \term[でーたてんそう]{データ転送}[data transfer]という．それが通る
+  インタフェースは
+  \term[ぴーしーあいえくすぷれす]{PCI Express}[PCI Express (PCIe)]
+  （PCIe）であり，1--16レーンのシリアルなポイントツーポイントバスで，
+  その帯域幅はデバイスメモリより1--2桁低い．\sidenote{K12 §1.2 は PCIe
+  Gen~2 で1レーン当たり \SI{4}{\giga\bit\per\second}，Gen~3 で
+  \SI{8}{\giga\bit\per\second} とする．すなわち16レーンでは1方向当たり
+  約 \SI{8}{\giga\byte\per\second} と \SI{16}{\giga\byte\per\second}
+  である．V100 の HBM2 は \SI{898}{\giga\byte\per\second} を供給する
+  （BPG §9.2.1）．NVLink~4 は PCIe Gen~5 の $7\times$ とされる
+  \cite{nvidia2022hopper}；第9章．}
+\end{definition}
+
+素朴なプログラムは入力をデバイスにコピーし，カーネルを実行し，結果を
+コピーして戻す．3つのステップは順に行われる
+（\cref{fig:l05-transfer-timelines}，0行目）．4つの技法が2つのコピーを
+短縮するか隠す．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-transfer-timelines}
+  \caption{4つのデータ転送最適化の下での1つのジョブ．(0) 入力コピー，
+    カーネル，出力コピーを順に行う．(1) ピン留めメモリが両方のコピーを
+    短縮する．(2) 次の入力の非同期コピーが，SM が現在のカーネルを実行
+    している間にコピーエンジン上で進む．(3) ストリームが入力，カーネル，
+    出力をチャンクに分けてパイプライン化し，コピーエンジンと SM が同時に
+    働く．}
+  \label{fig:l05-transfer-timelines}
+\end{figure}
+
+\subsection{高速な転送：ピン留めメモリ}
+
+\begin{definition}[ピン留めメモリ]
+  オペレーティングシステムがページアウトも移動もしないと約束した
+  ホストメモリを\term[ぴんどめめもり]{ピン留めメモリ}[pinned memory]
+  （ページロックメモリ）という．これは GPU の DMA エンジンが使用でき，
+  DMA エンジンは物理アドレスによって直接それを読み書きする．
+  \texttt{cudaMallocHost()} または \texttt{cudaHostAlloc()} で割り当て，
+  \texttt{cudaFreeHost()} で解放する \cite{harris2012datatransfer}．
+\end{definition}
+
+\texttt{malloc} や \texttt{new} で得た通常の（\emph{ページング可能な}）
+ホストメモリは，DMA の転送元にはなれない．オペレーティングシステムが
+いつでもそのページを移動または追い出しうるからである．したがって
+ページング可能なメモリからの \texttt{cudaMemcpy} は，まず CPU 上で
+データをドライバが所有するピン留めされた中継バッファにコピーし，それから
+DMA を開始する（\cref{fig:l05-host-device}，右）．ピン留めメモリからの
+コピーは中継のステップを省く．ピン留めされた転送が\enquote{ホストと
+デバイスの間で最高の帯域幅を達成する}のはこのためである（BPG §10.1.1
+Pinned Memory）．\sidenote{\SI{16}{\mebi\byte} の転送で測定した値
+\cite{harris2012datatransfer}：ノート PC（NVS 4200M，PCIe Gen~2）では
+ピン留めメモリによりホストからデバイスへの帯域幅が \num{2.31} から
+\SI{5.77}{\giga\byte\per\second} へ $2.5\times$ に上がった．デスクトップ
+（GTX 680）では \num{5.37} から \SI{6.19}{\giga\byte\per\second} に
+上がっただけである．CPU が速く，中継のコピーが安価だったためである．}
+
+ピン留めメモリは乏しい資源である．ピン留めされたページはすべて
+オペレーティングシステムが回収できないページであり，\enquote{過度の
+使用はシステム全体の性能を下げうる}（BPG §10.1.1）．同ガイドは，どれだけ
+が多すぎるかは事前にはわからないと付け加えている．規則は，すべての割り
+当てではなく転送用のバッファをピン留めすることである．またピン留めは
+無償でもない．ピン留めメモリの割り当ては \texttt{malloc} よりはるかに
+遅いので，バッファは起動時に1回だけ割り当てて再利用する．1回しか転送
+しないバッファがピン留めの費用に見合うことはまれである．
+
+\subsection{計算と転送のオーバーラップ：非同期コピー}
+
+\begin{definition}[非同期コピー，オーバーラップ]
+  \term[ひどうきこぴー]{非同期コピー}[asynchronous copy]とは，データが
+  移動する前，\emph{発行}された時点でホストに制御を返す転送である．
+  \texttt{cudaMemcpyAsync()} は\enquote{\texttt{cudaMemcpy()} の
+  ノンブロッキング版}である（BPG §10.1.2）．その結果として，コピー
+  エンジンと SM が同時に働けることを
+  \term[けいさんとてんそうのおーばーらっぷ]{計算と転送のオーバーラップ}[overlap of computation and transfer]
+  という．あるデータセットのカーネルが実行されている間に，次のデータ
+  セットのコピーが進行中となる（\cref{fig:l05-transfer-timelines}，
+  2行目）．コピーエンジンは SM とは別の DMA ユニットであり，データセンタ
+  向け GPU は方向ごとに少なくとも1つを持つので，ホストからデバイスへの
+  コピーとデバイスからホストへのコピーも互いにオーバーラップできる．
+\end{definition}
+
+非同期コピーの間はホストも空いており，次の入力を準備したり前の出力を
+処理したりできる．オーバーラップにはピン留めメモリが必要である．
+ページング可能なメモリからの非同期コピーは，戻る前にやはり CPU 上で
+中継のコピーを行うので，ホストから見るとほぼ同期的になる．\caution{ページング
+可能なバッファに対する \texttt{cudaMemcpyAsync} はコンパイルも実行も
+できるが，オーバーラップは得られない．プロファイラのタイムライン
+（Nsight Systems）を見れば違いはすぐにわかる．非同期転送にはすべて
+ピン留めバッファを使う．}
+
+\subsection{ストリームによるパイプライン化：コピーと実行の並行処理}
+
+1つのジョブをチャンクに分けると，オーバーラップはパイプラインになる．
+
+\begin{definition}[CUDA ストリーム]
+  \term[くーだすとりーむ]{CUDAストリーム}[CUDA stream]とは，発行された
+  順に実行されるデバイス操作（コピー，カーネル起動，イベント）の列である．
+  \emph{異なる}ストリームの操作の間には順序がなく，並行に，あるいは
+  交互に実行されうる \cite{harris2015streams}．ストリーム引数をとる
+  ランタイム呼び出し（\texttt{cudaMemcpyAsync}，実行構成の第4パラメータ）
+  はすべてそのストリームに置かれ，引数のない呼び出しは
+  \emph{デフォルトストリーム}に入る．
+\end{definition}
+
+レガシーなデフォルトストリームは，デバイスのほかのすべてのストリームと
+同期する．そこに発行された操作は，すべてのストリームのそれ以前の仕事を
+待ち，それ以後の仕事をすべてブロックする（\texttt{cudaStreamNonBlocking}
+で作成したストリームは除く）\cite{harris2015streams}．したがって
+ストリーム引数のない \texttt{cudaMemcpy} や \texttt{<<<grid, block>>>}
+が1つ紛れ込むだけで，パイプライン全体が直列化される．\caution{CUDA~7 は
+スレッドごとのデフォルトストリーム（\texttt{nvcc --default-stream
+per-thread}）を追加した．これは通常のストリームのように振る舞う．この
+フラグがなければ，デフォルトストリームはレガシーなものである
+\cite{harris2015streams}．}
+
+\begin{definition}[コピーと実行の並行処理]
+  ジョブを $n$ 個のストリームにわたってパイプライン化することを
+  \term[こぴーとじっこうのへいこうしょり]{コピーと実行の並行処理}[concurrent copy and execute]
+  という．入力を $n$ 個のチャンクに分け，チャンク $k$ の入力コピー，
+  カーネル，出力コピーをストリーム $k$ に発行する．ストリーム内では
+  3つのステップの順序が保たれるので，各カーネルは自身の入力を待つ．
+  ストリームをまたいでは，チャンク $k+1$ のコピーがチャンク $k$ の
+  カーネルとオーバーラップし，チャンク $k-1$ の出力コピーがその両方と
+  オーバーラップする（\cref{fig:l05-transfer-timelines}，3行目；BPG
+  §10.1.2 Asynchronous and Overlapping Transfers with Computation）．
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+const int nStreams = 4;
+size_t chunk = n / nStreams;  // チャンクのサイズ
+float *h_in, *h_out, *d_in, *d_out;
+cudaMallocHost(&h_in,  n * sizeof(float)); // ピン留め
+cudaMallocHost(&h_out, n * sizeof(float));
+cudaMalloc(&d_in,  n * sizeof(float));
+cudaMalloc(&d_out, n * sizeof(float));
+cudaStream_t s[nStreams];
+for (int i = 0; i < nStreams; ++i) cudaStreamCreate(&s[i]);
+for (int i = 0; i < nStreams; ++i) {
+  size_t off = i * chunk, bytes = chunk * sizeof(float);
+  cudaMemcpyAsync(d_in + off, h_in + off, bytes,
+                  cudaMemcpyHostToDevice, s[i]);
+  scale<<<chunk / 256, 256, 0, s[i]>>>(d_in + off,
+                                       d_out + off, chunk);
+  cudaMemcpyAsync(h_out + off, d_out + off, bytes,
+                  cudaMemcpyDeviceToHost, s[i]);
+}
+cudaDeviceSynchronize();      // すべてを待つ
+\end{lstlisting}
+ループは12個の操作を発行してすぐに戻る．デバイスはストリームごとの順序
+だけに従ってそれらを実行する．最後の \texttt{cudaDeviceSynchronize()} は，
+ホストが \texttt{h\_out} を読む前にすべてのストリームを待つ．\tip{BPG
+§10.1.2 による見積もり：転送時間を $t_T$，カーネル時間を $t_E$ と
+すると，逐次版は $t_E + t_T$ かかり，段階化した版は $t_E > t_T$
+（カーネルがボトルネック）のとき約 $t_E + t_T/n$，転送がボトルネックの
+とき $t_T + t_E/n$ かかる．}
+
+\begin{example}[パイプライン化したジョブ]
+  \label{ex:l05-pipeline}
+  あるジョブは \SI{64}{\mebi\byte} を入力コピーし，カーネルを実行し，
+  \SI{64}{\mebi\byte} を出力コピーする．逐次的には入力コピーに
+  \SI{8}{\milli\second}，カーネルに \SI{6}{\milli\second}，出力コピーに
+  \SI{8}{\milli\second}，合計 \SI{22}{\milli\second} かかる．4つの
+  ストリーム上の4つのチャンクに分けると，各チャンクは入力に
+  \SI{2}{\milli\second}，カーネルに \SI{1.5}{\milli\second}，出力に
+  \SI{2}{\milli\second} を要する．デバイスは方向ごとに1つのコピー
+  エンジンを持ち，カーネルは一度に1つずつ実行する．
+  \cref{tab:l05-pipeline}がスケジュールをたどる．カーネルは，その入力が
+  到着し，前のカーネルが終了した時点で始まる．出力コピーは，そのカーネル
+  が終了し，前の出力コピーが完了した時点で始まる．ジョブは
+  \SI{11.5}{\milli\second} で完了し，高速化率は $1.9\times$ である．
+  ボトルネックは入力側のコピーエンジンであり，$0$ から
+  \SI{8}{\milli\second} まで隙間なく働き続ける．それ以降はすべて
+  パイプラインの排出（最後のカーネルと最後の出力コピー，
+  \SI{3.5}{\milli\second}）である．チャンクを増やせば排出は短くなるが，
+  操作ごとのオーバーヘッドが加わる．
+\end{example}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{\cref{ex:l05-pipeline}のスケジュール（時間の単位は
+    \si{\milli\second}）．各列が1つのエンジンであり，ストリーム内では
+    3つのステップの順序が保たれる．}
+  \label{tab:l05-pipeline}
+  \begin{tabular}{lccc}
+    \toprule
+    チャンク（ストリーム） & 入力コピー & カーネル & 出力コピー \\
+    \midrule
+    1 & 0--2 & 2--3.5 & 3.5--5.5 \\
+    2 & 2--4 & 4--5.5 & 5.5--7.5 \\
+    3 & 4--6 & 6--7.5 & 7.5--9.5 \\
+    4 & 6--8 & 8--9.5 & 9.5--11.5 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{ホストメモリへの直接アクセス：ゼロコピーと UVA}
+
+第4の技法は，カーネルにホストメモリを読ませることで，明示的なコピー
+そのものをなくす．
+
+\begin{definition}[ゼロコピー]
+  デバイスのスレッドがホストメモリに直接アクセスすることを
+  \term[ぜろこぴー]{ゼロコピー}[zero copy]という．ホストのバッファを
+  ピン留めで割り当ててデバイスのアドレス空間に\emph{マップ}し
+  （\texttt{cudaHostAlloc} に \texttt{cudaHostAllocMapped} を指定），
+  カーネルは対応するデバイスポインタ
+  （\texttt{cudaHostGetDevicePointer}）を受け取る．カーネル内の各ロード
+  とストアは，デバイスメモリではなく I/O インタフェースを通る
+  （BPG §10.1.3 Zero Copy）．
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+float *h_a, *d_a;
+cudaHostAlloc(&h_a, bytes, cudaHostAllocMapped);
+cudaHostGetDevicePointer(&d_a, h_a, 0);
+kernel<<<grid, block>>>(d_a);  // ロードは I/O バスを通る
+\end{lstlisting}
+
+ゼロコピーは\emph{統合型} GPU では明らかに得である．そのメモリは物理的に
+CPU のメモリなので，置き換えられる\enquote{コピー}は同じ DRAM のある
+領域から別の領域へのコピーだったからである．ディスクリート GPU では
+各アクセスが I/O インタフェースの帯域幅とレイテンシを払うので，データが
+1回だけ，コアレスされたパターンで読まれ，そのレイテンシをほかのワープで
+隠せる場合にのみ役立つ．再利用されるデータはデバイスメモリに置くべきで
+ある．
+
+\begin{definition}[統合仮想アドレッシング]
+  \term[とうごうかそうあどれっしんぐ]{統合仮想アドレッシング（UVA）}[unified virtual addressing (UVA)]
+  の下では，ホストメモリとすべてのデバイスのメモリが1つの仮想アドレス
+  空間を共有する．ポインタの値はそれだけでそのメモリを特定し，ランタイム
+  はアドレスからポインタがどのメモリを指すかを判別でき
+  （\texttt{cudaPointerGetAttributes}），\texttt{cudaMemcpy} を方向を
+  指定せずに \texttt{cudaMemcpyDefault} で呼べる（BPG §10.1.4 Unified
+  Virtual Addressing）．ドライバとランタイムは，物理的に別々のメモリを
+  1つのアドレス方式の背後に隠す．\margin{UVA には Compute Capability 2.0
+  と64ビットのホストが必要である．UVA の下ではピン留めバッファの
+  ホストポインタとデバイスポインタは同じになり，GPU 間のピアツーピア
+  コピー（第9章）が可能になる．BPG §10.1.4．}
+\end{definition}
+
+理想的には，統合されたアドレス空間によってデータの移動は無償になるはず
+である．実際にはそうならない．メモリは依然として別々であり，データは
+依然としてインタフェースを越えなければならず，コピーは明示的に，あるいは
+ランタイムの判断で，そのオーバーヘッドを伴って行われる．UVA が変えるのは
+メモリの\emph{名前の付け方}であり，その\emph{場所}ではない．\caution{UVA は
+ユニファイドメモリではない．UVA（2011年，CUDA~4）は別々のメモリの上の
+1つのアドレス空間である．ユニファイドメモリ（\texttt{cudaMallocManaged}，
+CUDA~6）はそれに加えて，要求に応じたメモリ間のページの自動移動を行い，
+それ自体のページフォールトのコストを伴う．ユニファイドメモリは第7章で
+扱う．}
+
+4つの技法のどれもがすべてのシステムに合うわけではない．ピン留めメモリの
+効果はホストの CPU に，オーバーラップの効果は転送時間とカーネル時間の比
+に，ゼロコピーの効果は GPU が統合型かどうかに依存する．規則は，各技法を
+試して測定することである．
+
+\section{メモリアクセスの最適化}
+\label{sec:l05-memory}
+
+データがデバイス上に置かれると，\cref{eq:l05-time}の第2項はカーネルが
+デバイスメモリを待つ時間である．\source{M5，メモリアクセスの最適化；
+BPG §9.2 Bandwidth，§10.2 Device Memory Spaces；
+\cite{harris2013sharedmem}．}このチェックリストは，第4章の機構を規則と
+して繰り返す．
+\begin{itemize}
+  \item チップ上のメモリを使う．ブロックが再利用するデータには共有メモリ，
+    局所性のあるデータには L1 と L2 キャッシュ，全スレッドが読む値には
+    コンスタントメモリを使う；\margin{共有メモリのレイテンシは
+    \enquote{キャッシュされないグローバルメモリのレイテンシより約100倍
+    低い} \cite{harris2013sharedmem}．Tesla と Fermi の世代について，
+    K12 Table~1.4 は共有メモリに4--32サイクル，グローバルメモリに数百
+    サイクルを挙げる．}
+  \item グローバルアクセスを\textbf{コアレス}し\textbf{アライン}して，
+    ワープのロードが触れるメモリトランザクションをできるだけ少なくする．
+    現在の GPU ではトランザクションは \SI{32}{\byte} のセクタであり，
+    連続する4バイト語を読む32スレッドのワープは4つのセクタに触れる
+    （BPG §10.2.1 Coalesced Access to Global Memory）；
+  \item \textbf{トランザクション数を減らす}：構造体の配列ではなく配列の
+    構造体を使い，データ型を必要なサイズにし，アラインメントが許す場合は
+    スレッド当たり8または16バイトをロードする；
+  \item \textbf{達成帯域幅をピークと比べる}（\cref{def:l05-bandwidth}）：
+    コアレッシングの後も差が残るなら，カーネルはメモリ律速ではなく，
+    取り組むべきは\cref{eq:l05-time}の次の項である；
+  \item \textbf{共有メモリのバンク競合を避ける}：32ビット語のバンクが
+    32個あり，バンクごとに1サイクル1アクセスなので，レーンが同じバンクの
+    異なるアドレスにアクセスするワープは直列化される（同じ語を読む
+    レーンはブロードキャストを受ける；第4章；
+    \cite{harris2013sharedmem}）．
+\end{itemize}
+
+\begin{definition}[理論帯域幅と実効帯域幅]
+  \label{def:l05-bandwidth}
+  メモリの\term[りろんたいいきはば]{理論帯域幅}[theoretical bandwidth]
+  は，ハードウェアの仕様から，メモリクロック周波数 $\times$ バイト単位の
+  インタフェース幅 $\times$ 2（ダブルデータレート）として計算する
+  （BPG §9.2.1 Theoretical Bandwidth Calculation）．カーネルの
+  \term[じっこうたいいきはば]{実効帯域幅}[effective bandwidth]は，
+  そのカーネルが実際に達成した帯域幅
+  \begin{equation}
+    \text{effective bandwidth} = \frac{(B_r + B_w)/10^9}{t},
+    \label{eq:l05-effective-bw}
+  \end{equation}
+  である．$B_r$ と $B_w$ はカーネルが読み書きするバイト数，$t$ は秒単位の
+  実行時間であり，単位は \si{\giga\byte\per\second} である（BPG §9.2.2
+  Effective Bandwidth Calculation）．\margin{BPG 自身の例：V100 の HBM2
+  は \SI{877}{\mega\hertz}，4096ビットで，$0.877 \times 10^9 \times
+  512 \times 2 / 10^9 = \SI{898}{\giga\byte\per\second}$ となる
+  （BPG §9.2.1）．}
+\end{definition}
+
+両者は同じ除数を使わなければならない．帯域幅は10進（\num{e9}）であり，
+バイト数を代わりに $1024^3$ で割ると実効帯域幅を \SI{7}{\percent}
+過小評価する（BPG §9.2.1）．Visual Profiler は，実効帯域幅に対応する
+\enquote{requested}スループットと，コアレスされないアクセスで無駄に
+なったバイトを含む\enquote{actual}スループットを報告した．両者の差が
+コアレッシングによる損失である（BPG §9.2.3 Throughput Reported by
+Visual Profiler）．Nsight Compute では，同じ損失がメモリワークロード
+解析のリクエスト当たりセクタ数として現れる．連続する32個の4バイト
+ロードでは理想値は4である．
+
+\begin{example}[帯域幅の利用率]
+  \label{ex:l05-bandwidth}
+  ある GPU は，メモリクロック \SI{1.2}{\giga\hertz}，5120ビットの
+  インタフェースの HBM2 を持つ．理論帯域幅は
+  \[
+    1.2 \times 10^9 \times \frac{5120}{8} \times 2 \,/\, 10^9
+    = \SI{1536}{\giga\byte\per\second}
+  \]
+  である．あるカーネルは \SI{256}{\mebi\byte} の配列
+  （$B_r = \num{268435456}$）を読み，同じサイズの配列を書き，
+  \SI{0.5}{\milli\second} で実行される．\cref{eq:l05-effective-bw}により
+  \[
+    \frac{(\num{268435456} + \num{268435456})/10^9}{0.5 \times 10^{-3}}
+    = \SI{1074}{\giga\byte\per\second}
+  \]
+  となり，ピークの \SI{70}{\percent} である．カーネルはメモリ律速であり，
+  アクセスパターンはすでに良好である．残りの \SI{30}{\percent} は仕様と
+  ストリーミングカーネルの間によくある差であり，コアレスされない
+  アクセスの兆候ではない．同じバイト数で結果が
+  \SI{300}{\giga\byte\per\second} であったなら，最初に疑うべきは
+  アクセスパターンであり，最初に読むべきメトリクスは Nsight Compute の
+  リクエスト当たりセクタ数である．
+\end{example}
+
+\section{計算の削減}
+\label{sec:l05-compute}
+
+\cref{eq:l05-time}の第3項は計算そのものである．\source{M5，計算の削減；
+BPG §12 Instruction Optimization，§13 Control Flow；CPG §5.4 Maximize
+Instruction Throughput．}
+
+\begin{definition}[命令最適化]
+  カーネルが実行する命令を，同じ（または許容できる）結果を与える，より
+  少ないか，より安価な命令で置き換えることを
+  \term[めいれいさいてきか]{命令最適化}[instruction optimization]
+  という．同じ関数に対するより安価な演算，より狭いデータ型，ソフトウェア
+  ルーチンに代わるハードウェアの機能ユニット，分岐に代わるプレディケート
+  などである．
+\end{definition}
+
+計算を減らす技法は6つある．
+\begin{description}
+  \item[より安価な命令．]  整数の除算と剰余は，SM 上では複数の命令の列で
+    ある（BPG §12.1.4）．32ビット整数の乗算は Volta 以降では1命令だが，
+    Maxwell と Pascal ではエミュレートされていた．シフトとマスクは1命令
+    である．2のべき乗の除数 $n = 2^k$ に対しては，非負の \texttt{i} に
+    ついて \texttt{i / n} は \texttt{i >{}> k}，\texttt{i \% n} は
+    \texttt{i \& (n - 1)} である．\margin{強さの低減（第11章）の命令
+    レベルの形である．コンパイル時定数の除数ならコンパイラが自分でこれを
+    行う．この書き換えが意味を持つのは，実行時に決まる2のべき乗の場合で
+    ある．}
+\begin{lstlisting}[language=C++, numbers=none]
+int q1 = i / n;        // 除算の命令列
+int q2 = i >> k;       // n == 1 << k なら1回のシフト
+int r  = i & (n - 1);  // i >= 0 なら i % n
+\end{lstlisting}
+  \item[低い精度．]  アプリケーションが許すなら，64ビットの代わりに
+    32ビットの演算を，32ビットの代わりに16ビットや8ビットの演算を使う．
+    幅を半分にするたびに演算ユニットのスループットは2倍になり，移動する
+    バイト数は半分になる．コンシューマ向け GPU の FP64 スループットは
+    FP32 のごく一部である．FP16 のペア（\texttt{half2}）は1命令で2つの
+    演算を実行する（BPG §12.1）．形式と，テンソルコアがそれらで何をするか
+    は第12章で扱う．\caution{低い精度は，性能の判断である前に数値計算上の
+    判断である．多数の FP16 の項の和は加算のたびに桁を失い，100万要素に
+    わたる FP16 のリダクションは近似ではなく誤りである．累積変数は
+    オペランドより広く保つ．}
+  \item[ハードウェアの特殊関数．]  SM の特殊関数ユニット（第4章）は，
+    逆数，逆平方根，$\log_2$，$2^x$，正弦，余弦を，精度を落として1命令で
+    評価する．
+    \begin{definition}[組み込み関数]
+      \term[くみこみかんすう]{組み込み関数}[intrinsic function]とは，
+      コンパイラがライブラリルーチンの呼び出しではなく直接ハードウェア
+      命令に翻訳する関数であり，\texttt{\_\_sinf()}，\texttt{\_\_expf()}，
+      \texttt{\_\_fdividef()} などがある．標準関数 \texttt{rsqrtf()} も
+      同様に SFU の逆平方根に対応する．逆平方根は，コンパイラが必ずしも
+      1つにまとめられない \texttt{1.0f / sqrtf(x)} と書くのではなく，
+      \enquote{常に明示的に \texttt{rsqrtf()} として呼び出すべきである}
+      （BPG §12.1.6）．
+    \end{definition}
+\begin{lstlisting}[language=C++, numbers=none]
+float y1 = 1.0f / sqrtf(x);  // 2演算
+float y2 = rsqrtf(x);        // SFU の1命令
+\end{lstlisting}
+    数学ライブラリ（\cref{sec:l05-libraries}）は組み込み関数を自動的に
+    使う．コンパイラも，\texttt{nvcc -use\_fast\_math} の下ではファイル
+    全体についてそうする．このオプションは非正規化数をゼロにフラッシュし，
+    近似の除算と平方根も選ぶ（BPG §12.1.9）．\caution{\texttt{-use\_fast\_math}
+    は速度だけでなく結果も変える．出力を精密なビルドの出力と照合する．}
+  \item[分岐の削減．]  条件がワープのレーン間で異なる分岐は，ワープに
+    両方の経路を実行させる（第6章）．対策は2つある．\texttt{threadIdx.x}
+    ではなく \texttt{threadIdx.x / warpSize} に対する条件のように，ワープ
+    全体が同じ経路をとるように条件を書くこと（CPG §5.4.2 Control Flow
+    Instructions），そして短い分岐をコンパイラにプレディケーションで
+    置き換えさせることである．
+    \begin{definition}[プレディケート実行]
+      \term[ぷれでぃけーとじっこう]{プレディケート実行}[predicated execution]
+      では，条件文の両側がすべてのレーンに発行され，各命令は，その結果を
+      書き込むかどうかをレーンごとに決めるプレディケートレジスタを伴う．
+      分岐命令は実行されず，ワープはダイバージェンスを起こさない．代償は，
+      すべてのレーンが両側のサイクルを費やすことである．コンパイラが
+      プレディケーションを選ぶのは，条件で制御される命令の数がしきい値を
+      下回る場合だけである（BPG §13.2 Branch Predication）．
+    \end{definition}
+    ハードウェア側は第6章が示す．SIMT スタック，アクティブマスク，
+    そして第10章の PTX のガード述語である．
+  \item[アトミック操作を避ける．]  多数のスレッドが更新する位置への
+    アトミックな読み出し--変更--書き込みは，メモリまたは L2 キャッシュで
+    それらを直列化する．アトミック操作は GPU の世代を経て大幅に安価に
+    なったが，数千のスレッドによる1つのカウンタへのリダクションは依然と
+    して直列化である．まずブロック内でリダクションし（共有メモリ，または
+    \cref{sec:l05-features}のワープシャッフルによる），ブロック当たり1回の
+    アトミック操作を発行する．\margin{Kepler は共有メモリのアトミック操作
+    をロック／更新／アンロックの命令列として実装していた．Maxwell は
+    32ビット整数に対する共有メモリのアトミック命令をネイティブに追加した
+    \cite{nvidia2026maxwelltuning}．アトミック操作はこの種の変更によって
+    \enquote{以前よりはるかに安価}になった．}
+  \item[テンソルコア．]  テンソルコア（第1章）上の行列積和演算は，FP32
+    レーン上の同じ演算より1桁速く実行される．行列積として表せる計算は
+    すべてそう表すべきであり，ライブラリは形状と型が許せばそうする
+    （第12章）．
+\end{description}
+
+\begin{keypoint}
+  \cref{eq:l05-time}の3つの項には3つのチェックリストがある．
+  転送：ピン留め，オーバーラップ，パイプライン化，マップ．メモリ：
+  キャッシュ，コアレス，アライン，トランザクションの計数，バンク競合の
+  回避，ピークとの比較．計算：より安価な命令，より狭い型，組み込み関数，
+  ワープ内で一様な条件，アトミック操作の削減，テンソルコア．各ステップの
+  前後でプロファイルする．
+\end{keypoint}
+
+\section{新しい CUDA の機能}
+\label{sec:l05-features}
+
+上のチェックリストのコストのいくつかは，最初の CUDA モデル以降の
+ハードウェアと API の追加によって取り除かれた．\source{M5，新しい CUDA の
+機能；CPG §4.1 SIMT Architecture，§7.19 Warp Vote Functions，§7.22 Warp
+Shuffle Functions，§7.26 Asynchronous Barrier，§8 Cooperative Groups；
+\cite{nvidia2022hopper}．}
+
+\subsection{ワープレベルの操作：シャッフルと投票}
+
+レジスタはスレッドに私有である．最初のモデルでは，同じワープの2つの
+スレッドが値を交換するには共有メモリを通すしかなかった．ストア，
+\texttt{\_\_syncthreads()}，ロードであり，途中でバンク競合の危険もある．
+ワープレベルの操作は値をレーン間で直接移動する．
+
+\begin{definition}[ワープシャッフル]
+  \term[わーぷしゃっふる]{ワープシャッフル}[warp shuffle]とは，ワープの
+  各レーンが同じワープのほかのレーンのレジスタを，共有メモリもバリアも
+  使わずに読む命令である（CPG §7.22 Warp Shuffle Functions）．4つの
+  変種は読むレーンが異なる（\cref{tab:l05-shuffle}）．どの変種も，
+  参加するレーンの\emph{マスク}，値，レーンの選択子をとる．
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{ワープシャッフル関数．\texttt{mask} は参加するレーンを指定
+    する（32レーンすべてなら \texttt{0xffffffff}）．省略可能な
+    \texttt{width} はワープを独立なセグメントに分割する．}
+  \label{tab:l05-shuffle}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{52mm}
+                  >{\raggedright\arraybackslash}p{58mm}}
+    \toprule
+    関数 & レーン $i$ が値を受け取るレーン \\
+    \midrule
+    \texttt{\_\_shfl\_sync(mask, v, src)} & \texttt{src}（1つのレーンが
+      全レーンにブロードキャストする） \\
+    \texttt{\_\_shfl\_up\_sync(mask, v, d)} & $i - d$（$d$ 未満のレーンは
+      自身の値を保つ） \\
+    \texttt{\_\_shfl\_down\_sync(mask, v, d)} & $i + d$（上位 $d$ 個の
+      レーンは自身の値を保つ） \\
+    \texttt{\_\_shfl\_xor\_sync(mask, v, m)} & $i \oplus m$（バタフライ
+      交換） \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-shuffle-xor}
+  \caption{レーンマスク1の \texttt{\_\_shfl\_xor\_sync}：図の8レーンは
+    1命令で R1 を隣のレーンと交換する．}
+  \label{fig:l05-shuffle-xor}
+\end{figure}
+
+\cref{fig:l05-shuffle-xor}は最も単純な場合である対ごとの交換を示す．
+重要な用途はリダクションである．ワープの32レーンにわたる和は，レーン
+番号の1ビットにつき1回，計5回のシャッフルで求まり，すべてのレーンが
+合計を得る（\cref{fig:l05-butterfly}，\cref{ex:l05-butterfly}）．
+\Needspace{6\baselineskip}
+\begin{lstlisting}[language=C++, numbers=none]
+__device__ float warp_sum(float v) {
+  for (int m = 16; m > 0; m >>= 1)
+    v += __shfl_xor_sync(0xffffffff, v, m);
+  return v;   // 全レーンがワープの合計を持つ
+}
+\end{lstlisting}
+ブロックのリダクションは，ワープごとの合計のために1回だけ共有メモリを
+必要とし，グリッドのリダクションはブロック当たり1回のアトミック操作を
+必要とする．\margin{\texttt{\_sync} 形は CUDA~9 からである．Volta が
+独立スレッドスケジューリング（後述）を導入した際に，CUDA~9 はマスクの
+ない古い \texttt{\_\_shfl()} 系を非推奨にした．マスクは，交換の前に
+どのレーンが到達していなければならないかをハードウェアに伝える．Compute
+Capability 8.0 ではワープリダクションが単一の関数
+\texttt{\_\_reduce\_add\_sync} とその仲間として加わった（CPG §7.21 Warp
+Reduce Functions）．}
+
+\begin{example}[バタフライリダクション]
+  \label{ex:l05-butterfly}
+  8つのレーンが値 $3, 1, 4, 1, 5, 9, 2, 6$（和は31）を持ち，ループは
+  マスク $4, 2, 1$ で回る．1回目の後，レーン $i$ は
+  $v_i + v_{i \oplus 4}$ を持つ．レーン0--3は $8, 10, 6, 7$ を持ち，
+  レーン4--7も同じ値を持つ．マスク2の後，レーン0と1はそれぞれ
+  $8 + 6 = 14$ と $10 + 7 = 17$ を持ち，これがワープ全体で繰り返される．
+  マスク1の後，すべてのレーンが $14 + 17 = 31$ を持つ
+  （\cref{fig:l05-butterfly}）．8レーンでは3回，完全なワープでは
+  $\log_2 32 = 5$ 回である．
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-butterfly}
+  \caption{\cref{ex:l05-butterfly}のバタフライリダクション：マスク4，2，1
+    による3回の \texttt{\_\_shfl\_xor\_sync} で，すべてのレーンに和31が
+    残る．}
+  \label{fig:l05-butterfly}
+\end{figure}
+
+\begin{definition}[ワープ投票関数]
+  \term[わーぷとうひょうかんすう]{ワープ投票関数}[warp vote function]は，
+  参加する各レーンで述語 $p$ を評価し，その結果をワープ全体で結合する
+  （CPG §7.19 Warp Vote Functions）．
+  \begin{itemize}
+    \item \texttt{\_\_all\_sync(mask, p)} は，$p$ がすべてのレーンで
+      成り立てば真である；
+    \item \texttt{\_\_any\_sync(mask, p)} は，少なくとも1つのレーンで
+      成り立てば真である；
+    \item \texttt{\_\_ballot\_sync(mask, p)} は，成り立つレーンの
+      32ビットマスクを返す．
+  \end{itemize}
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+unsigned m = __ballot_sync(0xffffffff, x > 0);
+int count = __popc(m);              // x > 0 のレーン数
+if (__all_sync(0xffffffff, x > 0))  // ワープ内で一様な分岐
+  ...
+\end{lstlisting}
+ballot に続く \texttt{\_\_popc} は，共有メモリのヒストグラムならバリアを
+必要とする計数を，バリアなしに2命令で行う．\texttt{\_\_all\_sync} や
+\texttt{\_\_any\_sync} の結果に対する条件は構成上ワープ内で一様であり，
+決してダイバージェンスを起こさない．
+
+\subsection{Cooperative Groups}
+
+\begin{definition}[Cooperative Groups]
+  固定されたワープとブロック以外のスレッドのグループに名前を付ける CUDA
+  の API を
+  \term[こーぽれーてぃぶぐるーぷす]{Cooperative Groups}[cooperative groups]
+  という（CPG §8 Cooperative Groups）．グループは，ブロック全体
+  （\texttt{this\_thread\_block}），ワープまたはワープのタイル
+  （\texttt{tiled\_partition}），呼び出し時にアクティブなワープのレーンの
+  集合（\texttt{coalesced\_threads}），グリッド全体，またはクラスタで
+  ある．どのグループも \texttt{sync()} とサイズ，ランクを提供する．
+  ワープサイズのグループ（タイルとコアレスされたグループ）はさらに
+  \texttt{shfl}，\texttt{ballot}，\texttt{any}，\texttt{all}，
+  \texttt{cg::reduce} を提供する．グリッドグループには協調起動
+  （cooperative launch）が必要である．
+\end{definition}
+
+\Needspace{7\baselineskip}
+\begin{lstlisting}[language=C++, numbers=none]
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+auto block = cg::this_thread_block();
+auto tile  = cg::tiled_partition<8>(block);  // 8レーン単位
+v += tile.shfl_xor(v, 4);     // タイル内のシャッフル
+tile.sync();                  // 8レーンのバリア
+\end{lstlisting}
+この API は，ワープサイズとブロックサイズを，関数に埋め込まれた前提では
+なく関数のパラメータにする．タイルをパラメータとしてとるルーチンは
+4，8，32レーンのタイルに対してそのまま動作し，\texttt{sync()}，サイズ，
+ランクだけを使うルーチンはタイルにも1024スレッドのブロックにも同様に
+動作する．
+
+\subsection{独立スレッドスケジューリング}
+
+\begin{definition}[独立スレッドスケジューリング]
+  Volta で導入された実行モデルを
+  \term[どくりつすれっどすけじゅーりんぐ]{独立スレッドスケジューリング}[independent thread scheduling]
+  という．これはワープの各スレッドに固有のプログラムカウンタとコール
+  スタックを与えるので，1つのワープのスレッドはワープより細かい粒度で
+  分岐し，交互に実行し，再収束でき，スピンループで待つスレッドが同じ
+  ワープのほかのスレッドの進行を妨げることはもはやない．
+\end{definition}
+
+Volta 以前，ワープはプログラムカウンタを1つしか持たなかった．
+ダイバージェント分岐では，ハードウェアは一方の経路を再収束点まで実行して
+から他方を開始し（第6章），他方の経路のスレッドを待つスレッドは永久に
+待ち続けた．スレッドごとの状態があれば，スケジューラは2つの経路を交互に
+実行できる．これによりワープ内のこのような細粒度の同期が正しく動作する
+ようになるが，その代わりに，ワープのレーンがロックステップで実行される
+という保証は失われる．\caution{講義 vs ドキュメント：この機能は，固定された
+ワープサイズに代わるより小さなワープレベルの操作として説明されている．CPG §4.1 SIMT Architecture はより具体的である：\enquote{NVIDIA
+Volta アーキテクチャ以降，独立スレッドスケジューリングはワープに
+かかわらずスレッド間の完全な並行性を可能にする \ldots\ GPU は，
+プログラムカウンタとコールスタックを含む実行状態をスレッドごとに保持
+する}．ワープは依然として32スレッドである．変わったのは，コードがレーンの
+ロックステップを前提にできなくなったことであり，ワープレベルの関数が
+マスクをとるのはこのためである．}
+
+\subsection{クラスタ，統合されたオンチップメモリ，分割バリア}
+
+さらに3つの追加が，オンチップメモリと同期にかかわる．
+\begin{description}
+  \item[ブロック間の共有メモリ．]  Hopper では，第3章のスレッドブロック
+    クラスタにより，ブロックはそのクラスタのほかのブロックの共有メモリに
+    アクセスできる．ハードウェアはクラスタのブロックを1つの GPU
+    プロセッシングクラスタ上に同時にスケジュールする．NVIDIA はこれを
+    \emph{分散共有メモリ}（distributed shared memory）と呼ぶ
+    \cite{nvidia2022hopper}．これにより，ブロックはグローバルメモリを
+    往復せずに隣のブロックとデータを交換できる．
+  \item[L1，共有メモリ，テクスチャの統合ストレージ．]  Volta 以降，L1
+    データキャッシュ，共有メモリ，テクスチャキャッシュは SM ごとに1つの
+    SRAM アレイであり，カーネルごとにキャッシュとスクラッチパッドに分割
+    される．共有メモリをあまり使わないカーネルは大きな L1 を得る．この
+    分割（カーブアウト）と，それにつながった研究は第6章で扱う．\margin{H100：
+    クラスタは最大16ブロック（ポータブルでないサイズ）を保持し，SM は
+    L1 と共有メモリを合わせて \SI{256}{\kibi\byte} 持ち，そのうち最大
+    \SI{228}{\kibi\byte} を共有メモリにできる
+    \cite[Table~4]{nvidia2022hopper}．}
+  \item[ハードウェアによる到着／待機分割バリア．]
+    \begin{definition}[分割型到着／待機バリア]
+      \term[ぶんかつがたとうちゃくたいきばりあ]{分割型到着／待機バリア}[split arrive/wait barrier]
+      は，バリアの2つの半分を分離する．スレッドはデータの準備ができた
+      ときに\emph{到着}（arrive）して独立な仕事を続け，ほかのスレッドの
+      データが必要になったときにだけ\emph{待機}（wait）する．
+      \texttt{\_\_syncthreads()} は到着の直後に待機を行うものである．
+      CPG §7.26 の非同期バリア（\texttt{cuda::barrier}）は2つの半分を
+      公開し，Compute Capability 8.0 はそれらをハードウェアで高速化する．
+    \end{definition}
+    到着と待機の間の時間は，そうでなければスレッドがストールに費やす
+    時間である．CPG §7.27 の非同期コピーを使えば，スレッドは次のタイルの
+    共有メモリへのロードを開始し，到着し，コピーが届くまで現在のタイル
+    で計算できる．
+\end{description}
+
+\section{ライブラリとほかのプラットフォーム}
+\label{sec:l05-libraries}
+
+どのチェックリストよりも前の第1の規則は，ライブラリを使うことである．
+\source{M5，ライブラリとほかのプラットフォーム．}
+
+\begin{definition}[数学ライブラリ]
+  \term[すうがくらいぶらり]{数学ライブラリ}[math library]とは，ある分野
+  （密な線形代数，疎行列，テンソル，深層学習の層，通信）のための GPU
+  ルーチンの集まりで，ベンダまたはコミュニティが提供し，GPU の各世代
+  向けにすでにチューニングされている（コアレス，タイル化，テンソルコア
+  対応，パイプライン化）．これを呼ぶプログラムはそれらの最適化を受け継ぎ，
+  再リンクによって世代をまたいでハードウェアに追従する．
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{本章で取り上げる NVIDIA のライブラリ．}
+  \label{tab:l05-libraries}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{20mm}
+                  >{\raggedright\arraybackslash}p{86mm}}
+    \toprule
+    ライブラリ & 分野 \\
+    \midrule
+    cuBLAS & 密な線形代数（BLAS：ベクトル，行列--ベクトル，行列--行列の
+      演算）．GEMM にテンソルコアを使う \\
+    cuSPARSE & 疎行列と疎--密の積 \\
+    cuTENSOR & テンソルの縮約，リダクション，要素ごとの演算 \\
+    Thrust & デバイスベクトル上の C++ 並列アルゴリズム（ソート，スキャン，
+      リダクション，変換）．C++ 標準ライブラリのスタイルによる \\
+    NCCL & GPU 間の集団通信（all-reduce，broadcast，all-gather）．
+      第2章の MPI の集団通信の GPU 版 \\
+    NVSHMEM & GPU 間の片方向の，分割グローバルアドレス空間型の通信 \\
+    cuDNN & 深層学習のプリミティブ：畳み込み，プーリング，正規化，
+      アテンション \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\cref{tab:l05-libraries}は取り上げたライブラリの一覧である．最も広く
+使われる3つは，密な線形代数のライブラリで，その GEMM が機械学習の大半を
+支えるカーネルである\term[きゅーぶらす]{cuBLAS}[cuBLAS]（第12章），
+PyTorch などのフレームワークが呼ぶ深層学習プリミティブのライブラリ
+\term[きゅーでぃーえぬえぬ]{cuDNN}[cuDNN]，マルチ GPU 学習のための
+集団通信ライブラリ\term[にっける]{NCCL}[NCCL]（第9章）である．
+ライブラリ\term[すらすと]{Thrust}[Thrust]は異色であり，分野別の
+ライブラリではなく並列アルゴリズムの C++ テンプレートライブラリなので，
+デバイス上のソートやリダクションがカーネルではなく1回の呼び出しで済む．
+\margin{\texttt{device\_vector} に対する \texttt{thrust::sort} は，
+プログラムが手にできる最も手早く正しい GPU ソートである．自前で書く
+ことが報われるのは，ライブラリが知りえない構造をデータが持つ場合だけで
+ある（\cref{sec:l05-sorting}）．}
+
+CUDA は NVIDIA のプラットフォームであり，同じ考え方はほかにも存在する
+（\cref{tab:l05-platforms}）．
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{本章で取り上げるほかの GPU プログラミングプラットフォーム．}
+  \label{tab:l05-platforms}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{22mm}
+                  >{\raggedright\arraybackslash}p{84mm}}
+    \toprule
+    名称 & 内容 \\
+    \midrule
+    OpenCL & 異種計算のための Khronos のオープン標準：カーネルは C の
+      方言で書き，GPU，CPU，FPGA の間で移植可能 \\
+    oneAPI / SYCL & Khronos の単一ソース C++ モデル（SYCL）と，Intel に
+      よるその実装とライブラリ（oneAPI） \\
+    OpenACC & OpenMP のスタイルによる指示文ベースのオフロード
+      （\texttt{\#pragma acc}） \\
+    HIP & AMD の C++ ランタイム API で，CUDA とソース互換
+      （\texttt{hipMalloc}，\texttt{hipLaunchKernelGGL}）．CUDA のコード
+      は \texttt{hipify} で機械的に移植される \\
+    Kokkos & 1つのソースを CUDA，HIP，SYCL，OpenMP のバックエンドに
+      コンパイルする C++ の性能可搬性レイヤ \\
+    Python，Julia & GPU 配列ライブラリとカーネルコンパイラを持つ高水準
+      言語（CuPy，Numba；CUDA.jl） \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+標準規格\term[おーぷんしーえる]{OpenCL}[OpenCL]は，CUDA と同じ実行
+モデルを別の名前で持つ（スレッド，ブロック，グリッドに対して
+work-item，work-group，NDRange；K12 §1.3.10）．\term[しくる]{SYCL}[SYCL]
+は CUDA と同様にホストとデバイスのコードを1つの C++ ソースに置き，
+\term[ひっぷ]{HIP}[HIP]は CUDA に十分近いので，本書のプログラムは関数
+単位で翻訳できる．これらの間で移植できるのは本章の内容のすべてである．
+\cref{eq:l05-time}の3つの項とそのチェックリストは，言語ではなく
+ハードウェアの性質である．
+
+\section{ソーティングネットワーク}
+\label{sec:l05-sorting}
+
+指定文献のソーティングネットワーク \cite{kipfer2005gpusort} は，GPU に
+合わせて形を変えたアルゴリズムの例である．\source{M5，必読文献；
+\cite{kipfer2005gpusort}；\cite{batcher1968sorting}．}
+
+\begin{definition}[マージソート]
+  \term[まーじそーと]{マージソート}[merge sort]と呼ばれるアルゴリズムは，
+  列の2つの半分を再帰的にソートし，それらを\emph{マージ}することで
+  ソートする．2つのソート済みの列は，先頭のうち小さい方を繰り返し取る
+  ことで結合される．計算量は $O(n \log n)$ で，標準的な逐次アルゴリズム
+  である．しかしマージはデータに依存するループであり，次にどちらの先頭を
+  取るかが値に依存するので，その制御フローとメモリアクセスはスレッドごとに
+  異なる．
+\end{definition}
+
+GPU では，データに依存する制御フローはダイバージェンスであり，データに
+依存するアドレスはコアレスされないアクセスである（\cref{tab:l05-metrics}）．
+GPU にうまく対応するアルゴリズムは，比較の列があらかじめ固定されている
+ものである．
+
+\begin{definition}[ソーティングネットワーク]
+  \term[そーてぃんぐねっとわーく]{ソーティングネットワーク}[sorting network]
+  とは，与えられたサイズのあらゆる入力をソートする，\emph{比較器}の
+  固定された列である．各比較器は配列の2つの位置を比較し，順序が逆なら
+  交換する．各ステップでどの位置を比較するかはステップとサイズだけで
+  決まり，データには決して依存しない．そのため1つの段のすべての比較器は
+  並列に実行でき，すべてのスレッドが同じ操作を行い，アドレスはカーネルの
+  実行前にわかる．\margin{Batcher は1968年に，ハードウェアのソータの
+  ために2つの古典的なネットワーク，奇偶マージソートとバイトニック
+  マージソートを導入した \cite{batcher1968sorting}．
+  \cite{kipfer2005gpusort} は2005年，CUDA 以前に，テクスチャ上の
+  フラグメント（ピクセル）シェーダプログラムとしてそれらを GPU に持ち
+  込んだ（第1章）．}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-bitonic}
+  \caption{$n = 8$ のバイトニックソーティングネットワーク：6段，各段4個の
+    比較器．フェーズ $k$ は長さ $k/2$ の列の対を長さ $k$ のソート済みの
+    列にマージする．フェーズ内の比較器の距離は $k/2, k/4, \ldots, 1$
+    である．}
+  \label{fig:l05-bitonic}
+\end{figure}
+
+\begin{definition}[バイトニックソート]
+  \emph{バイトニック列}とは，まず増加し次に減少する列（またはそのような
+  列の巡回シフト）である．ソーティングネットワーク
+  \term[ばいとにっくそーと]{バイトニックソート}[bitonic sort]は，方向が
+  交互のソート済みの列をマージして長さ $2, 4, 8, \ldots$ のバイトニック
+  列を作り，各バイトニック列を\emph{ハーフクリーナ}によってソートする．
+  要素 $i$ を要素 $i + k/2$ と比較すると，列は2つのバイトニックな半分に
+  分かれ，前半のどの要素も後半のどの要素より小さくなる．それぞれの半分を
+  再帰的にクリーンする（\cref{fig:l05-bitonic}）．
+\end{definition}
+
+\Needspace{24\baselineskip}
+$n = 2^p$ 個の入力に対し，ネットワークは $n/2$ 個の比較器から成る段を
+$p(p+1)/2$ 段持つ．すなわち比較の回数は
+$\frac{n}{4}\log_2 n\,(\log_2 n + 1) = O(n \log^2 n)$ であり，マージ
+ソートの $O(n \log n)$ より多い．GPU は規則性のために余分な仕事を
+受け入れる．各段は1回のデータ非依存なパスであり，スレッド $i$ が自分の
+対について距離 $j$ の比較器を実行する．\margin{$n = 2^{20}$ の場合：
+$p = 20$ で，\num{524288} 個の比較器から成る段が210段，比較は約
+$1.1 \times 10^8$ 回である．マージソートの $n \log_2 n \approx 2.1
+\times 10^7$ に対して5倍の仕事だが，そのすべてが規則的である．}同じ
+考え方は，GPU プログラミングのほかのデータ非依存なプリミティブ，すなわち
+並列プレフィックス和，\cref{fig:l05-butterfly}のバタフライリダクション，
+FFT の基礎にもなっている．
+
+\begin{keypoint}[章のまとめ]
+  プログラムが GPU に向くのは，大規模にデータ並列であり，計算に比べて
+  ホストとデバイスの間で移すデータが少なく，グローバルメモリにコアレス
+  されたパターンでアクセスする場合である．プロファイラ（タイムラインには
+  Nsight Systems，カーネルには Nsight Compute）がホットスポットを見つける．
+  移植前は CPU 上で，移植後は GPU 上でである．実行時間は転送，メモリ，
+  計算の和である．転送はピン留めメモリによって短縮され，非同期コピーと
+  チャンクのストリームパイプライン（コピーと実行の並行処理）によって
+  隠される．ゼロコピーと UVA はカーネルにホストメモリをアドレス指定させる
+  が，データは依然としてバスを越える．メモリアクセスはコアレスされ，
+  アラインされ，バンク競合のないものにし，実効帯域幅を理論帯域幅と
+  比較する．計算は，より安価な命令，低い精度，組み込み関数，ワープ内で
+  一様な条件またはプレディケーション，アトミック操作の削減，テンソルコア
+  によって減らす．ワープシャッフルと投票，Cooperative Groups，独立
+  スレッドスケジューリング，分散共有メモリ，分割バリアは，共有メモリを
+  経由する古い回り道と，ロックステップのワープの古い制約を取り除く．
+  ライブラリ（cuBLAS，cuDNN，NCCL，Thrust）はこれらの最適化をすでに
+  備えており，同じ規則は OpenCL，SYCL，HIP でも成り立つ．バイトニック
+  ソートのようなソーティングネットワークは，余分な比較と引き換えに
+  データ非依存なスケジュールを得る．これは GPU のアルゴリズムが求める
+  形である．
+\end{keypoint}
+
+\end{document}

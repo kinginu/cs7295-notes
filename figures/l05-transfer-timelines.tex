@@ -1,0 +1,50 @@
+% Four timelines of one host-to-device-to-host job, each one data-transfer
+% optimisation of Lesson 5: (0) baseline copy-kernel-copy; (1) pinned
+% memory shortens the copies; (2) cudaMemcpyAsync overlaps the next copy
+% with the kernel; (3) streams pipeline chunked copies and kernels, drawn
+% on the scale of (1) with separate copy-in and copy-out engines.
+% Redraws the outline figures m5l1_dataopt0 .. m5l1_dataopt3 (timelines).
+% Usage: \input{figures/l05-transfer-timelines}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]},
+                    cp/.style={fill=orange!45, draw=ln-muted},
+                    kn/.style={fill=blue!30, draw=ln-muted}]
+  \def\L{30}   % left edge of the bars
+  % time axis
+  \draw[->] (\L,2) -- (\L+86,2) node[below left, text=ln-muted] {\iflangja{時間}{time}};
+  % (0) baseline
+  \node[anchor=east, align=right] at (\L-2,-2) {(0) \iflangja{基本形}{baseline}};
+  \fill[cp] (\L,-4.5) rectangle (\L+22,0.5) node[midway] {\iflangja{コピー}{copy in}};
+  \fill[kn] (\L+22,-4.5) rectangle (\L+54,0.5) node[midway] {\iflangja{カーネル}{kernel}};
+  \fill[cp] (\L+54,-4.5) rectangle (\L+76,0.5) node[midway] {\iflangja{コピー}{copy out}};
+  % (1) pinned memory
+  \node[anchor=east, align=right] at (\L-2,-11) {(1) \iflangja{ピン留めメモリ}{pinned memory}};
+  \fill[cp] (\L,-13.5) rectangle (\L+10,-8.5) node[midway] {\iflangja{コピー}{copy}};
+  \fill[kn] (\L+10,-13.5) rectangle (\L+42,-8.5) node[midway] {\iflangja{カーネル}{kernel}};
+  \fill[cp] (\L+42,-13.5) rectangle (\L+52,-8.5) node[midway] {\iflangja{コピー}{copy}};
+  \draw[<->, ln-muted] (\L+53,-11) -- (\L+76,-11) node[midway, above, text=ln-muted] {\iflangja{短縮}{saved}};
+  % (2) overlap with cudaMemcpyAsync
+  \node[anchor=east, align=right] at (\L-2,-22.5)
+    {(2) \iflangja{オーバーラップ}{overlap}\\\texttt{cudaMemcpyAsync}};
+  \fill[cp] (\L,-22) rectangle (\L+10,-17) node[midway] {A\,\iflangja{入}{in}};
+  \fill[cp] (\L+10,-22) rectangle (\L+20,-17) node[midway] {B\,\iflangja{入}{in}};
+  \fill[kn] (\L+10,-28) rectangle (\L+42,-23) node[midway] {\iflangja{カーネル}{kernel} A};
+  \fill[kn] (\L+42,-28) rectangle (\L+74,-23) node[midway] {\iflangja{カーネル}{kernel} B};
+  \fill[cp] (\L+42,-22) rectangle (\L+52,-17) node[midway] {A\,\iflangja{出}{out}};
+  % (3) pipelined streams: same scale as (1); each chunk copy is 10/4 = 2.5,
+  % each kernel chunk 32/4 = 8.  Copy-in, kernel and copy-out each have a
+  % row of their own (one copy engine per direction); ends at L+37.
+  \node[anchor=east, align=right] at (\L-2,-40)
+    {(3) \iflangja{パイプライン}{pipeline}\\\iflangja{ストリーム}{streams}};
+  \foreach \i in {0,1,2,3} {
+    \fill[cp] (\L+\i*2.5,-36.5) rectangle (\L+\i*2.5+2.5,-31.5) node[midway] {\the\numexpr\i+1\relax};
+    \fill[kn] (\L+2.5+\i*8,-42.5) rectangle (\L+10.5+\i*8,-37.5) node[midway] {K\the\numexpr\i+1\relax};
+    \fill[cp] (\L+10.5+\i*8,-48.5) rectangle (\L+13+\i*8,-43.5) node[midway] {\the\numexpr\i+1\relax};
+  }
+  \draw[<->, ln-muted] (\L+38,-46) -- (\L+52,-46) node[midway, above, text=ln-muted] {\iflangja{(1) より短縮}{saved vs (1)}};
+  \node[anchor=west, text=ln-muted, align=left] at (\L,-53)
+    {\iflangja{(2) の上段はコピーエンジン，下段は SM．}{Row (2): upper row = copy engines, lower row = SMs.}\\
+     \iflangja{(3) の 3 段はコピー（入），カーネル，コピー（出）．}{Row (3): copy in, kernels, copy out, one engine each.}\\
+     \iflangja{1--4：チャンク番号}{1--4: chunk numbers}; K: \iflangja{カーネル}{kernel}};
+\end{tikzpicture}

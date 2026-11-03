@@ -1,0 +1,1027 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{Advanced GPU Programming}
+\lessoninfo{
+  video={M5, lesson 1 (Advanced GPU Programming)},
+  sources={\cite{harris2013sharedmem} (required); \cite{kipfer2005gpusort} (required, concept level); \cite{harris2012datatransfer}, \cite{harris2015streams}, \cite{nvidia2026nsightsystems}, \cite{nvidia2026nsightcompute} (optional)},
+  textbook={A18 \cite{aamodt2018gpu} ch.~3; BPG \cite{nvidia2026cudabestpractices} §9 Performance Metrics, §10 Memory Optimizations, §11 Execution Configuration Optimizations; K12 \cite{kim2012gpgpu} ch.~3, §4.1; CPG \cite{nvidia2024cudaguide} §5 Performance Guidelines; PMPP \cite{hwu2022pmpp} ch.~6},
+  keywords={profiling, hotspot, data transfer, pinned memory, asynchronous copy, CUDA stream, zero copy, UVA, effective bandwidth, intrinsic function, predicated execution, warp shuffle, warp vote, cooperative groups, independent thread scheduling, cuBLAS, sorting network},
+}
+
+Lesson~3 introduced the CUDA programming model and Lesson~4 the hardware
+that runs it: the multithreaded SM, its register and shared-memory
+banks, the pipeline and the coalescing of global memory accesses.  This
+lesson turns that knowledge into a method for making a CUDA program
+fast.  It starts from the question of which programs suit a GPU at all,
+and from the profiler that shows where a program spends its time.  The
+time of a GPU program has three parts, data transfer between host and
+device, memory access on the device, and computation, and the lesson
+gives a checklist for each: pinned memory, asynchronous copies and
+streams for the transfers; coalescing, alignment and bank conflicts for
+the memory accesses; cheaper instructions, lower precision, intrinsics,
+fewer branches and fewer atomics for the computation.  It then surveys
+the newer CUDA features that remove old costs (warp shuffles and votes,
+cooperative groups, independent thread scheduling, clusters, split
+barriers), the libraries that should be preferred to hand-written
+kernels, the other GPU programming platforms, and finally the sorting
+networks of the assigned reading, the classic example of an algorithm
+reshaped for the GPU.  Lessons 6 and~7 go below this level, into the
+hardware mechanisms behind divergence, register files and warp
+scheduling.
+
+\section{What suits a GPU, and where the time goes}
+\label{sec:l05-profiling}
+
+Not every program benefits from a GPU.\source{M5, GPU-friendly programs
+and profiling; BPG §9.1 Timing; K12 §3.5.}  A program that will run well
+on one has three properties:
+\begin{itemize}
+  \item \textbf{massive data parallelism}: the same operation applies to
+    many independent data elements, enough to fill thousands of
+    threads (Lessons 1 and~2);
+  \item \textbf{little host--device communication} relative to the
+    computation: the data moved over the I/O interface is a small share
+    of the total cost;
+  \item \textbf{coalesced global memory accesses}: neighbouring threads
+    touch neighbouring addresses (Lesson~4).
+\end{itemize}
+A program that lacks the first property has no work for the lanes; one
+that lacks the second or third is limited by a bus or by the memory
+system, however fast the SMs are.\margin{Amdahl's law (Lesson~1) is the
+quantitative form of the second property: the host--device transfer is
+part of the serial fraction unless it can be overlapped
+(\cref{sec:l05-transfer}).}
+
+\subsection{Profiling}
+
+Optimisation starts with measurement.
+
+\begin{definition}[Profiling, hotspot]
+  The measurement of where a program spends its time and what the
+  hardware does while it runs is called \term{profiling}[プロファイリング]; a
+  \term{profiler}[プロファイラ] is the tool that collects those
+  measurements.  A \term{hotspot}[ホットスポット] is a part of the
+  program (a loop, a function, a kernel) that accounts for a large share
+  of the total time and is therefore the part worth optimising.
+\end{definition}
+
+Profiling comes first in two senses.  Before any code is ported, the
+\emph{CPU} program is profiled, to find the hotspots that a GPU can
+accelerate: only the data-parallel hotspots are moved, and the rest stays
+on the host.  Once a kernel runs on the device, the GPU profiler reports
+the metrics that locate the bottleneck inside it
+(\cref{tab:l05-metrics}).\tip{Measure before and after every change.
+Kernel launches and asynchronous copies return to the host before the
+work is done, so a CPU timer must be bracketed by
+\texttt{cudaDeviceSynchronize()}, or the time measured on the device
+with CUDA events (\texttt{cudaEventElapsedTime}); BPG §9.1 Timing.}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{Profiler metrics named in this lesson, what a bad value
+    indicates, and where this book treats the remedy.}
+  \label{tab:l05-metrics}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{28mm}
+                  >{\raggedright\arraybackslash}p{52mm}
+                  >{\raggedright\arraybackslash}p{26mm}}
+    \toprule
+    Metric & Bad value means & Remedy \\
+    \midrule
+    throughput (instructions, FLOP/s) & the SMs are idle: too little
+      parallelism, or stalls on memory & \cref{sec:l05-compute}, Lesson~3 \\
+    divergent branches & lanes of a warp follow different paths and
+      execute one after the other & \cref{sec:l05-compute}, Lesson~6 \\
+    uncoalesced (\enquote{divergent}) memory accesses & one warp load
+      becomes many memory transactions & \cref{sec:l05-memory}, Lesson~4 \\
+    occupancy & too few resident warps to hide latency & Lesson~3 \\
+    bandwidth utilisation & achieved bandwidth far below the peak:
+      bad access pattern, or the kernel is not memory-bound &
+      \cref{sec:l05-memory} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[Nsight Systems, Nsight Compute]
+  NVIDIA's profilers are \term{Nsight Systems}[Nsight Systems], which
+  records a timeline of the whole application (CPU threads, CUDA API
+  calls, memory copies and kernels on every GPU) and so shows the
+  transfer and overlap problems of \cref{sec:l05-transfer}
+  \cite{nvidia2026nsightsystems}, and \term{Nsight Compute}[Nsight Compute],
+  which profiles one kernel in detail (instruction throughput, memory
+  transactions, occupancy, bank conflicts, a Roofline chart) and shows
+  the problems of \cref{sec:l05-memory,sec:l05-compute}
+  \cite{nvidia2026nsightcompute}.\margin{The two Nsight tools replaced
+  \texttt{nvprof} and the Visual Profiler, which do not support compute
+  capability 8.0 and later \cite{nvidia2026profilerguide}.}
+\end{definition}
+
+\subsection{Three parts of the execution time}
+
+The execution time of a GPU program decomposes as
+\begin{equation}
+  T = T_{\text{transfer}} + T_{\text{memory}} + T_{\text{compute}},
+  \label{eq:l05-time}
+\end{equation}
+the time to move data between host and device, the time the kernel
+spends waiting for device memory, and the time it spends computing.  All
+three must be attacked, and in that order of surprise: a program ported
+naively is often dominated by the first term, which does not appear in
+the kernel at all.  The sum reflects the naive program, in which the
+three parts are serialised; the optimisations of \cref{sec:l05-transfer}
+either shorten the first term or overlap it with the other two.  The
+sections that follow take the three terms in
+turn; a fourth rule precedes them all: use the vendor's libraries
+(\cref{sec:l05-libraries}) wherever one covers the computation, because
+they already contain the optimisations below.
+
+\section{Data-transfer optimisations}
+\label{sec:l05-transfer}
+
+A discrete GPU has its own memory, and the host reaches it only through
+the I/O interface (\cref{fig:l05-host-device}, left).\source{M5, data
+transfer optimisations; BPG §10.1 Data Transfer Between Host and Device;
+\cite{harris2012datatransfer}; \cite{harris2015streams}.}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-host-device}\hspace{10mm}\input{figures/l05-pinned-staging}
+  \caption{Left: host and device memories are separate, and every
+    explicit transfer crosses the I/O interface.  Right: a copy from
+    pageable host memory is two copies, one by the CPU into a pinned
+    staging buffer and one DMA; from pinned memory it is one DMA.}
+  \label{fig:l05-host-device}
+\end{figure}
+
+\begin{definition}[Data transfer, PCIe]
+  A \term{data transfer}[データ転送] is the copy of a buffer between host
+  memory and device memory (\texttt{cudaMemcpy} and its variants).  The
+  interface it crosses is \term{PCI Express (PCIe)}[PCI Express], a
+  serial point-to-point bus of 1 to 16 lanes, whose bandwidth is one to
+  two orders of magnitude below that of the device
+  memory.\sidenote{K12 §1.2 quotes \SI{4}{\giga\bit\per\second} per lane
+  for PCIe Gen~2 and \SI{8}{\giga\bit\per\second} for Gen~3, i.e.\
+  about \SI{8}{\giga\byte\per\second} and \SI{16}{\giga\byte\per\second}
+  per direction for 16 lanes; the V100's HBM2 delivers
+  \SI{898}{\giga\byte\per\second} (BPG §9.2.1).  NVLink~4 is quoted as
+  $7\times$ PCIe Gen~5 \cite{nvidia2022hopper}; Lesson~9.}
+\end{definition}
+
+The naive program copies its input to the device, runs the kernel and
+copies the result back, three steps in sequence
+(\cref{fig:l05-transfer-timelines}, row~0).  Four techniques shorten or
+hide the two copies.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-transfer-timelines}
+  \caption{One job under the four data-transfer optimisations.  (0)
+    Copy in, kernel, copy out, in sequence.  (1) Pinned memory shortens
+    both copies.  (2) An asynchronous copy of the next input runs on the
+    copy engine while the SMs execute the current kernel.  (3) Streams
+    split input, kernel and output into chunks and pipeline them, so
+    that the copy engines and the SMs are busy at the same time.}
+  \label{fig:l05-transfer-timelines}
+\end{figure}
+
+\subsection{Fast transfers: pinned memory}
+
+\begin{definition}[Pinned memory]
+  Host memory that the operating system has promised not to page out or
+  move is called \term{pinned memory}[ピン留めメモリ] (page-locked
+  memory); it can be used
+  by the GPU's DMA engine, which reads and writes it directly by physical
+  address.  It is allocated with \texttt{cudaMallocHost()} or
+  \texttt{cudaHostAlloc()} and freed with \texttt{cudaFreeHost()}
+  \cite{harris2012datatransfer}.
+\end{definition}
+
+Ordinary (\emph{pageable}) host memory, from \texttt{malloc} or
+\texttt{new}, cannot be the source of a DMA, because the operating system
+may move or evict its pages at any time.  A \texttt{cudaMemcpy} from
+pageable memory therefore first copies the data, on the CPU, into a
+pinned staging buffer owned by the driver, and only then starts the DMA
+(\cref{fig:l05-host-device}, right).  A copy from pinned memory skips the
+staging step, which is why pinned transfers \enquote{attain the highest
+bandwidth between the host and the device} (BPG §10.1.1 Pinned
+Memory).\sidenote{Measured with \SI{16}{\mebi\byte} transfers
+\cite{harris2012datatransfer}: on a laptop (NVS 4200M, PCIe Gen~2) pinned
+memory raised host-to-device bandwidth from \num{2.31} to
+\SI{5.77}{\giga\byte\per\second}, $2.5\times$; on a desktop (GTX 680) only
+from \num{5.37} to \SI{6.19}{\giga\byte\per\second}, because the faster
+CPU made the staging copy cheap.}
+
+Pinned memory is a scarce resource: every pinned page is one the
+operating system cannot reclaim, and \enquote{excessive use can reduce
+overall system performance} (BPG §10.1.1).  The guide adds that how much
+is too much cannot be known in advance; the rule is to pin the transfer
+buffers, not every allocation.  Nor is pinning free: allocating pinned
+memory is far slower than \texttt{malloc}, so the buffers are allocated
+once, at start-up, and reused, and a buffer transferred only once rarely
+pays for its pinning.
+
+\subsection{Overlapping computation and transfer: asynchronous copies}
+
+\begin{definition}[Asynchronous copy, overlap]
+  An \term{asynchronous copy}[非同期コピー] is a transfer that returns
+  control to the host as soon as it has been \emph{issued}, before the
+  data has moved: \texttt{cudaMemcpyAsync()} is \enquote{a non-blocking
+  variant of \texttt{cudaMemcpy()}} (BPG §10.1.2).  The
+  \term{overlap of computation and transfer}[計算と転送のオーバーラップ] is
+  the resulting ability of the copy engine and the SMs to work at the
+  same time: while the kernel for one data set executes, the copy of the
+  next data set is in flight (\cref{fig:l05-transfer-timelines},
+  row~2).  The copy engine is a DMA unit separate from the SMs;
+  data-centre GPUs have at least one per direction, so a host-to-device
+  and a device-to-host copy can also overlap each other.
+\end{definition}
+
+The host, too, is free during an asynchronous copy, and can prepare the
+next input or consume the previous output.  Overlap requires pinned
+memory: an asynchronous copy from pageable memory still performs the
+staging copy on the CPU before it returns, and is then largely
+synchronous with respect to the host.\caution{\texttt{cudaMemcpyAsync}
+with a pageable buffer compiles and runs, but gives no overlap; the
+profiler timeline (Nsight Systems) shows the difference immediately.
+Use pinned buffers for every asynchronous transfer.}
+
+\subsection{Pipelining with streams: concurrent copy and execute}
+
+Overlap becomes a pipeline when the single job is split into chunks.
+
+\begin{definition}[CUDA stream]
+  A \term{CUDA stream}[CUDAストリーム] is a sequence of device operations
+  (copies, kernel launches, events) that execute in the order they were
+  issued.  Operations in \emph{different} streams have no ordering
+  between them and may run concurrently or interleaved
+  \cite{harris2015streams}.  Every runtime call that takes a stream
+  argument (\texttt{cudaMemcpyAsync}, the fourth parameter of the
+  execution configuration) is placed in that stream; calls without one go
+  to the \emph{default stream}.
+\end{definition}
+
+The legacy default stream synchronises with every other stream of the
+device: an operation issued to it waits for all earlier work in all
+streams and blocks all later work (streams created with
+\texttt{cudaStreamNonBlocking} are exempt) \cite{harris2015streams}.  One stray
+\texttt{cudaMemcpy} or \texttt{<<<grid, block>>>} without a stream
+argument therefore serialises a whole pipeline.\caution{CUDA~7 added a
+per-thread default stream (\texttt{nvcc --default-stream per-thread})
+that behaves like an ordinary stream; without that flag, the default
+stream is the legacy one \cite{harris2015streams}.}
+
+\begin{definition}[Concurrent copy and execute]
+  The pipelining of a job over $n$ streams is called
+  \term{concurrent copy and execute}[コピーと実行の並行処理]: the input is divided into $n$
+  chunks, and chunk $k$'s copy-in, kernel and copy-out are issued to
+  stream $k$.  Within a stream the three steps stay in order, so each
+  kernel waits for its own input; across streams the copy of chunk $k+1$
+  overlaps the kernel of chunk $k$, and the copy-out of chunk $k-1$
+  overlaps both (\cref{fig:l05-transfer-timelines}, row~3; BPG §10.1.2
+  Asynchronous and Overlapping Transfers with Computation).
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+const int nStreams = 4;
+size_t chunk = n / nStreams;  // per-chunk size
+float *h_in, *h_out, *d_in, *d_out;
+cudaMallocHost(&h_in,  n * sizeof(float)); // pinned
+cudaMallocHost(&h_out, n * sizeof(float));
+cudaMalloc(&d_in,  n * sizeof(float));
+cudaMalloc(&d_out, n * sizeof(float));
+cudaStream_t s[nStreams];
+for (int i = 0; i < nStreams; ++i) cudaStreamCreate(&s[i]);
+for (int i = 0; i < nStreams; ++i) {
+  size_t off = i * chunk, bytes = chunk * sizeof(float);
+  cudaMemcpyAsync(d_in + off, h_in + off, bytes,
+                  cudaMemcpyHostToDevice, s[i]);
+  scale<<<chunk / 256, 256, 0, s[i]>>>(d_in + off,
+                                       d_out + off, chunk);
+  cudaMemcpyAsync(h_out + off, d_out + off, bytes,
+                  cudaMemcpyDeviceToHost, s[i]);
+}
+cudaDeviceSynchronize();      // wait for all
+\end{lstlisting}
+The loop issues twelve operations and returns at once; the device
+executes them subject only to the per-stream ordering.  The
+\texttt{cudaDeviceSynchronize()} at the end waits for every stream
+before the host reads \texttt{h\_out}.\tip{BPG §10.1.2 gives the
+estimate: with a transfer time $t_T$ and a kernel time $t_E$, the
+sequential version takes $t_E + t_T$ and the staged version about
+$t_E + t_T/n$ when $t_E > t_T$ (the kernel is the long pole), or
+$t_T + t_E/n$ when the transfer is.}
+
+\begin{example}[A pipelined job]
+  \label{ex:l05-pipeline}
+  A job copies in \SI{64}{\mebi\byte}, runs a kernel, and copies out
+  \SI{64}{\mebi\byte}.  Sequentially the copy-in takes
+  \SI{8}{\milli\second}, the kernel \SI{6}{\milli\second} and the
+  copy-out \SI{8}{\milli\second}: \SI{22}{\milli\second} in all.  Split
+  into four chunks on four streams, each chunk needs \SI{2}{\milli\second}
+  in, \SI{1.5}{\milli\second} of kernel and \SI{2}{\milli\second} out; the
+  device has one copy engine per direction and runs one kernel at a time.
+  \Cref{tab:l05-pipeline} traces the schedule: a kernel starts when its
+  input has arrived and the previous kernel has finished; a copy-out
+  starts when its kernel has finished and the previous copy-out is done.
+  The job completes at \SI{11.5}{\milli\second}, a speed-up of $1.9\times$,
+  and the copy-in engine is the bottleneck: it is busy from $0$ to
+  \SI{8}{\milli\second} without a gap, and everything after that is the
+  drain of the pipeline (the last kernel and the last copy-out,
+  \SI{3.5}{\milli\second}).  More chunks shorten the drain but add
+  per-operation overhead.
+\end{example}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{Schedule of \cref{ex:l05-pipeline} (times in
+    \si{\milli\second}).  Each column is one engine; within a stream the
+    three steps stay in order.}
+  \label{tab:l05-pipeline}
+  \begin{tabular}{lccc}
+    \toprule
+    Chunk (stream) & Copy in & Kernel & Copy out \\
+    \midrule
+    1 & 0--2 & 2--3.5 & 3.5--5.5 \\
+    2 & 2--4 & 4--5.5 & 5.5--7.5 \\
+    3 & 4--6 & 6--7.5 & 7.5--9.5 \\
+    4 & 6--8 & 8--9.5 & 9.5--11.5 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Direct host memory access: zero copy and UVA}
+
+The fourth technique removes the explicit copy altogether, by letting
+the kernel read host memory.
+
+\begin{definition}[Zero copy]
+  The direct access of host memory by device threads is called
+  \term{zero copy}[ゼロコピー].  The host buffer is allocated pinned and
+  \emph{mapped} into the device's address space
+  (\texttt{cudaHostAlloc} with \texttt{cudaHostAllocMapped}), the kernel
+  receives the corresponding device pointer
+  (\texttt{cudaHostGetDevicePointer}), and each load or store in the
+  kernel travels over the I/O interface instead of to device
+  memory (BPG §10.1.3 Zero Copy).
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+float *h_a, *d_a;
+cudaHostAlloc(&h_a, bytes, cudaHostAllocMapped);
+cudaHostGetDevicePointer(&d_a, h_a, 0);
+kernel<<<grid, block>>>(d_a);  // loads cross the I/O bus
+\end{lstlisting}
+
+Zero copy is a clear win on an \emph{integrated} GPU, whose memory is
+physically the CPU's memory: the \enquote{copy} it replaces was a copy
+from one region of the same DRAM to another.  On a discrete GPU every
+access pays the I/O interface's bandwidth and latency, so it helps only
+when the data is read once, in a coalesced pattern, and the latency can
+be hidden by other warps; data that is reused belongs in device
+memory.
+
+\begin{definition}[Unified virtual addressing]
+  Under
+  \term{unified virtual addressing (UVA)}[統合仮想アドレッシング（UVA）],
+  host memory and the memories of all devices share one virtual
+  address space: a pointer value identifies its memory by itself, the
+  runtime can tell from the address which memory a pointer refers to
+  (\texttt{cudaPointerGetAttributes}), and
+  \texttt{cudaMemcpy} can be called with \texttt{cudaMemcpyDefault}
+  without naming the direction (BPG §10.1.4 Unified Virtual
+  Addressing).  The driver and runtime hide the physically separate
+  memories behind one addressing scheme.\margin{UVA needs compute
+  capability 2.0 and a 64-bit host; under it a pinned buffer has the
+  same host and device pointer, and peer-to-peer copies between GPUs
+  (Lesson~9) become possible.  BPG §10.1.4.}
+\end{definition}
+
+Ideally a unified address space would make data movement free.  It does
+not: the memories are still separate, the data must still cross the
+interface, and the copy happens either explicitly or on the runtime's
+initiative, with its overhead.  UVA changes the \emph{naming} of memory,
+not its \emph{location}.\caution{UVA is not unified memory.  UVA (2011,
+CUDA~4) is one address space over separate memories; unified memory
+(\texttt{cudaMallocManaged}, CUDA~6) adds automatic migration of pages
+between them on demand, with page-fault costs of its own.  Lesson~7
+treats unified memory.}
+
+Not every one of the four techniques fits every system: the gain of
+pinned memory depends on the host CPU, the gain of overlap on the ratio
+of transfer to kernel time, the gain of zero copy on whether the GPU is
+integrated.  The rule is to try each technique and measure.
+
+\section{Memory-access optimisations}
+\label{sec:l05-memory}
+
+Once the data is on the device, the second term of \cref{eq:l05-time} is
+the time the kernel waits for device memory.\source{M5, memory-access
+optimisations; BPG §9.2 Bandwidth, §10.2 Device Memory Spaces;
+\cite{harris2013sharedmem}.}  The checklist repeats, as rules,
+the mechanisms of Lesson~4:
+\begin{itemize}
+  \item use the on-chip memories: shared memory for data a block
+    reuses, the L1 and L2 caches for data with locality, constant
+    memory for values every thread reads;\margin{Shared memory latency
+    is \enquote{roughly 100× lower than uncached global memory latency}
+    \cite{harris2013sharedmem}; on the Tesla and Fermi generations
+    K12 Table~1.4 lists 4--32 cycles for shared memory against hundreds
+    for global memory.}
+  \item \textbf{coalesce} and \textbf{align} global accesses so that a
+    warp's load touches as few memory transactions as possible: on
+    current GPUs a transaction is a \SI{32}{\byte} sector, and a warp of
+    32 threads reading consecutive 4-byte words touches four of them
+    (BPG §10.2.1 Coalesced Access to Global Memory);
+  \item \textbf{reduce the number of transactions}: a structure of
+    arrays instead of an array of structures, data types sized to what
+    is needed, loads of 8 or 16 bytes per thread where alignment allows;
+  \item \textbf{compare the achieved bandwidth with the peak}
+    (\cref{def:l05-bandwidth}): a gap that persists after coalescing
+    means the kernel is not memory-bound and the next term of
+    \cref{eq:l05-time} is the one to attack;
+  \item \textbf{avoid shared-memory bank conflicts}: 32 banks of
+    32-bit words, one access per bank per cycle, so a warp whose lanes
+    access different addresses in the same bank serialises (lanes
+    reading the same word get a broadcast; Lesson~4;
+    \cite{harris2013sharedmem}).
+\end{itemize}
+
+\begin{definition}[Theoretical and effective bandwidth]
+  \label{def:l05-bandwidth}
+  The \term{theoretical bandwidth}[理論帯域幅] of a memory is computed
+  from its hardware specification: memory clock rate $\times$ interface
+  width in bytes $\times$ 2 for double data rate (BPG §9.2.1
+  Theoretical Bandwidth Calculation).  The
+  \term{effective bandwidth}[実効帯域幅] of a kernel is the bandwidth it
+  actually achieved,
+  \begin{equation}
+    \text{effective bandwidth} = \frac{(B_r + B_w)/10^9}{t},
+    \label{eq:l05-effective-bw}
+  \end{equation}
+  with $B_r$ and $B_w$ the bytes the kernel reads and writes and $t$ its
+  execution time in seconds, in \si{\giga\byte\per\second} (BPG §9.2.2
+  Effective Bandwidth Calculation).\margin{BPG's own instance: the V100,
+  HBM2 at \SI{877}{\mega\hertz} on 4096 bits, $0.877 \times 10^9 \times
+  512 \times 2 / 10^9 = \SI{898}{\giga\byte\per\second}$ (BPG §9.2.1).}
+\end{definition}
+
+Both numbers must use the same divisor: bandwidths are decimal
+(\num{e9}), and dividing the bytes by $1024^3$ instead understates the
+effective bandwidth by \SI{7}{\percent} (BPG §9.2.1).  The Visual
+Profiler reported a \enquote{requested} throughput, corresponding to the
+effective bandwidth, and an \enquote{actual} throughput that includes
+the bytes wasted by uncoalesced accesses; the gap between the two is the
+coalescing loss (BPG §9.2.3 Throughput Reported by Visual Profiler).  In
+Nsight Compute the same loss appears as sectors per request in the
+memory workload analysis: the ideal is four for 32 consecutive 4-byte
+loads.
+
+\begin{example}[Bandwidth utilisation]
+  \label{ex:l05-bandwidth}
+  A GPU has HBM2 at a memory clock of \SI{1.2}{\giga\hertz} on a 5120-bit
+  interface.  Its theoretical bandwidth is
+  \[
+    1.2 \times 10^9 \times \frac{5120}{8} \times 2 \,/\, 10^9
+    = \SI{1536}{\giga\byte\per\second}.
+  \]
+  A kernel reads an array of \SI{256}{\mebi\byte}
+  ($B_r = \num{268435456}$) and writes one of the same size, and runs in
+  \SI{0.5}{\milli\second}.  By \cref{eq:l05-effective-bw},
+  \[
+    \frac{(\num{268435456} + \num{268435456})/10^9}{0.5 \times 10^{-3}}
+    = \SI{1074}{\giga\byte\per\second},
+  \]
+  \SI{70}{\percent} of the peak.  The kernel is memory-bound and its
+  access pattern is already good; the remaining \SI{30}{\percent} is the
+  usual gap between a specification and a streaming kernel, not a sign
+  of uncoalesced accesses.  Had the result been \SI{300}{\giga\byte\per\second}
+  with the same byte count, the first suspect would be the access
+  pattern, and the sectors per request in Nsight Compute the first
+  metric to read.
+\end{example}
+
+\section{Reducing computation}
+\label{sec:l05-compute}
+
+The third term of \cref{eq:l05-time} is the computation
+itself.\source{M5, reducing computation; BPG §12 Instruction
+Optimization, §13 Control Flow; CPG §5.4 Maximize Instruction Throughput.}
+
+\begin{definition}[Instruction optimisation]
+  The replacement of the instructions a kernel executes by fewer or
+  cheaper ones with the same (or an acceptable) result is called
+  \term{instruction optimization}[命令最適化]: a cheaper operation for the same function,
+  a narrower data type, a hardware function unit for a software routine,
+  a predicate for a branch.
+\end{definition}
+
+Six techniques reduce computation.
+\begin{description}
+  \item[Cheaper instructions.]  Integer division and modulo are
+    multi-instruction sequences on the SM (BPG §12.1.4); 32-bit integer
+    multiplication is a single instruction on Volta and later but was
+    emulated on Maxwell and Pascal; shifts and masks are single
+    instructions.  For a power-of-two divisor
+    $n = 2^k$, \texttt{i / n} is \texttt{i >{}> k} and \texttt{i \% n} is
+    \texttt{i \& (n - 1)} for non-negative \texttt{i}.\margin{The instruction-level form of strength
+    reduction (Lesson~11).  The compiler does this itself for a
+    compile-time constant divisor; the rewrite matters for a run-time
+    power of two.}
+\begin{lstlisting}[language=C++, numbers=none]
+int q1 = i / n;        // division sequence
+int q2 = i >> k;       // one shift, if n == 1 << k
+int r  = i & (n - 1);  // i % n, for i >= 0
+\end{lstlisting}
+  \item[Lower precision.]  Where the application tolerates it, 32-bit
+    arithmetic instead of 64-bit, and 16- or 8-bit instead of 32-bit:
+    each halving of the width doubles the throughput of the arithmetic
+    units and halves the bytes moved.  FP64 throughput on consumer GPUs
+    is a small fraction of FP32; FP16 pairs (\texttt{half2}) execute two
+    operations per instruction (BPG §12.1).  Lesson~12 treats the formats
+    and what the tensor cores do with them.\caution{Lower precision is a
+    numerical decision before it is a performance one: a sum of many
+    FP16 terms loses digits at every addition, and a reduction over a
+    million elements in FP16 is wrong, not merely approximate.  Keep
+    accumulators wider than the operands.}
+  \item[Hardware special functions.]  The SM's special function units
+    (Lesson~4) evaluate reciprocal, reciprocal square root, $\log_2$,
+    $2^x$, sine and cosine as single instructions, at reduced accuracy.
+    \begin{definition}[Intrinsic function]
+      An \term{intrinsic function}[組み込み関数] is a function the
+      compiler translates directly into a hardware instruction rather
+      than into a call to a library routine, such as
+      \texttt{\_\_sinf()}, \texttt{\_\_expf()}, \texttt{\_\_fdividef()};
+      the standard function \texttt{rsqrtf()} likewise maps to the
+      SFU's reciprocal square root.  The reciprocal square root \enquote{should always be
+      invoked explicitly as \texttt{rsqrtf()}} rather than written as
+      \texttt{1.0f / sqrtf(x)}, which the compiler cannot always merge
+      (BPG §12.1.6).
+    \end{definition}
+\begin{lstlisting}[language=C++, numbers=none]
+float y1 = 1.0f / sqrtf(x);  // two ops
+float y2 = rsqrtf(x);        // one SFU instruction
+\end{lstlisting}
+    The math libraries (\cref{sec:l05-libraries}) use the intrinsics
+    automatically; so does the compiler, for a whole file, under
+    \texttt{nvcc -use\_fast\_math}, which also flushes denormals to zero
+    and selects the approximate division and square root
+    (BPG §12.1.9).\caution{\texttt{-use\_fast\_math} changes results,
+    not only speed: check the output against the precise build.}
+  \item[Fewer branches.]  A branch whose condition differs between the
+    lanes of a warp makes the warp execute both paths (Lesson~6).  Two
+    remedies: write the condition so that whole warps take the same
+    path, as in a condition on \texttt{threadIdx.x / warpSize} rather
+    than on \texttt{threadIdx.x} (CPG §5.4.2 Control Flow Instructions),
+    and let the compiler replace short branches by predication.
+    \begin{definition}[Predicated execution]
+      In \term{predicated execution}[プレディケート実行] both sides of a
+      conditional are issued to every lane, and each instruction carries
+      a predicate register that decides, per lane, whether its result is
+      written.  No branch instruction is executed and no warp diverges;
+      the cost is that every lane spends the cycles of both sides.  The
+      compiler chooses predication only when the number of instructions
+      controlled by the condition is below a threshold
+      (BPG §13.2 Branch Predication).
+    \end{definition}
+    Lesson~6 shows the hardware side: the SIMT stack, the active mask,
+    and the PTX guard predicates of Lesson~10.
+  \item[Avoid atomics.]  An atomic read-modify-write on a location that
+    many threads update serialises them at the memory or in the L2
+    cache.  Atomics have become much cheaper over the GPU generations,
+    but a reduction into one counter by thousands of threads is still a
+    serialisation; reduce within the block first (shared memory, or the
+    warp shuffles of \cref{sec:l05-features}) and issue one atomic per
+    block.\margin{Kepler implemented shared-memory atomics as a
+    lock/update/unlock sequence; Maxwell added native shared-memory
+    atomic instructions for 32-bit integers
+    \cite{nvidia2026maxwelltuning}: atomics became \enquote{much cheaper
+    than before} through changes of this kind.}
+  \item[Tensor cores.]  A matrix multiply-accumulate on the tensor cores
+    (Lesson~1) runs an order of magnitude faster than the same
+    operation on the FP32 lanes.  Any computation that can be phrased as
+    a matrix product should be, and the libraries do so when the shapes
+    and types allow (Lesson~12).
+\end{description}
+
+\begin{keypoint}
+  The three terms of \cref{eq:l05-time} have three checklists.
+  Transfers: pin, overlap, pipeline, or map.  Memory: cache, coalesce,
+  align, count transactions, avoid bank conflicts, compare with the
+  peak.  Computation: cheaper instructions, narrower types, intrinsics,
+  warp-uniform conditions, fewer atomics, tensor cores.  Profile before
+  and after each step.
+\end{keypoint}
+
+\section{Newer CUDA features}
+\label{sec:l05-features}
+
+Several costs of the checklists above have been removed by hardware and
+API additions since the original CUDA model.\source{M5, newer CUDA
+features; CPG §4.1 SIMT Architecture, §7.19 Warp Vote Functions,
+§7.22 Warp Shuffle Functions, §7.26 Asynchronous Barrier, §8 Cooperative
+Groups; \cite{nvidia2022hopper}.}
+
+\subsection{Warp-level operations: shuffle and vote}
+
+Registers are private to a thread.  In the original model two threads of
+the same warp could exchange a value only through shared memory: a store,
+a \texttt{\_\_syncthreads()}, a load, with the risk of a bank conflict
+on the way.  Warp-level operations move the value directly between
+lanes.
+
+\begin{definition}[Warp shuffle]
+  A \term{warp shuffle}[ワープシャッフル] is an instruction by which each
+  lane of a warp reads a register of another lane of the same warp,
+  with no shared memory and no barrier (CPG §7.22 Warp Shuffle
+  Functions).  The four variants differ in which lane is read
+  (\cref{tab:l05-shuffle}); every variant takes a \emph{mask} of the
+  lanes that participate, the value, and the lane selector.
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{The warp shuffle functions.  \texttt{mask} names the
+    participating lanes (\texttt{0xffffffff} for all 32); the optional
+    \texttt{width} splits the warp into independent segments.}
+  \label{tab:l05-shuffle}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{52mm}
+                  >{\raggedright\arraybackslash}p{58mm}}
+    \toprule
+    Function & Lane $i$ receives the value of lane \\
+    \midrule
+    \texttt{\_\_shfl\_sync(mask, v, src)} & \texttt{src} (one lane
+      broadcasts to all) \\
+    \texttt{\_\_shfl\_up\_sync(mask, v, d)} & $i - d$ (lanes below $d$
+      keep their own value) \\
+    \texttt{\_\_shfl\_down\_sync(mask, v, d)} & $i + d$ (the top $d$
+      lanes keep their own value) \\
+    \texttt{\_\_shfl\_xor\_sync(mask, v, m)} & $i \oplus m$ (a
+      butterfly exchange) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-shuffle-xor}
+  \caption{\texttt{\_\_shfl\_xor\_sync} with lane mask 1: the eight
+    lanes shown swap R1 with their neighbour in one instruction.}
+  \label{fig:l05-shuffle-xor}
+\end{figure}
+
+\Cref{fig:l05-shuffle-xor} shows the simplest case, a pairwise swap.
+The important use is the reduction: a sum over the 32 lanes of a warp
+takes five shuffles, one per bit of the lane index, and every lane ends
+with the total (\cref{fig:l05-butterfly}, \cref{ex:l05-butterfly}).
+\Needspace{6\baselineskip}
+\begin{lstlisting}[language=C++, numbers=none]
+__device__ float warp_sum(float v) {
+  for (int m = 16; m > 0; m >>= 1)
+    v += __shfl_xor_sync(0xffffffff, v, m);
+  return v;   // every lane holds the warp total
+}
+\end{lstlisting}
+A block reduction then needs shared memory only once, for the per-warp
+totals, and a grid reduction one atomic per
+block.\margin{The \texttt{\_sync} forms date from CUDA~9, which
+deprecated the old \texttt{\_\_shfl()} family without a mask when Volta
+introduced independent thread scheduling (below); the mask tells the
+hardware which lanes must have arrived before the exchange.  Compute
+capability 8.0 adds warp reductions as single functions,
+\texttt{\_\_reduce\_add\_sync} and relatives (CPG §7.21 Warp Reduce
+Functions).}
+
+\begin{example}[Butterfly reduction]
+  \label{ex:l05-butterfly}
+  Eight lanes hold the values $3, 1, 4, 1, 5, 9, 2, 6$ (sum 31), and the
+  loop runs with masks $4, 2, 1$.  After the first round lane $i$ holds
+  $v_i + v_{i \oplus 4}$: lanes 0--3 hold $8, 10, 6, 7$ and lanes 4--7
+  the same values.  After mask 2, lanes 0 and~1 hold $8 + 6 = 14$ and
+  $10 + 7 = 17$, repeated across the warp; after mask 1, every lane holds
+  $14 + 17 = 31$ (\cref{fig:l05-butterfly}).  Three rounds for 8 lanes,
+  $\log_2 32 = 5$ for a full warp.
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-butterfly}
+  \caption{The butterfly reduction of \cref{ex:l05-butterfly}: three
+    rounds of \texttt{\_\_shfl\_xor\_sync} with masks 4, 2, 1 leave the
+    sum 31 in every lane.}
+  \label{fig:l05-butterfly}
+\end{figure}
+
+\begin{definition}[Warp vote function]
+  A \term{warp vote function}[ワープ投票関数] evaluates a predicate $p$
+  in every participating lane and combines the results across the warp
+  (CPG §7.19 Warp Vote Functions):
+  \begin{itemize}
+    \item \texttt{\_\_all\_sync(mask, p)} is true if $p$ holds in every
+      lane;
+    \item \texttt{\_\_any\_sync(mask, p)} is true if it holds in at
+      least one;
+    \item \texttt{\_\_ballot\_sync(mask, p)} returns the 32-bit mask of
+      the lanes in which it holds.
+  \end{itemize}
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+unsigned m = __ballot_sync(0xffffffff, x > 0);
+int count = __popc(m);              // lanes with x > 0
+if (__all_sync(0xffffffff, x > 0))  // warp-uniform branch
+  ...
+\end{lstlisting}
+A ballot followed by \texttt{\_\_popc} counts in two instructions, with
+no barrier, what a shared-memory histogram would take a barrier for; a condition on the
+result of \texttt{\_\_all\_sync} or \texttt{\_\_any\_sync} is uniform
+across the warp by construction and never diverges.
+
+\subsection{Cooperative groups}
+
+\begin{definition}[Cooperative groups]
+  The CUDA API that names groups of threads other than the fixed warp
+  and block is called \term{cooperative groups}[Cooperative Groups] (CPG
+  §8 Cooperative Groups).  A group is the whole block
+  (\texttt{this\_thread\_block}), a warp or a tile of a warp
+  (\texttt{tiled\_partition}), the set of lanes of a warp that are
+  active at the call (\texttt{coalesced\_threads}), the whole grid, or a
+  cluster.  Every
+  group offers \texttt{sync()} and its size and rank; the warp-sized
+  groups (tiles and coalesced groups) also offer \texttt{shfl},
+  \texttt{ballot}, \texttt{any}, \texttt{all} and \texttt{cg::reduce};
+  the grid group needs a cooperative launch.
+\end{definition}
+
+\Needspace{7\baselineskip}
+\begin{lstlisting}[language=C++, numbers=none]
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+auto block = cg::this_thread_block();
+auto tile  = cg::tiled_partition<8>(block);  // 8-lane tiles
+v += tile.shfl_xor(v, 4);     // shuffle within the tile
+tile.sync();                  // barrier for the 8 lanes
+\end{lstlisting}
+The API makes the warp size and the block size parameters of a function
+rather than assumptions baked into it: a routine that takes a tile as
+a parameter works unchanged for tiles of 4, 8 or 32 lanes, and one that
+uses only \texttt{sync()}, size and rank works for a tile and for a
+block of 1024 threads alike.
+
+\subsection{Independent thread scheduling}
+
+\begin{definition}[Independent thread scheduling]
+  The execution model introduced with Volta, called
+  \term{independent thread scheduling}[独立スレッドスケジューリング],
+  gives every thread of a warp its own program
+  counter and call stack, so that the threads of one warp can diverge,
+  interleave and reconverge at sub-warp granularity, and a thread
+  waiting in a spin loop no longer blocks the other threads of its warp
+  from making progress.
+\end{definition}
+
+Before Volta a warp had one program counter: on a divergent branch the
+hardware ran one path to its reconvergence point before starting the
+other (Lesson~6), and a thread that waited for a thread on the other
+path waited for ever.  With per-thread state the scheduler may interleave
+the two paths, which makes such fine-grained synchronisation within a
+warp correct, at the price of giving up the guarantee that the lanes of
+a warp execute in lockstep.\caution{Lecture vs document: the lesson
+describes this feature as smaller warp-level operations in place of a
+fixed warp size.  CPG §4.1 SIMT Architecture is more specific:
+\enquote{Starting with the NVIDIA Volta architecture, Independent Thread
+Scheduling allows full concurrency between threads, regardless of warp
+\ldots\ the GPU maintains execution state per thread, including a
+program counter and call stack}.  The warp is still 32 threads; what
+changed is that code may no longer assume the lanes are in lockstep,
+which is why the warp-level functions take a mask.}
+
+\subsection{Clusters, unified on-chip memory and split barriers}
+
+Three further additions concern the on-chip memories and
+synchronisation.
+\begin{description}
+  \item[Shared memory across blocks.]  On Hopper the thread block
+    clusters of Lesson~3 give a block access to the shared memory of the
+    other blocks of its cluster, which the hardware schedules together on
+    one GPU processing cluster; NVIDIA calls this \emph{distributed
+    shared memory} \cite{nvidia2022hopper}.  A block can thus exchange data with
+    its neighbours without a round trip through global memory.
+  \item[Unified L1, shared and texture storage.]  Since Volta the L1
+    data cache, the shared memory and the texture cache are one SRAM
+    array per SM, split between cache and scratchpad per kernel; a
+    kernel that uses little shared memory gets a large L1.  Lesson~6
+    treats the carve-out and the research that led to it.\margin{H100:
+    a cluster holds up to 16 blocks (a non-portable size), and an SM has
+    \SI{256}{\kibi\byte} of combined L1 and shared memory, of which up
+    to \SI{228}{\kibi\byte} can be shared memory
+    \cite[Table~4]{nvidia2022hopper}.}
+  \item[Hardware split arrive/wait barriers.]
+    \begin{definition}[Split arrive/wait barrier]
+      A \term{split arrive/wait barrier}[分割型到着／待機バリア] separates
+      the two halves of a barrier: a thread \emph{arrives} when its data
+      is ready and continues with independent work, and \emph{waits}
+      only when it needs the others' data.  \texttt{\_\_syncthreads()}
+      is an arrive immediately followed by a wait; the asynchronous
+      barrier of CPG §7.26 (\texttt{cuda::barrier}) exposes the two
+      halves, and compute capability 8.0 accelerates them in hardware.
+    \end{definition}
+    The gap between arrive and wait is time the thread would otherwise
+    spend stalled; with the asynchronous copies of CPG §7.27, a thread
+    can start the load of the next tile into shared memory, arrive, and
+    compute on the current tile until the copy has landed.
+\end{description}
+
+\section{Libraries and other platforms}
+\label{sec:l05-libraries}
+
+The first rule, before any of the checklists, is to use the
+libraries.\source{M5, libraries and other platforms.}
+
+\begin{definition}[Math library]
+  A \term{math library}[数学ライブラリ] is a vendor- or community-provided
+  set of GPU routines for a domain (dense linear algebra, sparse
+  matrices, tensors, deep-learning layers, communication) that is already
+  tuned for each GPU generation: coalesced, tiled, tensor-core-aware,
+  pipelined.  A program that calls one inherits those optimisations and
+  follows the hardware across generations by relinking.
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{The NVIDIA libraries named in this lesson.}
+  \label{tab:l05-libraries}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{20mm}
+                  >{\raggedright\arraybackslash}p{86mm}}
+    \toprule
+    Library & Domain \\
+    \midrule
+    cuBLAS & dense linear algebra (BLAS: vector, matrix--vector and
+      matrix--matrix operations); uses the tensor cores for GEMM \\
+    cuSPARSE & sparse matrices and sparse--dense products \\
+    cuTENSOR & tensor contractions, reductions and elementwise
+      operations \\
+    Thrust & C++ parallel algorithms on device vectors (sort, scan,
+      reduce, transform), in the style of the C++ standard library \\
+    NCCL & collective communication between GPUs (all-reduce,
+      broadcast, all-gather), the MPI collectives of Lesson~2 for GPUs \\
+    NVSHMEM & one-sided, partitioned global address space communication
+      between GPUs \\
+    cuDNN & deep-learning primitives: convolutions, pooling,
+      normalisation, attention \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\Cref{tab:l05-libraries} lists the ones named.  The three most widely
+used are \term{cuBLAS}[cuBLAS], the dense linear algebra
+library whose GEMM is the kernel behind most of machine learning
+(Lesson~12); \term{cuDNN}[cuDNN], the deep-learning primitives library
+that frameworks such as PyTorch call; and \term{NCCL}[NCCL], the
+collective-communication library for multi-GPU training (Lesson~9).
+The library \term{Thrust}[Thrust] is the odd one out: not a domain library but a
+C++ template library of parallel algorithms, so that a sort or a
+reduction on the device is one call rather than a
+kernel.\margin{\texttt{thrust::sort} on a \texttt{device\_vector} is
+the quickest correct GPU sort a program can have; writing one's own only
+pays when the data has structure the library cannot know
+(\cref{sec:l05-sorting}).}
+
+CUDA is NVIDIA's platform; the same ideas exist elsewhere
+(\cref{tab:l05-platforms}).
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{Other GPU programming platforms named in this lesson.}
+  \label{tab:l05-platforms}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{22mm}
+                  >{\raggedright\arraybackslash}p{84mm}}
+    \toprule
+    Platform & What it is \\
+    \midrule
+    OpenCL & the Khronos open standard for heterogeneous computing:
+      kernels in a C dialect, portable across GPUs, CPUs and FPGAs \\
+    oneAPI / SYCL & Khronos's single-source C++ model (SYCL) and Intel's
+      implementation and libraries (oneAPI) \\
+    OpenACC & directive-based offloading, in the style of OpenMP
+      (\texttt{\#pragma acc}) \\
+    HIP & AMD's C++ runtime API, source-compatible with CUDA
+      (\texttt{hipMalloc}, \texttt{hipLaunchKernelGGL}); CUDA code is
+      ported mechanically with \texttt{hipify} \\
+    Kokkos & a C++ performance-portability layer that compiles one
+      source to CUDA, HIP, SYCL or OpenMP back ends \\
+    Python, Julia & high-level languages with GPU array libraries and
+      kernel compilers (CuPy, Numba; CUDA.jl) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The standard \term{OpenCL}[OpenCL] has the same execution model as CUDA under other
+names (work-item, work-group, NDRange for thread, block, grid; K12
+§1.3.10), \term{SYCL}[SYCL] puts host and device code in one C++ source
+as CUDA does, and \term{HIP}[HIP] is close enough to CUDA that the
+programs of this book translate function by function.  What transfers
+between them is everything in this lesson: the three terms of
+\cref{eq:l05-time} and their checklists are properties of the hardware,
+not of the language.
+
+\section{Sorting networks}
+\label{sec:l05-sorting}
+
+The sorting networks of the assigned reading \cite{kipfer2005gpusort}
+are an example of an algorithm reshaped for the GPU.\source{M5, required
+readings; \cite{kipfer2005gpusort}; \cite{batcher1968sorting}.}
+
+\begin{definition}[Merge sort]
+  The algorithm called \term{merge sort}[マージソート] sorts by
+  recursively sorting the two halves of the sequence and \emph{merging} them: two sorted runs are
+  combined by repeatedly taking the smaller of their heads.  It is
+  $O(n \log n)$ and the standard sequential algorithm; but the merge is a
+  data-dependent loop, which head is taken next depends on the values,
+  so its control flow and its memory accesses differ from thread to
+  thread.
+\end{definition}
+
+On a GPU, data-dependent control flow is divergence and data-dependent
+addresses are uncoalesced accesses (\cref{tab:l05-metrics}).  The
+algorithms that map well are the ones whose sequence of comparisons is
+fixed in advance.
+
+\begin{definition}[Sorting network]
+  A \term{sorting network}[ソーティングネットワーク] is a fixed sequence of
+  \emph{comparators}, each of which compares two positions of the array
+  and swaps them if they are out of order, that sorts every input of a
+  given size.  Which positions are compared at each step depends only on
+  the step and the size, never on the data, so every comparator of a
+  stage can execute in parallel, every thread performs the same
+  operation, and the addresses are known before the kernel
+  runs.\margin{Batcher introduced the two classic networks, odd-even
+  merge sort and bitonic merge sort, in 1968 for hardware sorters
+  \cite{batcher1968sorting}; \cite{kipfer2005gpusort} brought them to
+  the GPU in 2005, before CUDA, as fragment (pixel) shader programs over
+  textures (Lesson~1).}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l05-bitonic}
+  \caption{A bitonic sorting network for $n = 8$: six stages, four
+    comparators each.  Phase $k$ merges pairs of runs of length $k/2$ into sorted
+    runs of length $k$; within a phase the comparator distance is $k/2, k/4, \ldots, 1$.}
+  \label{fig:l05-bitonic}
+\end{figure}
+
+\begin{definition}[Bitonic sort]
+  A \emph{bitonic sequence} first rises then falls (or is a rotation of
+  such a sequence).  The sorting network called
+  \term{bitonic sort}[バイトニックソート] builds bitonic sequences of length $2, 4, 8, \ldots$ by
+  merging sorted runs of alternating direction, and then sorts each
+  bitonic sequence by a \emph{half-cleaner}: comparing element $i$ with
+  element $i + k/2$ splits the sequence into two bitonic halves with
+  every element of the first below every element of the second, and the
+  halves are cleaned recursively (\cref{fig:l05-bitonic}).
+\end{definition}
+
+\Needspace{24\baselineskip}
+For $n = 2^p$ inputs the network has $p(p+1)/2$ stages of $n/2$
+comparators, i.e.\ $\frac{n}{4}\log_2 n\,(\log_2 n + 1) = O(n \log^2 n)$
+comparisons, more than merge sort's $O(n \log n)$; the GPU accepts the
+extra work for the regularity.  Each stage is one data-independent
+pass in which thread $i$ performs the comparator at distance $j$ on its
+pair.\margin{For $n = 2^{20}$:
+$p = 20$, 210 stages of \num{524288} comparators, about
+$1.1 \times 10^8$ comparisons, against $n \log_2 n \approx 2.1 \times
+10^7$ for merge sort: five times the work, all of it regular.}  The
+same idea underlies the other data-independent primitives of GPU
+programming: the parallel prefix sum, the butterfly reduction of
+\cref{fig:l05-butterfly}, and the FFT.
+
+\begin{keypoint}[Lesson summary]
+  A program suits a GPU when it is massively data-parallel, moves little
+  data between host and device relative to its computation, and accesses
+  global memory in a coalesced pattern; the profiler (Nsight Systems for
+  the timeline, Nsight Compute for the kernel) finds the hotspots, on
+  the CPU before porting and on the GPU after.  Execution time is
+  transfer plus memory plus compute.  Transfers are shortened by pinned
+  memory and hidden by asynchronous copies and a stream pipeline of
+  chunks (concurrent copy and execute); zero copy and UVA let a kernel
+  address host memory, but the data still crosses the bus.  Memory
+  accesses are made coalesced, aligned and bank-conflict-free, and the
+  effective bandwidth is compared with the theoretical one.
+  Computation is reduced with cheaper instructions, lower precision,
+  intrinsics, warp-uniform conditions or predication, fewer atomics and
+  the tensor cores.  Warp shuffles and votes, cooperative groups,
+  independent thread scheduling, distributed shared memory and split
+  barriers remove old detours through shared memory and old
+  restrictions of the lockstep warp.  Libraries (cuBLAS, cuDNN, NCCL,
+  Thrust) carry these optimisations already, and the same rules hold on
+  OpenCL, SYCL and HIP.  Sorting networks such as bitonic sort trade
+  extra comparisons for a data-independent schedule, the shape a GPU
+  algorithm wants.
+\end{keypoint}
+
+\end{document}

@@ -1,0 +1,22 @@
+% A host-to-device transfer from pageable memory goes through a pinned
+% staging buffer (two copies); from pinned memory the DMA engine reads the
+% user buffer directly (one copy).  Original, after the description in
+% harris2012datatransfer.
+% Usage: \input{figures/l05-pinned-staging}
+% Width: 48 mm, used as the right half of a body figure (with l05-host-device).
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  % pageable path
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,27) {\iflangja{ページング可能}{pageable}};
+  \draw[fill=ln-box] (0,18) rectangle (13,24) node[midway, align=center] {\iflangja{ページング}{pageable}\\\iflangja{可能配列}{array}};
+  \draw[fill=ln-accent!15] (17,18) rectangle (31,24) node[midway, align=center] {\iflangja{ピン留め}{pinned}\\\iflangja{中継バッファ}{staging}};
+  \draw[fill=ln-box] (35,18) rectangle (48,24) node[midway, align=center] {\iflangja{デバイス}{device}\\\iflangja{メモリ}{memory}};
+  \draw[->] (13,21) -- (17,21) node[midway, above, text=ln-muted] {CPU};
+  \draw[->] (31,21) -- (35,21) node[midway, above, text=ln-muted] {DMA};
+  % pinned path
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,12) {\iflangja{ピン留め}{pinned}};
+  \draw[fill=ln-accent!15] (0,3) rectangle (13,9) node[midway, align=center] {\iflangja{ピン留め}{pinned}\\\iflangja{配列}{array}};
+  \draw[fill=ln-box] (35,3) rectangle (48,9) node[midway, align=center] {\iflangja{デバイス}{device}\\\iflangja{メモリ}{memory}};
+  \draw[->] (13,6) -- (35,6) node[midway, above, text=ln-muted] {DMA};
+  \node[text=ln-muted] at (24,0) {\iflangja{ホスト側のコピーなし}{no host-side copy}};
+\end{tikzpicture}

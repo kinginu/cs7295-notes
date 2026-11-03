@@ -181,7 +181,7 @@ theoretical bandwidth	理論帯域幅	りろんたいいきはば	5	BPG 9.2.1
 effective bandwidth	実効帯域幅	じっこうたいいきはば	5	BPG 9.2.2
 instruction optimization	命令最適化	めいれいさいてきか	5	
 intrinsic function	組み込み関数	くみこみかんすう	5	rsqrtf()
-predicated execution	プレディケート実行	ぷれでぃけーとじっこう	5	defined in M6.1
+predicated execution	プレディケート実行	ぷれでぃけーとじっこう	5	hardware mechanism in M6.1
 warp shuffle	ワープシャッフル	わーぷしゃっふる	5	
 warp vote function	ワープ投票関数	わーぷとうひょうかんすう	5	vote / ballot
 cooperative groups	Cooperative Groups	こーぽれーてぃぶぐるーぷす	5	

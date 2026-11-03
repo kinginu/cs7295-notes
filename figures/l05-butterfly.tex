@@ -1,0 +1,42 @@
+% Butterfly reduction with __shfl_xor_sync over eight lanes: three rounds
+% with lane masks 4, 2 and 1; after the last round every lane holds the
+% sum.  Original (the values are the chapter's own example).
+% Usage: \input{figures/l05-butterfly}
+% Width: body (120 mm); the drawing is about 104 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.2mm]}]
+  \def\cw{11}
+  \def\rh{11}
+  \foreach \i in {0,...,7} {
+    \node[text=ln-muted] at (\i*\cw+\cw/2,3*\rh+5) {\iflangja{レーン}{lane} \i};
+  }
+  % rows: round 0 (input), after xor 4, after xor 2, after xor 1
+  \foreach \r/\lbl/\vals in {
+      3/{\iflangja{入力}{input}}/{3,1,4,1,5,9,2,6},
+      2/{$\oplus 4$}/{8,10,6,7,8,10,6,7},
+      1/{$\oplus 2$}/{14,17,14,17,14,17,14,17},
+      0/{$\oplus 1$}/{31,31,31,31,31,31,31,31}} {
+    \node[anchor=east, text=ln-muted] at (-1,\r*\rh+2.5) {\lbl};
+    \foreach \v [count=\i from 0] in \vals {
+      \draw[fill=ln-box] (\i*\cw+1.5,\r*\rh) rectangle (\i*\cw+\cw-1.5,\r*\rh+5);
+      \node at (\i*\cw+\cw/2,\r*\rh+2.5) {\v};
+    }
+  }
+  % arrows: xor 4 (row 3 -> 2)
+  \foreach \i in {0,1,2,3} {
+    \draw[->, ln-accent] (\i*\cw+\cw/2,3*\rh-0.3) -- (\i*\cw+4*\cw+\cw/2,2*\rh+5.3);
+    \draw[->, ln-accent] (\i*\cw+4*\cw+\cw/2,3*\rh-0.3) -- (\i*\cw+\cw/2,2*\rh+5.3);
+  }
+  % xor 2 (row 2 -> 1)
+  \foreach \i in {0,1,4,5} {
+    \draw[->, ln-accent] (\i*\cw+\cw/2,2*\rh-0.3) -- (\i*\cw+2*\cw+\cw/2,\rh+5.3);
+    \draw[->, ln-accent] (\i*\cw+2*\cw+\cw/2,2*\rh-0.3) -- (\i*\cw+\cw/2,\rh+5.3);
+  }
+  % xor 1 (row 1 -> 0)
+  \foreach \i in {0,2,4,6} {
+    \draw[->, ln-accent] (\i*\cw+\cw/2,\rh-0.3) -- (\i*\cw+\cw+\cw/2,5.3);
+    \draw[->, ln-accent] (\i*\cw+\cw+\cw/2,\rh-0.3) -- (\i*\cw+\cw/2,5.3);
+  }
+  \node[anchor=west, text=ln-muted] at (0,-4)
+    {\iflangja{各段で，レーン $i$ は自分の値にレーン $i \oplus m$ の値を加える}{in each round lane $i$ adds the value of lane $i \oplus m$ to its own}};
+\end{tikzpicture}

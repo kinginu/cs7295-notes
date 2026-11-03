@@ -1,0 +1,22 @@
+% Host and device: the CPU with its host memory and the GPU with its
+% device memory, joined by the I/O interface (PCIe), over which every
+% explicit data transfer travels.  Redraws the top part of the outline
+% figure m5l1_dataopt0.
+% Usage: \input{figures/l05-host-device}
+% Width: 48 mm, used as the left half of a body figure (with l05-pinned-staging).
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \draw[fill=ln-box] (0,6) rectangle (14,16) node[midway] {CPU};
+  \draw[fill=ln-accent!15] (0,0) rectangle (14,4.5)
+    node[midway] {\iflangja{ホストメモリ}{host memory}};
+  \draw (7,6) -- (7,4.5);
+  \draw[fill=ln-box] (34,6) rectangle (48,16) node[midway] {GPU};
+  \draw[fill=ln-accent!15] (34,0) rectangle (48,4.5)
+    node[midway] {\iflangja{デバイスメモリ}{device memory}};
+  \draw (41,6) -- (41,4.5);
+  \draw[fill=white, rounded corners=1] (17,8) rectangle (31,14)
+    node[midway, align=center] {\iflangja{I/O}{I/O}\\\iflangja{インタフェース}{interface}};
+  \draw[<->] (14,11) -- (17,11);
+  \draw[<->] (31,11) -- (34,11);
+  \node[text=ln-muted] at (24,4) {PCIe};
+\end{tikzpicture}
