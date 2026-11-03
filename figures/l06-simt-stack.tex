@@ -1,0 +1,49 @@
+% The SIMT stack on a nested branch (Lesson 6).  Left: a CFG in which
+% BB2 branches again (BB4 1000, BB5 0100) and all paths reconverge at
+% BB6.  Right: the stack of (alternate PC with its mask, reconvergence
+% PC) entries after BB1, after BB2, after the pop at the end of BB4 and
+% after the pop at the end of BB5 (top entry first).
+% Redraws the outline figures m6l1_gpuflow4 and m6l1_gpuflow5 (BB2 mask
+% corrected to 1100).
+% Usage: \input{figures/l06-simt-stack}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, minimum width=13mm, minimum height=7.5mm,
+               align=center, inner sep=1pt}]
+  % nested CFG
+  \node[bb, fill=ln-accent!20] (b1) at (22,56) {BB1\\\texttt{1111}};
+  \node[bb, fill=ln-source!25] (b2) at (12,41) {BB2\\\texttt{1100}};
+  \node[bb, fill=ln-tip!25] (b3) at (36,41) {BB3\\\texttt{0011}};
+  \node[bb, fill=ln-source!12] (b4) at (4,25) {BB4\\\texttt{1000}};
+  \node[bb, fill=ln-source!40] (b5) at (20,25) {BB5\\\texttt{0100}};
+  \node[bb, fill=ln-accent!20] (b6) at (22,9) {BB6\\\texttt{1111}};
+  \draw[->] (b1) -- (b2);
+  \draw[->] (b1) -- (b3);
+  \draw[->] (b2) -- (b4);
+  \draw[->] (b2) -- (b5);
+  \draw[->] (b4) -- (b6);
+  \draw[->] (b5) -- (b6);
+  \draw[->] (b3) |- (b6);
+  % stack snapshots: \snap{x}{y}{title}{list of alt/reconv}
+  \newcommand{\snapshot}[4]{%
+    \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (#1,#2+1) {#3};
+    \node[anchor=south, text=ln-muted] at (#1+8,#2-4.5) {\iflangja{代替 PC}{alt.\ PC}};
+    \node[anchor=south, text=ln-muted] at (#1+21.5,#2-4.5) {\iflangja{再収束点}{reconv.}};
+    \foreach \alt/\rec [count=\k from 0] in {#4} {
+      \draw[fill=ln-box] (#1,#2-5-\k*6) rectangle ++(16,-5.5)
+        node[midway] {\alt};
+      \draw[fill=ln-box] (#1+16,#2-5-\k*6) rectangle ++(11,-5.5)
+        node[midway] {\rec};
+    }}
+  \snapshot{52}{56}{\iflangja{(a) BB1 の後}{(a) after BB1}}
+    {{BB3 \texttt{0011}}/BB6}
+  \snapshot{84}{56}{\iflangja{(b) BB2 の後}{(b) after BB2}}
+    {{BB5 \texttt{0100}}/BB6, {BB3 \texttt{0011}}/BB6}
+  \snapshot{52}{26}{\iflangja{(c) BB4 の後（pop）}{(c) after BB4 (pop)}}
+    {{BB3 \texttt{0011}}/BB6}
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (84,27)
+    {\iflangja{(d) BB5 の後（pop）}{(d) after BB5 (pop)}};
+  \node[anchor=north west, text=ln-muted, align=left] at (84,24)
+    {\iflangja{空：BB3 の後は\\BB6 を \texttt{1111} で実行}{empty: after BB3,\\BB6 runs with \texttt{1111}}};
+\end{tikzpicture}

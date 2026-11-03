@@ -1,0 +1,46 @@
+% Split versus unified on-chip storage (Lesson 6, own example).  An SM
+% with a 128 KiB register file and 64 KiB of shared memory, or one
+% 192 KiB pool.  Kernel A: 64 KiB of registers per block, no shared
+% memory.  Kernel B: 16 KiB of registers and 16 KiB of shared memory per
+% block.  Each filled segment is one resident block's allocation; white
+% is idle.  Scale 0.45 mm per KiB.
+% Original (no outline figure for this lesson).
+% Usage: \input{figures/l06-unified-pool}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  \def\k{0.45}
+  % \seg{x0 KiB}{y}{size KiB}{fill}
+  \newcommand{\seg}[4]{\draw[fill=#4] ({26+(#1)*\k},#2) rectangle ++({(#3)*\k},4);}
+  \newcommand{\idle}[3]{\draw[ln-rule, fill=white] ({26+(#1)*\k},#2) rectangle ++({(#3)*\k},4);}
+  % headings
+  \node[anchor=south west, text=ln-muted] at (26,46) {\iflangja{レジスタファイル 128\,KiB}{register file 128 KiB}};
+  \node[anchor=south west, text=ln-muted] at (26+131*\k,46) {\iflangja{共有メモリ 64\,KiB}{shared 64 KiB}};
+  % Kernel A split: 2 blocks x 64 KiB regs
+  \node[anchor=west] at (0,42) {\iflangja{A：分離}{A, split}};
+  \seg{0}{40}{64}{ln-accent!30} \seg{64}{40}{64}{ln-accent!30}
+  \idle{131}{40}{64}
+  \node[anchor=west] at (26+196*\k,42) {2};
+  % Kernel A unified
+  \node[anchor=west] at (0,34) {\iflangja{A：統合}{A, unified}};
+  \seg{0}{32}{64}{ln-accent!30} \seg{64}{32}{64}{ln-accent!30} \seg{128}{32}{64}{ln-accent!30}
+  \node[anchor=west] at (26+196*\k,34) {3};
+  % Kernel B split: 4 blocks x 16 regs + 4 x 16 smem
+  \node[anchor=west] at (0,22) {\iflangja{B：分離}{B, split}};
+  \foreach \b in {0,...,3} { \seg{\b*16}{20}{16}{ln-accent!30} \seg{131+\b*16}{20}{16}{ln-tip!35} }
+  \idle{64}{20}{64}
+  \node[anchor=west] at (26+196*\k,22) {4};
+  % Kernel B unified: 6 blocks x (16 + 16)
+  \node[anchor=west] at (0,14) {\iflangja{B：統合}{B, unified}};
+  \foreach \b in {0,...,5} { \seg{\b*32}{12}{16}{ln-accent!30} \seg{\b*32+16}{12}{16}{ln-tip!35} }
+  \node[anchor=west] at (26+196*\k,14) {6};
+  \node[anchor=south, text=ln-muted] at (26+198*\k,46) {\iflangja{ブロック}{blocks}};
+  % legend
+  \draw[fill=ln-accent!30] (26,3) rectangle ++(4,3);
+  \node[anchor=west] at (31,4.5) {\iflangja{レジスタ}{registers}};
+  \draw[fill=ln-tip!35] (50,3) rectangle ++(4,3);
+  \node[anchor=west] at (55,4.5) {\iflangja{共有メモリ}{shared memory}};
+  \draw[ln-rule, fill=white] (78,3) rectangle ++(4,3);
+  \node[anchor=west] at (83,4.5) {\iflangja{未使用}{idle}};
+  \node[anchor=south west, text=ln-muted] at (26,26.5)
+    {\iflangja{統合プール 192\,KiB（1 本の帯）}{unified pool 192 KiB (one bar)}};
+\end{tikzpicture}

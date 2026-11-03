@@ -1,0 +1,48 @@
+% Dynamic warp formation (Lesson 6).  Two warps of four threads (T0-T3,
+% T4-T7) diverge on the same branch: at BB2 warp 0 has lanes 0-1 active
+% and warp 1 lanes 2-3, so the two half warps fill one new warp without
+% moving any thread out of its home lane; BB3 likewise.
+% Redraws the outline figure m6l1_dynamicwarp.
+% Usage: \input{figures/l06-dwf}
+% Width: body (120 mm); the drawing is about 114 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % \lanes{x}{y}{labels}{fill}: four lane cells, "-" = idle
+  \def\dashmark{-}
+  \newcommand{\lanes}[4]{%
+    \foreach \t [count=\l from 0] in {#3} {
+      \ifx\t\dashmark
+        \draw[ln-rule, dashed] (#1+\l*7,#2) rectangle ++(6,5);
+      \else
+        \draw[fill=#4] (#1+\l*7,#2) rectangle ++(6,5) node[midway] {\t};
+      \fi
+    }}
+  % column heads
+  \node[font=\scriptsize\sffamily\bfseries] at (13.5,30) {\iflangja{ワープ 0}{warp 0}};
+  \node[font=\scriptsize\sffamily\bfseries] at (49.5,30) {\iflangja{ワープ 1}{warp 1}};
+  \node[font=\scriptsize\sffamily\bfseries, align=center] at (95.5,30)
+    {\iflangja{動的に形成したワープ}{dynamically formed warp}};
+  \foreach \l in {0,...,3} {
+    \node[text=ln-muted] at (3+\l*7,25.5) {\l};
+    \node[text=ln-muted] at (39+\l*7,25.5) {\l};
+    \node[text=ln-muted] at (85+\l*7,25.5) {\l};
+  }
+  \node[anchor=east, text=ln-muted] at (-1,25.5) {\iflangja{レーン}{lane}};
+  % BB2 row
+  \node[anchor=east] at (-1,19.5) {BB2};
+  \lanes{0}{17}{T0,T1,-,-}{ln-source!25}
+  \lanes{36}{17}{-,-,T6,T7}{ln-source!25}
+  \lanes{82}{17}{T0,T1,T6,T7}{ln-source!25}
+  % BB3 row
+  \node[anchor=east] at (-1,9.5) {BB3};
+  \lanes{0}{7}{-,-,T2,T3}{ln-tip!25}
+  \lanes{36}{7}{T4,T5,-,-}{ln-tip!25}
+  \lanes{82}{7}{T4,T5,T2,T3}{ln-tip!25}
+  \draw[->, very thick, ln-accent] (66,14.5) -- (79,14.5);
+  \node[anchor=north, text=ln-muted, align=center] at (72.5,12.5)
+    {\iflangja{同じ PC で\\再グループ化}{regroup\\at equal PC}};
+  \node[anchor=north west, text=ln-muted] at (0,4)
+    {\iflangja{SIMD 効率 50\,\% $\times$ 4 命令スロット}{SIMD efficiency 50\,\% in 4 issue slots}};
+  \node[anchor=north west, text=ln-muted] at (82,4)
+    {\iflangja{100\,\% $\times$ 2 スロット}{100\,\% in 2 issue slots}};
+\end{tikzpicture}

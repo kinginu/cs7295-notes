@@ -1,0 +1,36 @@
+% Two hierarchical register files (Lesson 6).  (a) A register file
+% cache: small L0/L1 register files in front of the main register file,
+% closest to the ALUs.  (b) A partitioned register file: a fast SRAM
+% segment and a slow, large segment that may be built in non-volatile
+% memory.
+% Redraws the outline figure m6l2_opt1.
+% Usage: \input{figures/l06-rf-hierarchy}
+% Width: body (120 mm); the drawing is about 110 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,40)
+    {\iflangja{(a) レジスタファイルキャッシュ}{(a) register file cache}};
+  \draw[fill=ln-box] (14,30) rectangle ++(20,6) node[midway] {\iflangja{演算器}{ALUs}};
+  \draw[fill=ln-accent!35] (16,22) rectangle ++(16,6) node[midway] {L0 RF};
+  \draw[fill=ln-accent!22] (10,14) rectangle ++(28,6) node[midway] {L1 RF};
+  \draw[fill=ln-accent!10] (2,4) rectangle ++(44,8)
+    node[midway] {\iflangja{主レジスタファイル (MRF)}{main register file (MRF)}};
+  \draw[<->] (24,28) -- (24,30);
+  \draw[<->] (24,20) -- (24,22);
+  \draw[<->] (24,12) -- (24,14);
+  \draw[->, ln-muted] (50,34) -- (50,6);
+  \node[anchor=west, text=ln-muted] at (51,33) {\iflangja{小・高速}{small, fast}};
+  \node[anchor=west, text=ln-muted] at (51,7) {\iflangja{大・低速}{large, slow}};
+  % partitioned
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (68,40)
+    {\iflangja{(b) 分割型レジスタファイル}{(b) partitioned register file}};
+  \draw[fill=ln-box] (76,30) rectangle ++(28,6) node[midway] {\iflangja{演算器}{ALUs}};
+  \draw[fill=ln-accent!30] (70,14) rectangle ++(16,12)
+    node[midway, align=center] {\iflangja{高速部\\(SRAM)}{fast\\segment\\(SRAM)}};
+  \draw[fill=ln-tip!20] (86,14) rectangle ++(26,12)
+    node[midway, align=center] {\iflangja{低速・大容量部\\(NVM も可)}{slow, large\\segment\\(may be NVM)}};
+  \draw[<->] (82,26) -- (82,30);
+  \draw[<->] (98,26) -- (98,30);
+  \node[anchor=north, text=ln-muted, align=center] at (91,11)
+    {\iflangja{よく使う値を高速部に置く}{frequently used values\\in the fast segment}};
+\end{tikzpicture}

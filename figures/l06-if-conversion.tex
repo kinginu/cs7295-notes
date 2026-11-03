@@ -1,0 +1,22 @@
+% If-conversion (Lesson 6): the branch of figure l06-divergent-cfg
+% becomes one straight-line block of predicated instructions that every
+% lane fetches; no lane ever jumps.
+% Redraws the outline figure m6l1_divb2.
+% Usage: \input{figures/l06-if-conversion}  (in a marginfigure)
+% Width: margin (50 mm); the drawing is about 46 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    ins/.style={draw, minimum width=34mm, minimum height=6mm,
+                align=center, inner sep=1pt}]
+  \node[ins, fill=ln-accent!20] (p) at (0,30)
+    {\iflangja{プレディケート\\\texttt{p = (i < 2)}}{set predicate \texttt{p = (i < 2)}}};
+  \node[ins, fill=ln-source!25] (a) at (0,21) {\texttt{(p)} Work-1};
+  \node[ins, fill=ln-tip!25] (b) at (0,12) {\texttt{(!p)} Work-2};
+  \node[ins, fill=ln-accent!20] (c) at (0,3) {BB4};
+  \draw[->] (p) -- (a);
+  \draw[->] (a) -- (b);
+  \draw[->] (b) -- (c);
+  \draw[ln-muted] (19,33) -- ++(1.5,0) -- ++(0,-33) -- ++(-1.5,0);
+  \node[rotate=90, text=ln-muted] at (23.5,16.5)
+    {\iflangja{全レーンがフェッチ}{fetched by every lane}};
+\end{tikzpicture}

@@ -1,0 +1,887 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPU Architecture Optimizations - I}
+\lessoninfo{
+  video={M6, lessons 1--3 (Handling Divergent Branch; Register Optimizations; Unified Register File and Shared Memory)},
+  sources={Fung et al.\ \cite{fung2007dwf} (dynamic warp formation); Narasiman et al.\ \cite{narasiman2011twolevel} (large warps); Gebhart et al.\ \cite{gebhart2011energy} (register file cache), \cite{gebhart2011compile} (compiler-managed register hierarchy), \cite{gebhart2012unifying} (unified local memory); Jeon et al.\ \cite{jeon2015rfv} (register file virtualization); NVIDIA A100 \cite{nvidia2020ampere} and H100 \cite{nvidia2022hopper} whitepapers; Harris \cite{harris2013sharedmem} (shared memory latency)},
+  textbook={A18 \cite{aamodt2018gpu} ch.~3 (assigned), ch.~4; K12 \cite{kim2012gpgpu} §1.4.1 GPU Pipeline, §1.4.2 Handling Branch Instructions; CPG \cite{nvidia2024cudaguide} §4.1 SIMT Architecture, Compute Capability 7.x--9.0 Shared Memory; PMPP \cite{hwu2022pmpp} ch.~10},
+  keywords={divergent branch, divergent warp, reconvergence point, immediate post-dominator, if-conversion, SIMT stack, large warp, dynamic warp formation, SIMD efficiency, live and dead registers, register file cache, register file virtualization, software-managed cache, unified local memory, shared memory carve-out},
+}
+
+Lesson~4 followed a warp instruction through the pipeline of an SM and
+noted two facts that this lesson builds on: a warp carries an active
+mask that can switch lanes off, and its registers sit in a register file
+so large that it must be banked.  The first part of this lesson asks
+what happens when the threads of one warp disagree about a branch: how
+the hardware notices, which lanes run which path, and how the paths are
+joined again with a stack of masks and program counters.  Two research
+ideas then trade the warp's fixed composition for better lane
+utilisation.  The second part looks at the register file itself, why it
+is large, slow and power-hungry, and what four observations about
+register values suggest: a register file cache in front of it, and a
+virtualized file smaller than the names it serves.  The third part
+compares registers with shared memory and caches and asks whether one
+on-chip pool could serve all three, a research generalisation of the
+configurable L1 and shared memory of NVIDIA GPUs.  Like Lesson~7, this
+lesson is organised around research papers, and a second aim is to read
+such papers.
+
+\section{Handling divergent branches}
+\label{sec:l06-divergence}
+
+The SPMD model of Lesson~1 runs one program in every thread, but nothing
+forces the threads to follow the same path through it.\source{M6,
+divergent branches; K12 §1.4.2 Handling Branch Instructions; A18 ch.~3;
+CPG §4.1 SIMT Architecture; \cite{fung2007dwf}.}  This section defines
+divergence, shows two ways to execute a divergent branch (predication
+and the SIMT stack), and presents two microarchitectural responses to its
+cost: large warps and dynamic warp formation.
+
+\subsection{Divergent branches and warps}
+
+The kernel below lets the first two threads of each block do one thing
+and the others another; with a warp of four threads, as in the figures
+of this lesson, the warp of threads 0--3 splits in half.\margin{The
+figures of this lesson draw warps of four threads so that masks stay short; the real
+warp size is 32 on every NVIDIA GPU from compute capability 5.0 to 9.0
+(CPG Table~21 \cite{nvidia2024cudaguide}).}
+
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void split(float *a) {
+  int i = threadIdx.x;      // BB1: compute the condition
+  if (i < 2)
+    a[i] = a[i] * 2.0f;     // BB2: Work-1
+  else
+    a[i] = a[i] + 1.0f;     // BB3: Work-2
+  a[i] = a[i] - 0.5f;       // BB4: both paths again
+}
+\end{lstlisting}
+
+The compiler cuts such code into a
+\term{basic block}[基本ブロック], a maximal sequence of instructions
+that is entered only at its first instruction and left only after its
+last, so that either all of its instructions execute or none.  The
+blocks and the possible transfers of control between them form the
+control-flow graph of \cref{fig:l06-divergent-cfg}, which Lesson~10
+defines formally.
+
+\begin{definition}[Divergent branch and divergent warp]
+  \label{def:l06-divergent}
+  A \term{divergent branch}[ダイバージェント分岐] is a branch whose
+  outcome differs among the threads of one warp, so that after it the
+  threads of the warp would fetch from different program counters.  The
+  warp is then a \term{divergent warp}[ダイバージェントワープ], and the
+  phenomenon is called \term{warp divergence}[ワープダイバージェンス].
+  A branch on which all threads of every warp agree is warp-uniform and
+  costs no more than on a scalar processor.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-divergent-cfg}
+  \caption{A divergent branch for a warp of four threads.  Left: the
+    control-flow graph, each basic block with the active mask under
+    which it runs (bit $k$ from the left is lane~$k$).  Right: the
+    lanes that execute each block; BB2 and BB3 run one after the other,
+    each with half of the lanes idle.}
+  \label{fig:l06-divergent-cfg}
+\end{figure}
+
+The active mask of Lesson~4 records which lanes take part in each block
+(\cref{fig:l06-divergent-cfg}): BB1 runs with \texttt{1111}, BB2 with
+\texttt{1100}, BB3 with \texttt{0011} and BB4 again with \texttt{1111}.
+The warp has one program counter, so the two paths cannot run at the
+same time; they run one after the other, each with the lanes of the
+other path switched off, and the two paths' times add up.\caution{A
+divergent branch does not make the code wrong, only slower: the result
+is the one a scalar machine would compute.  Divergence between
+\emph{different} warps costs nothing, since each warp has its own
+program counter.}  The point where the paths meet again, BB4, is where
+the warp can resume with its full mask.
+
+\begin{definition}[Reconvergence point]
+  \label{def:l06-reconvergence}
+  The \term{reconvergence point}[再収束点] of a divergent branch is the
+  first instruction at which all of the warp's paths from the branch are
+  guaranteed to meet again, so that the warp can continue as a whole.
+  In compiler terms, a block $Y$ is a
+  \term{post-dominator}[後支配節点] of a block $X$ if every path from
+  $X$ to the exit of the program passes through $Y$, and the
+  \term{immediate post-dominator (IPDOM)}[直接後支配節点] of $X$ is its
+  closest post-dominator other than $X$ itself.  The IPDOM of the
+  branch block is the usual reconvergence point; in
+  \cref{fig:l06-divergent-cfg} it is BB4.
+\end{definition}
+
+\margin{Fung et al.\ report that reconverging at the immediate
+post-dominator, rather than letting the diverged parts of a warp run
+apart until the end of the kernel, gives a speed-up of 93.4\,\%
+\cite{fung2007dwf}.}%
+Reconverging as early as possible matters because every block executed
+after the branch and before the reconvergence point runs with a partial
+mask.
+
+\subsection{If-conversion and predication}
+
+The oldest way to remove a branch is to remove the jump.
+
+\begin{definition}[If-conversion]
+  \label{def:l06-if-conversion}
+  The transformation called \term{if-conversion}[if変換] replaces a branch and its two paths by
+  straight-line code: an instruction computes the condition into a
+  \term{predicate}[プレディケート], a one-bit register per lane, and
+  each instruction of the former paths is guarded by the predicate or
+  its negation (\cref{fig:l06-if-conversion}).  A lane whose guard is
+  false does not write the result.  The resulting code is executed by
+  the predicated execution of Lesson~5.
+\end{definition}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l06-if-conversion}}
+  \caption{The branch of \cref{fig:l06-divergent-cfg} after
+    if-conversion: one basic block whose guarded instructions every
+    lane fetches.}
+  \label{fig:l06-if-conversion}
+\end{marginfigure}
+
+If-conversion is standard on vector processors, and CPUs use it for
+short branch bodies, where a conditional move is cheaper than a possible
+misprediction.  On a GPU it removes divergence altogether: no
+lane ever jumps, so the warp keeps one program counter.  The price is
+that the instructions of both paths are fetched and issued even when no
+lane needs one of them, so the compiler applies if-conversion only to
+short bodies.\margin{In PTX the guard is written \texttt{@p} or
+\texttt{@!p} in front of the instruction; Lesson~10 shows the
+predicate registers.}
+
+\begin{example}
+  \label{ex:l06-if-conversion}
+  In the kernel above let BB1 and BB4 have 2 instructions each and BB2
+  and BB3 have 6 each.  Take a warp of four lanes and count lane-slots,
+  one per lane per issued instruction.
+  \begin{itemize}
+    \item \emph{Divergent warp, branch code}: $2+6+6+2 = 16$ issued
+      instructions, $64$ lane-slots, of which $2\cdot4 + 6\cdot2 +
+      6\cdot2 + 2\cdot4 = 40$ do work.
+    \item \emph{Divergent warp, if-converted}: the same 16 instructions
+      (the predicate is computed in BB1) and 40 useful lane-slots.
+    \item \emph{Uniform warp (all lanes take BB2), branch code}:
+      $2+6+2 = 10$ instructions, all lanes busy.
+    \item \emph{Uniform warp, if-converted}: still 16 instructions; the
+      6 of BB3 do nothing in any lane.
+  \end{itemize}
+  If-conversion makes the cost independent of the data.  In this
+  count it ties when the warp diverges and loses when the warp is
+  uniform; what it saves is the overhead the count leaves out (the
+  branch instruction, the stack push and pop, the reconvergence check
+  and the fetch redirect), which matters only for short bodies.\tip{Cost of
+if-conversion: the sum of both bodies, always.  Cost of a branch: the
+body taken if the warp is uniform, the sum of both if it diverges.}
+\end{example}
+
+\subsection{The SIMT stack}
+\label{sec:l06-simt-stack}
+
+Without predication the hardware itself must run both paths and join
+them.\caution{Lecture vs textbook: the two-field entry built below leaves implicit
+how the full mask returns at the reconvergence point.  K12 §1.4.2 gives
+the entry three fields, \enquote{the PC address of the reconvergence
+point, active mask bits, and the next PC address}
+\cite{kim2012gpgpu}.}  The mechanism is easiest to understand by building it in steps,
+following the warp of \cref{fig:l06-divergent-cfg}.
+\begin{enumerate}
+  \item After BB1 the next PCs of the four threads differ (BB2 for
+    lanes 0--1, BB3 for lanes 2--3): the branch is divergent.  One PC
+    and one mask cannot express both destinations.
+  \item Following one path only (BB1, BB2, BB4) is wrong: the threads
+    of lanes 2--3 never execute BB3.
+  \item The fix is to remember the path not taken: an \emph{alternate
+    PC} (BB3) with its mask (\texttt{0011}), executed after the taken
+    path.  The order becomes BB1, BB2, BB3, BB4.
+  \item One alternate slot is not enough when branches nest.  If BB2
+    itself diverges (\cref{fig:l06-simt-stack}, left: BB4 with
+    \texttt{1000}, BB5 with \texttt{0100}), its alternate PC BB5 would
+    overwrite BB3 in the single slot, and BB3 would be lost.
+  \item The pending paths therefore go onto a stack.
+\end{enumerate}
+
+\begin{definition}[SIMT stack]
+  \label{def:l06-simt-stack}
+  The \term{SIMT stack}[SIMTスタック] of a warp holds one entry per
+  pending path of a divergent branch: the alternate PC with its active
+  mask, and the reconvergence PC at which the current path ends.  On a
+  divergent branch the hardware pushes an entry for the path not taken
+  and continues with the taken path under the reduced mask.  Before
+  every fetch it compares the next PC with the reconvergence PC of the
+  top entry; if they are equal, it \emph{pops} the entry and fetches
+  from the alternate PC with the entry's mask instead.  A
+  \term{nested branch}[入れ子の分岐], a divergent branch inside a path
+  of another, simply pushes another entry.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-simt-stack}
+  \caption{The SIMT stack on a nested branch.  Left: BB2 diverges again
+    and all paths reconverge at BB6.  Right: the stack (top entry
+    first) after the branch in BB1, after the branch in BB2, after the
+    pop at the end of BB4 and after the pop at the end of BB5.}
+  \label{fig:l06-simt-stack}
+\end{figure}
+
+\Cref{tab:l06-simt-trace} traces the nested example.  BB4 ends with the
+next PC BB6, which equals the reconvergence PC on top of the stack, so
+the warp pops and fetches BB5 with \texttt{0100}; BB5 ends at BB6 again,
+the warp pops the second entry and fetches BB3 with \texttt{0011}; when
+BB3 ends the stack is empty and BB6 runs with the full mask.  The
+two-field stack does not say where \texttt{1111} comes from; the
+three-field stack of the sidenote restores it from the pre-branch
+entry.  Every
+thread has executed exactly its own path, and the six blocks took six
+fetches.\sidenote{In the three-field formulation of K12 §1.4.2 and A18
+ch.~3 \cite{kim2012gpgpu,aamodt2018gpu} the top of the stack always
+describes what the warp is executing.  At a divergent branch the top
+entry's next PC is replaced by the reconvergence PC (keeping the
+pre-branch mask), and one entry per path is pushed, each with its own
+next PC, mask and the common reconvergence PC.  When the warp reaches
+the reconvergence PC of the top entry, that entry is popped and the
+next one supplies PC and mask, so the pre-branch entry restores
+\texttt{1111} at BB6.}
+
+\begin{table}[tb]
+  \centering
+  \caption{Execution of the nested branch of \cref{fig:l06-simt-stack}
+    with a SIMT stack.  Stack entries are written
+    (alternate PC, mask; reconvergence PC), top first.}
+  \label{tab:l06-simt-trace}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}l l l >{\raggedright\arraybackslash}p{30mm} >{\raggedright\arraybackslash}p{34mm}@{}}
+    \toprule
+    block & mask & next PC & action & stack afterwards \\
+    \midrule
+    BB1 & \texttt{1111} & BB2 / BB3 & diverges: push BB3, go to BB2
+      & (BB3, \texttt{0011}; BB6) \\
+    BB2 & \texttt{1100} & BB4 / BB5 & diverges: push BB5, go to BB4
+      & (BB5, \texttt{0100}; BB6), (BB3, \texttt{0011}; BB6) \\
+    BB4 & \texttt{1000} & BB6 & equals top reconv.: pop, fetch BB5
+      & (BB3, \texttt{0011}; BB6) \\
+    BB5 & \texttt{0100} & BB6 & equals top reconv.: pop, fetch BB3
+      & empty \\
+    BB3 & \texttt{0011} & BB6 & stack empty: full mask (implicit) & empty \\
+    BB6 & \texttt{1111} & --- & --- & empty \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The stack has a hardware cost of a few entries per warp and a
+reconvergence comparison per fetch; the number of entries it must
+hold grows with the nesting depth of divergent branches.
+
+\subsection{Finding the reconvergence point}
+
+The reconvergence PC is computed at compile time: the compiler builds
+the control-flow graph, finds the immediate post-dominator of every
+branch, and either marks it in the code or inserts explicit
+instructions that push and pop the stack.  The stack itself is kept in hardware, because only
+at run time is it known which branches actually diverge.  The compiler
+could in principle avoid the stack operations for branches that never
+diverge, but deciding statically whether a branch diverges is hard, so
+a compiler must treat a branch as divergent whenever it cannot prove
+otherwise, and over-reports divergent branches.\margin{Lesson~11
+presents divergence analysis, the compiler analysis that decides which
+values, and hence which branch conditions, can differ between the
+threads of a warp.}
+
+\begin{note}
+  The SIMT stack serialises the paths of a branch: the warp runs one
+  path to the reconvergence point before it starts the other.  A thread
+  that spins on a value written by a thread on the other path hangs if
+  its own path is scheduled first, since the writer runs only after the
+  spinning path reaches the reconvergence point, which it never does:
+  a \emph{SIMT deadlock}.  For example, lane~0 takes the \texttt{then}
+  path and loops until a flag in memory is set, while lane~1 takes the
+  \texttt{else} path, which sets the flag.  If the stack runs the
+  \texttt{then} path first, lane~0 loops forever and the \texttt{else}
+  path is never fetched; a spin lock taken by several lanes of one warp
+  fails the same way.  A18 ch.~3 discusses the problem together with
+  stackless designs that keep a program counter per thread, so that the
+  scheduler can switch to the other path.\margin{Since Volta, NVIDIA
+  GPUs keep a program counter and call stack per thread (independent
+  thread scheduling, Lesson~5) and no longer depend on the classic
+  stack for correctness (CPG §4.1 SIMT Architecture
+  \cite{nvidia2024cudaguide}).}  The rest of this book keeps the
+  per-warp stack model of this section.
+\end{note}
+
+\subsection{Large warps}
+
+The warp size is a microarchitectural choice, not a law: one fetch and
+decode can drive 32, 64 or 128 lanes, and a very wide warp turns the SM
+into a wide vector machine with little front-end cost per
+lane.  The cost
+is divergence: the more threads a warp holds, the more likely it is
+that one of them disagrees with the others, and every divergence
+serialises paths and occupies the SIMT stack.  The right width depends
+on how uniform the application's control flow is.\caution{Real branch outcomes are correlated (conditions on
+\texttt{threadIdx.x / 32} are uniform per warp by construction), so
+independent outcomes are a pessimistic model; it shows the trend, not
+a real divergence rate.}
+
+\begin{example}
+  \label{ex:l06-large-warp}
+  Suppose each thread takes a branch independently with probability
+  $p = 0.1$.  A warp of $W$ threads is uniform only if all threads
+  agree, which happens with probability $0.9^W + 0.1^W$: about
+  $0.66$ for $W = 4$, $0.034$ for $W = 32$ and $0.0012$ for $W = 64$.
+  Under this model almost every branch of a 32-thread warp
+  diverges.
+\end{example}
+
+\begin{definition}[Large warp]
+  \label{def:l06-large-warp}
+  A \term{large warp}[ラージワープ] is a warp with more threads than
+  the conventional 32 (64, 128 or more), whose instructions are
+  fetched and decoded once for all of them, so that the front-end cost
+  is shared by more lanes.
+\end{definition}
+
+\caution{Lecture vs paper: this chapter, following the lecture,
+treats a large warp as a wider warp.  Narasiman et al.\ \cite{narasiman2011twolevel} pack the
+\emph{active} threads of a large warp into SIMD-wide sub-warps every
+cycle, so divergence leaves fewer idle lanes; combined with two-level
+warp scheduling (Lesson~7) they report 19.1\,\% over traditional GPU
+cores.}%
+The large warp of the paper is thus also a way of fighting divergence,
+which leads to the next idea.
+
+\subsection{Dynamic warp formation}
+
+After a divergent branch each path runs with only part of its lanes
+busy; in \cref{fig:l06-divergent-cfg} half of the lanes idle in BB2 and
+in BB3.  The
+fraction of busy lanes is the measure of this loss.
+
+\begin{definition}[SIMD efficiency]
+  \label{def:l06-simd-efficiency}
+  The \term{SIMD efficiency}[SIMD効率] of an execution is the number of
+  lane-slots that do work divided by the number of lane-slots issued
+  (warp size $\times$ warp instructions issued).  A program without
+  divergence has a SIMD efficiency of 100\,\%; the divergent warp of
+  \cref{ex:l06-if-conversion} has $40/64 = 62.5\,\%$.
+\end{definition}
+\margin{PMPP ch.~10 \cite{hwu2022pmpp} applies the same measure in
+software: it rewrites a parallel reduction so that the active threads
+stay packed in few warps, keeping SIMD efficiency high.}
+
+The many warps of an SM are often at the same point of the program, and
+after the same divergent branch, different warps are waiting at the
+same PC with complementary masks.  Their threads can be combined.\margin{Fung et al.\ report an average speed-up
+of 20.7\,\% for an estimated area increase of 4.7\,\% from a
+realistic DWF implementation \cite{fung2007dwf}.}
+
+\begin{definition}[Dynamic warp formation]
+  \label{def:l06-dwf}
+  The technique of \term{dynamic warp formation (DWF)}[動的ワープ形成]
+  regroups, at run
+  time, threads of different warps that are about to execute the same PC
+  into new warps with fuller active masks
+  (\cref{fig:l06-dwf}).
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-dwf}
+  \caption{Dynamic warp formation.  Warps 0 and 1 diverge on the same
+    branch; at BB2 the active threads of warp~0 sit in lanes 0--1 and
+    those of warp~1 in lanes 2--3, so they form one full warp without
+    leaving their lanes.  BB3 is merged the same way.}
+  \label{fig:l06-dwf}
+\end{figure}
+
+The constraint is the register file.  Lesson~4 assigned the registers
+of thread~$k$ to bank~$k$, so that lane~$k$ reads from its own bank; a
+thread moved into another lane
+would need its registers from a bank that belongs to another lane,
+creating the register bank conflicts the layout was designed to
+avoid.  DWF therefore
+keeps every thread in its home lane and merges only warps whose active
+lanes do not overlap, as in \cref{fig:l06-dwf};\tip{DWF can merge two warps at the
+same PC only if the bitwise AND of their masks is zero; the new mask is
+their OR.} two half warps that both
+use lanes 0--1 cannot be merged.
+
+\begin{example}
+  \label{ex:l06-dwf}
+  Take two warps executing a branch with the block sizes of
+  \cref{ex:l06-if-conversion}, whose condition depends on the data so
+  that warp~0 takes BB2 in lanes 0--1 and warp~1 in lanes 2--3, as in
+  \cref{fig:l06-dwf}.  Without DWF, BB2 and BB3 cost
+  $2 \times (6+6) = 24$ issue slots at 50\,\% SIMD efficiency.  With DWF
+  the merged warps need $6+6 = 12$ issue slots at 100\,\%.  The whole
+  kernel drops from $2 \times 16 = 32$ to $2\cdot2 + 12 + 2\cdot2 = 20$
+  warp instructions, and its SIMD efficiency rises from 62.5\,\% to
+  $80/80 = 100\,\%$.
+\end{example}
+
+\begin{keypoint}
+  A divergent branch makes a warp run both paths under partial masks.
+  If-conversion trades it for always fetching both paths; the SIMT
+  stack runs the paths one after the other and reconverges at the
+  immediate post-dominator.  Wider warps share the front end but
+  diverge more (the large warp microarchitecture of Narasiman et al.\
+  repacks active threads into sub-warps), and dynamic warp formation
+  recovers idle lanes, keeping each thread in its home lane.
+\end{keypoint}
+
+\section{Register optimizations}
+\label{sec:l06-registers}
+
+The register file of an SM holds a private register set for every
+resident thread (Lesson~4), so its size is threads times registers per
+thread: \SI{64}{\kibi\byte}, \SI{128}{\kibi\byte} or
+\SI{256}{\kibi\byte} per SM in successive
+generations.\source{M6, register optimizations; K12 §1.4.1 GPU
+Pipeline; \cite{gebhart2011energy,gebhart2011compile,jeon2015rfv}.}
+A large SRAM is slow and consumes power, and a GPU cannot accept a slow
+one: the register file must deliver operands at the rate at which the
+lanes consume them, so its read bandwidth must equal the execution
+bandwidth.\margin{\SI{256}{\kibi\byte} per SM on V100, A100 and H100;
+per GPU \SI{27648}{\kibi\byte} on A100 and \SI{33792}{\kibi\byte} on
+H100 SXM5 (preliminary figure) \cite[Table~3]{nvidia2022hopper}.}  Two remedies come from CPU design: a
+hierarchy, to make the common access fast, and sharing, to need less
+storage.  Four observations about how GPU programs use registers show
+where they apply.
+
+\subsection{Four observations}
+
+\begin{description}
+  \item[Not all threads are active.]  Threads of the same kernel use the
+    same register names, but they do not finish at the same time:
+    execution is asynchronous, and a thread that has finished still
+    occupies its registers until its warp or block is released.  On a
+    divergent branch, the two paths may also use different registers.
+  \item[Not all registers are live.]  In
+    \texttt{add r1, r2, \#1} followed by
+    \texttt{mov r2, \#10}, the value in \texttt{r2} is
+    never read again after the \texttt{add}: it is dead until the
+    \texttt{mov} overwrites it.
+  \item[Producer and consumer are close.]  In
+    \texttt{mov r2, \#10} followed by
+    \texttt{add r3, r2, \#20}, the value is consumed by
+    the very next instruction, and a scheduler can keep the two
+    together.  Such a value may not need to reach the large register
+    file at all.
+  \item[Most values are read only once.]  The first value of
+    \texttt{r2} in \texttt{mov r2, \#10} followed by
+    \texttt{add r2, r2, \#20} is read by one instruction and then
+    overwritten.  Many
+    values follow this pattern; storing them in the main register file
+    is questionable.\caution{Lecture vs paper: the lecture gives almost
+    70\,\% of register values as read only once.  Gebhart et al.\
+    measure \enquote{up to 70\,\%} across their workloads, with HPC
+    codes reusing more (40\,\% of values read more than once), and
+    \enquote{up to 40\,\%} read once \emph{and} within 3 instructions
+    of being produced \cite{gebhart2011energy}.}
+\end{description}
+
+\begin{definition}[Live and dead registers]
+  \label{def:l06-live-dead}
+  A register is a \term{live register}[生存レジスタ] at a point of the
+  program if the value it holds will be read later before being
+  overwritten, and a \term{dead register}[非生存レジスタ] otherwise.
+  The \term{value lifetime}[値の生存期間] of a value is the interval
+  from the instruction that produces it to its last read.
+\end{definition}
+
+The second observation weighs more on a GPU than on a CPU
+(\cref{fig:l06-live-dead}).  On a CPU, the \texttt{add} and the
+\texttt{mov} execute in consecutive cycles, and \texttt{r2} is dead for
+a cycle or less.  On a GPU the scheduler interleaves warps, so the next
+instruction of the same warp may issue tens of warp instructions later;
+for that whole time the dead value of \texttt{r2} occupies a register
+of every thread of the warp.\margin{Lesson~7 discusses the warp
+schedulers that decide this interleaving; a greedy scheduler shortens
+the gap, a round-robin one stretches it to the number of ready warps.}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-live-dead}
+  \caption{After \texttt{add r1,r2,\#1}, register \texttt{r2} is dead
+    until \texttt{mov r2,\#10}.  (a) On a CPU the two instructions are
+    adjacent.  (b) On a GPU the issue slots in between belong to other
+    warps, so the dead interval of warp \texttt{w1}'s \texttt{r2}
+    spans tens of instructions.}
+  \label{fig:l06-live-dead}
+\end{figure}
+
+
+\begin{example}
+  \label{ex:l06-live-dead}
+  An SM interleaves 24 warps round-robin, one instruction each per round,
+  so consecutive instructions of one warp are 24 cycles apart.  A value
+  produced by instruction $k$, last read by instruction $k+1$ and
+  overwritten by instruction $k+5$ is live for $24$ cycles and dead for
+  $4 \times 24 = 96$: its register holds useful data
+  $24/120 = 20\,\%$ of the time.  On a CPU issuing one instruction per
+  cycle the same value is live for 1 cycle and dead for 4, with the same
+  20\,\%, but the dead register costs one entry of a small file; on the
+  GPU it costs one entry per thread for 96 cycles in a file of hundreds
+  of kibibytes.
+\end{example}
+
+\subsection{Hierarchical register files}
+
+The third and fourth observations suggest a hierarchy: values that are
+read soon after being produced, and only once, can be served from a
+small structure close to the ALUs.\tip{A value read once, by an
+instruction issued soon after its producer, is the ideal cache
+candidate: it is read and dies in the small file and never costs a
+write to the main register file.}
+
+\begin{definition}[Hierarchical register file]
+  \label{def:l06-hierarchical-rf}
+  A \term{hierarchical register file}[階層型レジスタファイル] places
+  smaller, faster register storage in front of the
+  \term{main register file (MRF)}[主レジスタファイル].  The two forms
+  of \cref{fig:l06-rf-hierarchy} are a
+  \term{register file cache (RFC)}[レジスタファイルキャッシュ], one or
+  two small levels (L0 and L1 RF) that hold recently produced values
+  and filter reads and writes to the MRF, and a \emph{partitioned}
+  register file with a fast and a slow segment, in which the slow,
+  large segment can be built in a denser technology.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-rf-hierarchy}
+  \caption{Two hierarchical register files.  (a) A register file
+    cache: small L0 and L1 register files between the ALUs and the main
+    register file.  (b) A partitioned register file with a fast segment
+    and a slow, large segment that may use non-volatile memory.}
+  \label{fig:l06-rf-hierarchy}
+\end{figure}
+
+With an RFC, most reads hit in the small file, and a value that dies
+before it is evicted never has to be written to the MRF.  The MRF can
+then be smaller, or kept at the same size and accessed less often,
+which saves energy because a small SRAM costs less per access than a
+large one.\margin{Gebhart et al.: a 6-entry-per-thread RFC cuts MRF
+reads by 50\,\% and writes by 59\,\%; with a two-level scheduler
+that keeps a quarter of the threads active, register file energy falls
+by 36\,\% \cite{gebhart2011energy}.}  GPUs make this easier than CPUs:
+K12 §1.4.1 notes that GPUs do not support precise exceptions, so
+\enquote{register files do not have to maintain architectural states}
+\cite{kim2012gpgpu}, and a value can live only in the cache.
+
+A candidate for the slow segment of a partitioned file is
+\term{non-volatile memory (NVM)}[不揮発性メモリ], memory that keeps its
+contents without power.  Built in NVM, the slow, large segment is
+meant to save energy, while the values in frequent use stay in the
+fast segment.\margin{NVM in a register
+file is a research direction, not a shipped design; current GPUs build
+the whole register file in SRAM.}
+
+The caching decision can also be moved to the compiler, which knows the
+lifetimes of values.  Gebhart, Keckler and Dally
+\cite{gebhart2011compile} replace the hardware RFC by an
+\term{operand register file (ORF)}[オペランドレジスタファイル], a small
+per-thread file whose contents the compiler allocates, and a
+\term{last result file (LRF)}[ラストリザルトファイル] of one entry per
+thread that holds the most recent result for immediate reuse.\margin{The
+compiler-managed hierarchy is reported to cut register file energy by up
+to 54\,\%, against 34\,\% for hardware-only caching; in their baseline
+the register file consumes 15--20\,\% of the processor's dynamic energy
+\cite{gebhart2011compile}.}  Because the compiler places every value
+explicitly, the ORF needs no tags and no hardware replacement, the same
+property that distinguishes a scratchpad from a cache
+(\cref{sec:l06-unified}).
+
+\subsection{Register file virtualization}
+
+The first two observations suggest sharing: if many registers are dead
+or belong to finished threads at any moment, fewer physical registers
+than names suffice \cite{jeon2015rfv}.
+
+\begin{definition}[Architectural and physical registers]
+  \label{def:l06-arch-phys}
+  An \term{architectural register}[アーキテクチャレジスタ] is a
+  register name as the program sees it (\texttt{R1} of thread~3); a
+  \term{physical register}[物理レジスタ] is a storage entry of the
+  register file.  The mapping of architectural to physical registers at
+  run time is \term{register renaming}[レジスタリネーミング].  An
+  out-of-order CPU
+  renames a few architectural registers onto \emph{more} physical
+  registers, to remove false dependences.
+\end{definition}
+
+\begin{definition}[Register file virtualization]
+  \label{def:l06-rf-virtualization}
+  The technique of
+  \term{register file virtualization}[レジスタファイル仮想化] keeps the
+  name space of all threads' architectural registers but maps it onto a
+  \emph{smaller} physical register file: a physical register is assigned
+  when a value is produced and released when the value dies, so that
+  names whose values are live at different times share storage
+  (\cref{fig:l06-rf-virtualization}).  The program semantics are
+  unchanged; only the hardware is smaller.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-rf-virtualization}
+  \caption{Register file virtualization.  The values of \texttt{R1} in
+    threads 1--3 are live in disjoint intervals and share physical
+    register P0; those of \texttt{R2} in threads 4--6 share P1.  Six
+    names need two physical registers.}
+  \label{fig:l06-rf-virtualization}
+\end{figure}
+
+\caution{The direction is the opposite of CPU renaming: a CPU has more
+physical than architectural registers, register file virtualization on
+a GPU has fewer.  A virtualized file is resource sharing: only the
+name space has to be maintained.}%
+The mapping costs a table lookup per operand, and the design must
+release a register exactly when its value dies, which requires lifetime
+information from the compiler (the last read of each value).  It must
+also guarantee progress when the physical registers run out: a warp
+that needs a new register while all are taken must wait for others to
+release theirs, and if every warp waits, none progresses.
+
+\begin{example}
+  \label{ex:l06-rf-virtualization}
+  A kernel uses 32 registers per thread and the SM keeps 1024 threads
+  resident, so the name space holds $32 \times 1024 = \num{32768}$
+  registers, \SI{128}{\kibi\byte} at \SI{4}{\byte} each.  Suppose
+  profiling shows that at most 60\,\% of them hold live values at any
+  moment, partly because of dead registers and partly because of
+  finished threads.  A virtualized file of
+  $0.6 \times \num{32768} \approx \num{19661}$ physical registers,
+  about \SI{77}{\kibi\byte}, then holds every live value; the remaining
+  \SI{51}{\kibi\byte} can be removed, or kept to raise the number of
+  resident threads.\margin{Our numbers, chosen for the arithmetic; no
+  measured live fraction is implied.}
+\end{example}
+
+\begin{keypoint}
+  The GPU register file is large because it holds every resident
+  thread's registers, and must be fast because it feeds every lane.
+  Most values are dead for long intervals or read once soon after
+  being produced, which justifies a hierarchy (register file cache,
+  ORF/LRF, fast and slow partitions) for latency and energy, and
+  virtualization (fewer physical registers than names) for capacity.
+\end{keypoint}
+
+\section{Unified register file and shared memory}
+\label{sec:l06-unified}
+
+Lesson~3 showed that occupancy is limited by whichever resource a
+kernel exhausts first: thread slots, registers or shared
+memory.\source{M6, unified register file and shared memory;
+\cite{gebhart2012unifying}; A18 ch.~4; CPG Compute Capability 7.x--9.0,
+Shared Memory.}  Kernels differ widely in how they use the latter two,
+so a fixed split between them wastes storage.  This section compares
+the three kinds of on-chip storage and presents the unified design.
+
+\subsection{Occupancy revisited}
+
+Consider an SM with a \SI{128}{\kibi\byte} register file (\num{32768}
+registers) and \SI{64}{\kibi\byte} of shared memory,\margin{A
+configurable split predates the unified design: a Fermi SM (2009) splits
+\SI{64}{\kibi\byte} into \SI{48}{\kibi\byte} of shared memory and
+\SI{16}{\kibi\byte} of L1 or the reverse \cite{nvidia2009fermi}.} and two kernels
+launched with 256 threads per block (\cref{fig:l06-unified-pool}).
+\begin{itemize}
+  \item Kernel~A uses 64 registers per thread and no shared memory:
+    $64 \times 256 \times \SI{4}{\byte} = \SI{64}{\kibi\byte}$ of
+    registers per block, so two blocks fill the register file and the
+    whole shared memory idles.
+  \item Kernel~B uses 16 registers per thread and \SI{16}{\kibi\byte}
+    of shared memory per block: \SI{16}{\kibi\byte} of registers per
+    block.  Shared memory admits four blocks, which use only half of the
+    register file.\margin{The limit
+on resident threads (2048 per SM on compute capabilities 7.0, 8.0 and
+9.0, CPG Table~21 \cite{nvidia2024cudaguide}) still applies; kernel~B's
+six blocks are 1536 threads.}
+\end{itemize}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l06-unified-pool}
+  \caption{Split versus unified storage for two kernels with 256
+    threads per block.  Kernel~A fills the register file and leaves
+    shared memory idle; kernel~B fills shared memory and leaves half
+    the register file idle.  One \SI{192}{\kibi\byte} pool admits three
+    blocks of A and six of B.}
+  \label{fig:l06-unified-pool}
+\end{figure}
+
+If the \SI{192}{\kibi\byte} were one pool from which each block takes
+its registers and its shared memory, kernel~A would fit
+$192/64 = 3$ blocks and kernel~B $192/32 = 6$ blocks: 50\,\% more
+resident threads for both (\cref{tab:l06-unified}).  In the unified design, occupancy is
+limited by registers and shared memory \emph{together}.
+
+\begin{margintable}
+  \caption{Resident blocks (threads) per SM for the kernels of
+    \cref{fig:l06-unified-pool}.}
+  \label{tab:l06-unified}
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    kernel & split & unified \\
+    \midrule
+    A & 2 (512) & 3 (768) \\
+    B & 4 (1024) & 6 (1536) \\
+    \bottomrule
+  \end{tabular}
+\end{margintable}
+
+\subsection{Caches, scratchpads and register files}
+
+Whether registers and shared memory can share storage depends on how
+each is addressed.  A cache and a scratchpad differ in who decides what
+they hold.
+
+\begin{definition}[Hardware- and software-managed caches]
+  \label{def:l06-managed-caches}
+  A \term{hardware-managed cache}[ハードウェア管理キャッシュ] decides by
+  itself which memory blocks it holds; each entry therefore carries a
+  \term{tag}[タグ], the upper address bits of the block it holds,
+  compared on every access to tell whether the requested address is
+  present, and a full cache
+  evicts a block chosen by its
+  \term{replacement policy}[置換ポリシ], for example
+  \term{LRU (least recently used)}[LRU], which evicts the block whose
+  last access lies furthest in the past.  A
+  \term{software-managed cache}[ソフトウェア管理キャッシュ] (the
+  scratchpad memory of Lesson~3, CUDA's shared memory) holds what the
+  program puts there: the program knows where every datum lives, so
+  there are no tags, no misses and no replacement.
+\end{definition}
+\margin{NVIDIA GPUs cache global memory in \SI{128}{\byte} lines of
+four \SI{32}{\byte} sectors (Lesson~4), and a warp's accesses are
+served in \SI{32}{\byte} transactions (BPG §10.2.1 Coalesced Access to
+Global Memory \cite{nvidia2026cudabestpractices}).}
+
+A register file resembles a scratchpad: both store data only, have no
+tags, and select an entry by its location rather than by a memory
+address.  They differ in two respects (\cref{tab:l06-storage}).\margin{Shared memory latency is roughly 100 times lower than that of
+uncached global memory \cite{harris2013sharedmem}.}  An
+arithmetic instruction reads two source registers, three for a fused
+multiply-add $d = a \cdot b + c$, and writes one, so a
+register file needs more ports than a memory, which serves one address
+per access.  And the registers an instruction uses are named in the
+instruction, so its access pattern is known statically, before
+execution, whereas a scratchpad address is computed at run time.  The
+static knowledge is what allows the bank layouts of Lesson~4 and the
+compiler-managed ORF above, despite the higher bandwidth.
+
+\begin{table}[tb]
+  \centering
+  \caption{Three kinds of on-chip storage.}
+  \label{tab:l06-storage}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}
+                  >{\raggedright\arraybackslash}p{22mm}
+                  >{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{36mm}@{}}
+    \toprule
+    & hardware cache (L1) & scratchpad (shared memory) & register file \\
+    \midrule
+    contents chosen by & hardware & program & compiler \\
+    tags & yes & no & no \\
+    located by & address and tag & location & location (register name) \\
+    \addlinespace
+    accesses per instruction & one address & one address & 2--3 reads, one write \\
+    pattern known & at run time & at run time & at compile time \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{A unified structure}
+
+Since all three structures are SRAM arrays on the same SM, one array
+can serve all of them, partitioned per kernel.\margin{Gebhart et al.\ build on
+their earlier register hierarchy and two-level scheduler, which
+\enquote{reduce accesses to the main register file by 60\,\%}, so that
+a pool with fewer ports per byte than a dedicated register file can
+still supply the operands \cite{gebhart2012unifying}.}
+
+\begin{definition}[Unified local memory]
+  \label{def:l06-unified-local-memory}
+  The design called \term{unified local memory}[統合ローカルメモリ] is a
+  single on-chip
+  SRAM pool per SM whose capacity is divided, for each kernel, among the
+  register file, the shared memory and, in the full proposal, the
+  \term{L1 data cache}[L1データキャッシュ], the hardware-managed
+  first-level cache for global and local memory accesses.
+\end{definition}
+
+The unified pool must meet the strictest demand of each user: the
+bandwidth of the register file, hence enough read and write ports, and
+more banks than either structure alone, because register accesses (the
+same register in every lane) and shared-memory accesses (by computed
+address) have different patterns and must both find their banks free.
+In exchange, each kernel gets the split it needs, relaxing its
+occupancy limit.
+
+\caution{Lecture vs paper: this chapter, following the lecture,
+unifies the register file and shared memory.  Gebhart et al.\ unify \emph{three} structures,
+\enquote{the register file, scratchpad (shared memory in NVIDIA
+terminology), and cache}, and report \enquote{a performance benefit as
+high as 71\,\% along with an energy reduction up to 33\,\%}
+\cite{gebhart2012unifying}.}%
+Shipping GPUs share one array only between the L1 data cache and
+shared memory, as Fermi did and Volta and later GPUs do again, while
+the register file stays separate.
+
+\begin{definition}[Shared memory carve-out]
+  \label{def:l06-carveout}
+  The \term{shared memory carve-out}[共有メモリのカーブアウト] is the
+  part of an SM's combined L1 data cache and shared memory array that
+  is configured as shared memory; the rest serves as L1 cache.  The
+  CUDA runtime chooses it per kernel from a fixed set of sizes, guided
+  by the kernel's shared memory use and an optional preference.
+\end{definition}
+\tip{A kernel that needs more
+than \SI{48}{\kibi\byte} of dynamic shared memory per block must opt in
+with \texttt{cudaFuncAttribute\allowbreak MaxDynamic\allowbreak SharedMemorySize} (CPG,
+Compute Capability 7.x, Shared Memory \cite{nvidia2024cudaguide}).}%
+The preference is set per kernel with one runtime call.
+
+\begin{lstlisting}[language=C++, numbers=none]
+// Prefer about half of the maximum shared memory
+// capacity for kernel k (a hint; the runtime rounds
+// up to a supported carve-out).
+cudaFuncSetAttribute(k,
+    cudaFuncAttributePreferredSharedMemoryCarveout, 50);
+\end{lstlisting}
+
+\margin{Combined L1 and shared memory per SM: \SI{128}{\kibi\byte} on
+V100, \SI{192}{\kibi\byte} on A100, \SI{256}{\kibi\byte} on H100.
+Carve-outs: V100 0, 8, 16, 32, 64 or \SI{96}{\kibi\byte}; A100 up to
+\SI{164}{\kibi\byte}; H100 0, 8, 16, 32, 64, 100, 132, 164, 196 or
+\SI{228}{\kibi\byte} (CPG, Compute Capability 7.x, 8.x and 9.0
+\cite{nvidia2024cudaguide}).}%
+A kernel that uses little shared memory thus gets a large L1, one that
+tiles its data gets most of the array as scratchpad: the flexibility of
+\cref{fig:l06-unified-pool} for two structures.
+
+\begin{keypoint}[Lesson summary]
+  A divergent branch makes a warp run its paths one after the other
+  under partial masks until they reconverge at the immediate
+  post-dominator.  If-conversion turns the branch into predicated code
+  that fetches both paths; the SIMT stack pushes (alternate PC, mask,
+  reconvergence PC) entries at divergent, also nested, branches and pops
+  them at the reconvergence PC.  Wider warps save
+  fetches but diverge more; dynamic warp formation merges threads of
+  different warps at one PC, each in its home lane.  Dead, short-lived
+  and read-once register values justify register file caches, ORF/LRF
+  levels and fast/slow partitions; virtualization maps the names onto
+  fewer physical registers.
+  Unified local memory partitions one pool among registers, shared
+  memory and the L1 per kernel; current GPUs do so for L1 and shared
+  memory through the carve-out.
+\end{keypoint}
+
+\end{document}

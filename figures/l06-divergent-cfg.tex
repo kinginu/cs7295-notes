@@ -1,0 +1,45 @@
+% A divergent branch (Lesson 6).  Left: the control-flow graph of
+% "if (i < 2) Work-1 else Work-2" for a four-thread warp, each basic
+% block with its active mask; the paths split after BB1 and reconverge
+% at BB4.  Right: the lanes that execute each block, in time order.
+% Redraws the outline figure m6l1_divb (Work-2 -> BB4 edge added).
+% Usage: \input{figures/l06-divergent-cfg}
+% Width: body (120 mm); the drawing is about 108 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, minimum width=22mm, minimum height=8mm,
+               align=center, inner sep=1pt}]
+  % CFG
+  \node[bb, fill=ln-accent!20] (b1) at (24,42)
+    {BB1: \texttt{if (i < 2)}\\\texttt{1111}};
+  \node[bb, fill=ln-source!25] (b2) at (11,26)
+    {BB2: Work-1\\\texttt{1100}};
+  \node[bb, fill=ln-tip!25] (b3) at (37,26)
+    {BB3: Work-2\\\texttt{0011}};
+  \node[bb, fill=ln-accent!20] (b4) at (24,10)
+    {BB4\\\texttt{1111}};
+  \draw[->] (b1) -- node[left, inner sep=2pt] {\iflangja{真}{taken}} (b2);
+  \draw[->] (b1) -- node[right, inner sep=2pt] {\iflangja{偽}{not taken}} (b3);
+  \draw[->] (b2) -- (b4);
+  \draw[->] (b3) -- (b4);
+  \node[anchor=north, text=ln-muted, align=center] at (24,4.5)
+    {\iflangja{BB4 = 再収束点}{BB4 = reconvergence point}};
+  % lanes over time
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (58,47)
+    {\iflangja{実行するレーン}{lanes that execute}};
+  \foreach \l in {0,...,3}
+    \node[text=ln-muted] at (73+\l*7,44) {\iflangja{\l}{lane \l}};
+  \foreach \row/\name/\m/\c in {0/BB1/{1,1,1,1}/ln-accent!20, 1/BB2/{1,1,0,0}/ln-source!25,
+                                 2/BB3/{0,0,1,1}/ln-tip!25, 3/BB4/{1,1,1,1}/ln-accent!20} {
+    \node[anchor=east] at (69,38-\row*9) {\name};
+    \foreach \bit [count=\l from 0] in \m {
+      \ifnum\bit=1
+        \draw[fill=\c] (70.5+\l*7,35.5-\row*9) rectangle ++(5,5);
+      \else
+        \draw[ln-rule, dashed] (70.5+\l*7,35.5-\row*9) rectangle ++(5,5);
+      \fi
+    }
+  }
+  \draw[->, ln-muted] (101,41) -- (101,9) node[midway, right, inner sep=1pt]
+    {\iflangja{時間}{time}};
+\end{tikzpicture}

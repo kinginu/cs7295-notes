@@ -1,0 +1,31 @@
+% Live and dead registers on a CPU and on a GPU (Lesson 6).  After
+% "add r1, r2, #1" register r2 is dead until "mov r2, #10" overwrites it.
+% On a CPU the two instructions issue in consecutive cycles; on a GPU the
+% issue slots in between go to other warps, so r2 of warp w1 holds a
+% dead value for tens of cycles.
+% Redraws the outline figure m6l2_o2.
+% Usage: \input{figures/l06-live-dead}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    slot/.style={draw, minimum width=14mm, minimum height=6mm,
+                 inner sep=1pt, align=center}]
+  % CPU
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,31) {(a) CPU};
+  \node[slot, fill=ln-accent!20] at (24,31) {\texttt{add r1,r2,\#1}};
+  \node[slot, fill=ln-tip!25] at (40,31) {\texttt{mov r2,\#10}};
+  \draw[ln-caution, thick] (31,26.5) -- ++(0,-1) -- ++(2,0) -- ++(0,1);
+  \node[anchor=west, text=ln-caution] at (34,24.5)
+    {\iflangja{\texttt{r2} 非生存：1 サイクル未満}{\texttt{r2} dead: under one cycle}};
+  % GPU
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,13) {(b) GPU};
+  \foreach \t/\w/\c [count=\i from 0] in
+      {add/w1/ln-accent!20, add/w2/ln-box, add/w3/ln-box, add/w4/ln-box,
+       {\ldots}/{}/white, mov/w1/ln-tip!25} {
+    \node[slot, fill=\c, minimum width=13mm] at (24+\i*15,13) {\texttt{\t}\\\w};
+  }
+  \draw[ln-caution, thick] (31,8.5) -- ++(0,-2) -- ++(72,0) -- ++(0,2);
+  \node[anchor=north, text=ln-caution] at (67,6)
+    {\iflangja{w1 の \texttt{r2} は非生存（数十命令スロットの間）}{\texttt{r2} of w1 dead for tens of issue slots}};
+  \node[anchor=north, text=ln-muted] at (67,20.5)
+    {\iflangja{1 命令スロットごとに 1 ワープ命令}{one warp instruction per issue slot}};
+\end{tikzpicture}
