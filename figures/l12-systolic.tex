@@ -1,0 +1,126 @@
+% A 4x4 output-stationary systolic array at the start of a 4x4x4 matrix
+% product C = AB.  Rows of A enter from the left and columns of B from the
+% top, each row and column delayed (skewed) by one cycle relative to the
+% previous one, so that a_ik and b_kj meet in PE(i,j) at cycle i+j+k-2.
+% Each PE multiplies its two inputs, adds the product to its stationary
+% partial sum c_ij, and passes a to the right and b downwards.
+% Redraws the outline figure m12l1_matrix2.
+% Usage: \input{figures/l12-systolic}
+% Width: body (120 mm); the drawing is about 100 mm wide.
+\begin{tikzpicture}[font=\scriptsize\sffamily,
+    pe/.style={draw, fill=ln-accent!10, minimum size=9mm, inner sep=0pt,
+      align=center},
+    q/.style={inner sep=0pt, minimum width=5mm, minimum height=4mm},
+    >={Stealth[length=1.3mm]}]
+  \node[pe] (p11) at (13mm,-13mm) {PE\\$c_{11}$};
+  \node[pe] (p12) at (26mm,-13mm) {PE\\$c_{12}$};
+  \node[pe] (p13) at (39mm,-13mm) {PE\\$c_{13}$};
+  \node[pe] (p14) at (52mm,-13mm) {PE\\$c_{14}$};
+  \node[pe] (p21) at (13mm,-26mm) {PE\\$c_{21}$};
+  \node[pe] (p22) at (26mm,-26mm) {PE\\$c_{22}$};
+  \node[pe] (p23) at (39mm,-26mm) {PE\\$c_{23}$};
+  \node[pe] (p24) at (52mm,-26mm) {PE\\$c_{24}$};
+  \node[pe] (p31) at (13mm,-39mm) {PE\\$c_{31}$};
+  \node[pe] (p32) at (26mm,-39mm) {PE\\$c_{32}$};
+  \node[pe] (p33) at (39mm,-39mm) {PE\\$c_{33}$};
+  \node[pe] (p34) at (52mm,-39mm) {PE\\$c_{34}$};
+  \node[pe] (p41) at (13mm,-52mm) {PE\\$c_{41}$};
+  \node[pe] (p42) at (26mm,-52mm) {PE\\$c_{42}$};
+  \node[pe] (p43) at (39mm,-52mm) {PE\\$c_{43}$};
+  \node[pe] (p44) at (52mm,-52mm) {PE\\$c_{44}$};
+  \draw[->] (p11) -- (p12);
+  \draw[->] (p12) -- (p13);
+  \draw[->] (p13) -- (p14);
+  \draw[->] (p21) -- (p22);
+  \draw[->] (p22) -- (p23);
+  \draw[->] (p23) -- (p24);
+  \draw[->] (p31) -- (p32);
+  \draw[->] (p32) -- (p33);
+  \draw[->] (p33) -- (p34);
+  \draw[->] (p41) -- (p42);
+  \draw[->] (p42) -- (p43);
+  \draw[->] (p43) -- (p44);
+  \draw[->] (p11) -- (p21);
+  \draw[->] (p21) -- (p31);
+  \draw[->] (p31) -- (p41);
+  \draw[->] (p12) -- (p22);
+  \draw[->] (p22) -- (p32);
+  \draw[->] (p32) -- (p42);
+  \draw[->] (p13) -- (p23);
+  \draw[->] (p23) -- (p33);
+  \draw[->] (p33) -- (p43);
+  \draw[->] (p14) -- (p24);
+  \draw[->] (p24) -- (p34);
+  \draw[->] (p34) -- (p44);
+  \draw[->] (6.3mm,-13mm) -- (p11);
+  \node[q] at (3.8mm,-13mm) {$a_{11}$};
+  \node[q] at (-1.4mm,-13mm) {$a_{12}$};
+  \node[q] at (-6.6mm,-13mm) {$a_{13}$};
+  \node[q] at (-11.8mm,-13mm) {$a_{14}$};
+  \node[q] at (-17.0mm,-13mm) {$\cdot$};
+  \node[q] at (-22.2mm,-13mm) {$\cdot$};
+  \node[q] at (-27.4mm,-13mm) {$\cdot$};
+  \draw[->] (6.3mm,-26mm) -- (p21);
+  \node[q] at (3.8mm,-26mm) {$\cdot$};
+  \node[q] at (-1.4mm,-26mm) {$a_{21}$};
+  \node[q] at (-6.6mm,-26mm) {$a_{22}$};
+  \node[q] at (-11.8mm,-26mm) {$a_{23}$};
+  \node[q] at (-17.0mm,-26mm) {$a_{24}$};
+  \node[q] at (-22.2mm,-26mm) {$\cdot$};
+  \node[q] at (-27.4mm,-26mm) {$\cdot$};
+  \draw[->] (6.3mm,-39mm) -- (p31);
+  \node[q] at (3.8mm,-39mm) {$\cdot$};
+  \node[q] at (-1.4mm,-39mm) {$\cdot$};
+  \node[q] at (-6.6mm,-39mm) {$a_{31}$};
+  \node[q] at (-11.8mm,-39mm) {$a_{32}$};
+  \node[q] at (-17.0mm,-39mm) {$a_{33}$};
+  \node[q] at (-22.2mm,-39mm) {$a_{34}$};
+  \node[q] at (-27.4mm,-39mm) {$\cdot$};
+  \draw[->] (6.3mm,-52mm) -- (p41);
+  \node[q] at (3.8mm,-52mm) {$\cdot$};
+  \node[q] at (-1.4mm,-52mm) {$\cdot$};
+  \node[q] at (-6.6mm,-52mm) {$\cdot$};
+  \node[q] at (-11.8mm,-52mm) {$a_{41}$};
+  \node[q] at (-17.0mm,-52mm) {$a_{42}$};
+  \node[q] at (-22.2mm,-52mm) {$a_{43}$};
+  \node[q] at (-27.4mm,-52mm) {$a_{44}$};
+  \draw[->] (13mm,-6.3mm) -- (p11);
+  \node[q] at (13mm,-4.3mm) {$b_{11}$};
+  \node[q] at (13mm,-0.1mm) {$b_{21}$};
+  \node[q] at (13mm,4.1mm) {$b_{31}$};
+  \node[q] at (13mm,8.3mm) {$b_{41}$};
+  \node[q] at (13mm,12.5mm) {$\cdot$};
+  \node[q] at (13mm,16.7mm) {$\cdot$};
+  \node[q] at (13mm,20.9mm) {$\cdot$};
+  \draw[->] (26mm,-6.3mm) -- (p12);
+  \node[q] at (26mm,-4.3mm) {$\cdot$};
+  \node[q] at (26mm,-0.1mm) {$b_{12}$};
+  \node[q] at (26mm,4.1mm) {$b_{22}$};
+  \node[q] at (26mm,8.3mm) {$b_{32}$};
+  \node[q] at (26mm,12.5mm) {$b_{42}$};
+  \node[q] at (26mm,16.7mm) {$\cdot$};
+  \node[q] at (26mm,20.9mm) {$\cdot$};
+  \draw[->] (39mm,-6.3mm) -- (p13);
+  \node[q] at (39mm,-4.3mm) {$\cdot$};
+  \node[q] at (39mm,-0.1mm) {$\cdot$};
+  \node[q] at (39mm,4.1mm) {$b_{13}$};
+  \node[q] at (39mm,8.3mm) {$b_{23}$};
+  \node[q] at (39mm,12.5mm) {$b_{33}$};
+  \node[q] at (39mm,16.7mm) {$b_{43}$};
+  \node[q] at (39mm,20.9mm) {$\cdot$};
+  \draw[->] (52mm,-6.3mm) -- (p14);
+  \node[q] at (52mm,-4.3mm) {$\cdot$};
+  \node[q] at (52mm,-0.1mm) {$\cdot$};
+  \node[q] at (52mm,4.1mm) {$\cdot$};
+  \node[q] at (52mm,8.3mm) {$b_{14}$};
+  \node[q] at (52mm,12.5mm) {$b_{24}$};
+  \node[q] at (52mm,16.7mm) {$b_{34}$};
+  \node[q] at (52mm,20.9mm) {$b_{44}$};
+  % annotations
+  \node[anchor=north, align=center] at (-6mm,-59mm)
+    {\iflangja{$A$ の行（行ごとに1サイクル遅延）}{rows of $A$, each delayed one cycle}};
+  \node[anchor=west, align=left] at (58mm,20mm)
+    {\iflangja{$B$ の列\\（列ごとに1サイクル遅延）}{columns of $B$,\\each delayed one cycle}};
+  \node[anchor=west, align=left] at (58mm,-32mm)
+    {\iflangja{各 PE：\\$c_{ij} \mathrel{+}= a \cdot b$\\$a$ を右へ，$b$ を下へ}{each PE:\\$c_{ij} \mathrel{+}= a \cdot b$\\pass $a$ right, $b$ down}};
+\end{tikzpicture}

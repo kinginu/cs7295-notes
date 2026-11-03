@@ -1,0 +1,133 @@
+% Bit layouts of six floating-point formats, each encoding the value
+% 0.15625 = 1.01 (binary) x 2^-3: FP32 (1/8/23), TF32 (1/8/10), BF16
+% (1/8/7), FP16 (1/5/10), FP8 E5M2 (1/5/2) and FP8 E4M3 (1/4/3).  Sign,
+% exponent and fraction fields are shaded differently; the biased exponent
+% is 124 (bias 127), 12 (bias 15) or 4 (bias 7).
+% Redraws the bfloat16 comparison inside the outline figure
+% m12l2_floating_basics_diff (originally Wikipedia, CC BY-SA 4.0), redrawn
+% with the formats of this chapter; the AMD fp24 and Pixar PXR24 rows are
+% left out.
+% Usage: \input{figures/l12-formats}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[font=\scriptsize\sffamily,
+    bit/.style={draw=ln-muted, minimum width=2.9mm, minimum height=4.2mm,
+      inner sep=0pt, font=\scriptsize\ttfamily}]
+  % FP32
+  \node[anchor=east] at (22mm,0.0mm) {FP32\enspace\textcolor{ln-muted}{1/8/23}};
+  \node[bit, fill=ln-caution!30] at (24.45mm,0.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (27.35mm,0.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (30.25mm,0.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (33.15mm,0.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (36.05mm,0.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (38.95mm,0.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (41.85mm,0.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (44.75mm,0.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (47.65mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (50.55mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (53.45mm,0.0mm) {1};
+  \node[bit, fill=ln-tip!22] at (56.35mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (59.25mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (62.15mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (65.05mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (67.95mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (70.85mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (73.75mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (76.65mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (79.55mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (82.45mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (85.35mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (88.25mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (91.15mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (94.05mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (96.95mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (99.85mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (102.75mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (105.65mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (108.55mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (111.45mm,0.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (114.35mm,0.0mm) {0};
+  % TF32
+  \node[anchor=east] at (22mm,-6.0mm) {TF32\enspace\textcolor{ln-muted}{1/8/10}};
+  \node[bit, fill=ln-caution!30] at (24.45mm,-6.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (27.35mm,-6.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (30.25mm,-6.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (33.15mm,-6.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (36.05mm,-6.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (38.95mm,-6.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (41.85mm,-6.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (44.75mm,-6.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (47.65mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (50.55mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (53.45mm,-6.0mm) {1};
+  \node[bit, fill=ln-tip!22] at (56.35mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (59.25mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (62.15mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (65.05mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (67.95mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (70.85mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (73.75mm,-6.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (76.65mm,-6.0mm) {0};
+  % BF16
+  \node[anchor=east] at (22mm,-12.0mm) {BF16\enspace\textcolor{ln-muted}{1/8/7}};
+  \node[bit, fill=ln-caution!30] at (24.45mm,-12.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (27.35mm,-12.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (30.25mm,-12.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (33.15mm,-12.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (36.05mm,-12.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (38.95mm,-12.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (41.85mm,-12.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (44.75mm,-12.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (47.65mm,-12.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (50.55mm,-12.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (53.45mm,-12.0mm) {1};
+  \node[bit, fill=ln-tip!22] at (56.35mm,-12.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (59.25mm,-12.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (62.15mm,-12.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (65.05mm,-12.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (67.95mm,-12.0mm) {0};
+  % FP16
+  \node[anchor=east] at (22mm,-18.0mm) {FP16\enspace\textcolor{ln-muted}{1/5/10}};
+  \node[bit, fill=ln-caution!30] at (24.45mm,-18.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (27.35mm,-18.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (30.25mm,-18.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (33.15mm,-18.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (36.05mm,-18.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (38.95mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (41.85mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (44.75mm,-18.0mm) {1};
+  \node[bit, fill=ln-tip!22] at (47.65mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (50.55mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (53.45mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (56.35mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (59.25mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (62.15mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (65.05mm,-18.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (67.95mm,-18.0mm) {0};
+  % FP8 E5M2
+  \node[anchor=east] at (22mm,-24.0mm) {FP8 E5M2\enspace\textcolor{ln-muted}{1/5/2}};
+  \node[bit, fill=ln-caution!30] at (24.45mm,-24.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (27.35mm,-24.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (30.25mm,-24.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (33.15mm,-24.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (36.05mm,-24.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (38.95mm,-24.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (41.85mm,-24.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (44.75mm,-24.0mm) {1};
+  % FP8 E4M3
+  \node[anchor=east] at (22mm,-30.0mm) {FP8 E4M3\enspace\textcolor{ln-muted}{1/4/3}};
+  \node[bit, fill=ln-caution!30] at (24.45mm,-30.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (27.35mm,-30.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (30.25mm,-30.0mm) {1};
+  \node[bit, fill=ln-accent!22] at (33.15mm,-30.0mm) {0};
+  \node[bit, fill=ln-accent!22] at (36.05mm,-30.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (38.95mm,-30.0mm) {0};
+  \node[bit, fill=ln-tip!22] at (41.85mm,-30.0mm) {1};
+  \node[bit, fill=ln-tip!22] at (44.75mm,-30.0mm) {0};
+  % legend
+  \node[bit, fill=ln-caution!30] at (24.45mm,7mm) {};
+  \node[anchor=west] at (26.45mm,7mm) {\iflangja{符号}{sign}};
+  \node[bit, fill=ln-accent!22] at (44.45mm,7mm) {};
+  \node[anchor=west] at (46.45mm,7mm) {\iflangja{指数部}{exponent}};
+  \node[bit, fill=ln-tip!22] at (68.45mm,7mm) {};
+  \node[anchor=west] at (70.45mm,7mm) {\iflangja{仮数部}{fraction}};
+\end{tikzpicture}

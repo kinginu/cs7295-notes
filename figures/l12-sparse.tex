@@ -1,0 +1,56 @@
+% Three representations of the same 4x4 sparse matrix (six non-zeros, at
+% most one per pair of columns): (a) dense storage, 16 values; (b) the
+% coordinate (COO) format, one (row, column, value) triple per non-zero, 18
+% numbers; (c) a toy structured-sparse format that keeps one value per pair
+% plus one bit saying whether it came from the left (L) or right (R) entry
+% of the pair, 8 values and 8 bits.
+% Redraws the outline figures m12l3_sparse and m12l3_sparse2 with our own
+% matrix.
+% Usage: \input{figures/l12-sparse}
+% Width: body (120 mm); the drawing is about 110 mm wide.
+\begin{tikzpicture}[font=\scriptsize\sffamily,
+    c/.style={draw=ln-muted, minimum size=5.4mm, inner sep=0pt},
+    nz/.style={c, fill=ln-accent!20},
+    >={Stealth[length=1.3mm]}]
+  % (a) dense
+  \node[anchor=west] at (0,6mm) {(a) \iflangja{密な格納}{dense}};
+  \foreach \row [count=\i from 0] in {{0,4,0,2},{7,0,0,0},{5,0,0,1},{0,3,0,0}} {
+    \foreach \v [count=\j from 0] in \row {
+      \ifnum\v=0
+        \node[c] at ({\j*5.4mm+2.7mm},{-\i*5.4mm}) {0};
+      \else
+        \node[nz] at ({\j*5.4mm+2.7mm},{-\i*5.4mm}) {\v};
+      \fi
+    }
+  }
+  \draw[ln-caution, thick] (10.8mm,3.2mm) -- (10.8mm,-19mm);
+  % (b) COO
+  \begin{scope}[xshift=34mm]
+    \node[anchor=west] at (-2mm,6mm) {(b) COO};
+    \node[text=ln-muted] at (2.5mm,1.5mm) {\iflangja{行}{row}};
+    \node[text=ln-muted] at (9mm,1.5mm) {\iflangja{列}{col}};
+    \node[text=ln-muted] at (15.5mm,1.5mm) {\iflangja{値}{val}};
+    \foreach \r/\cc/\v [count=\n from 1] in {1/2/4,1/4/2,2/1/7,3/1/5,3/4/1,4/2/3} {
+      \node at (2.5mm,{-\n*3.6mm+0.6mm}) {\r};
+      \node at (9mm,{-\n*3.6mm+0.6mm}) {\cc};
+      \node[text=ln-accent] at (15.5mm,{-\n*3.6mm+0.6mm}) {\v};
+    }
+  \end{scope}
+  % (c) structured
+  \begin{scope}[xshift=66mm]
+    \node[anchor=west] at (0,6mm)
+      {(c) \iflangja{1/2 構造化}{1-of-2 structured}};
+    \foreach \row [count=\i from 0] in {{4/R,2/R},{7/L,0/L},{5/L,1/R},{3/R,0/L}} {
+      \foreach \v/\b [count=\j from 0] in \row {
+        \node[nz] at ({\j*13mm+2.7mm},{-\i*5.4mm}) {\v};
+        \node[c, fill=ln-tip!22, minimum width=4mm] at ({\j*13mm+7.8mm},{-\i*5.4mm}) {\b};
+      }
+    }
+    \node[anchor=north west, text=ln-muted, align=left] at (0,-19mm)
+      {\iflangja{値8個 + 位置ビット8個}{8 values + 8 position bits}};
+  \end{scope}
+  \node[anchor=north west, text=ln-muted, align=left] at (0,-19mm)
+    {\iflangja{値16個}{16 values}};
+  \node[anchor=north west, text=ln-muted, align=left] at (32mm,-23.5mm)
+    {\iflangja{18個の数}{18 numbers}};
+\end{tikzpicture}

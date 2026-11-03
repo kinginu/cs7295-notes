@@ -1,0 +1,33 @@
+% One SIMD dot-product step for a 4x4 matrix product: four multipliers
+% take row 1 of A and column 1 of B, an adder tree sums the four products,
+% and the result is added to the accumulator c11.  A 4x4 product needs 16
+% such steps, one per output element.
+% Redraws the outline figure m12l1_simd_matrix.
+% Usage: \input{figures/l12-dot-unit}
+% Width: body (120 mm); the drawing is about 85 mm wide.
+\begin{tikzpicture}[font=\scriptsize\sffamily,
+    op/.style={draw, circle, fill=ln-accent!12, minimum size=6mm,
+      inner sep=0pt},
+    >={Stealth[length=1.3mm]}]
+  \foreach \k [count=\n from 0] in {1,2,3,4} {
+    \node[op] (m\k) at (\n*20mm,0) {$\times$};
+    \node (a\k) at (\n*20mm-4.5mm,9mm) {$a_{1\k}$};
+    \node (b\k) at (\n*20mm+4.5mm,9mm) {$b_{\k 1}$};
+    \draw[->] (a\k) -- (m\k);
+    \draw[->] (b\k) -- (m\k);
+  }
+  \node[op] (s1) at (10mm,-11mm) {$+$};
+  \node[op] (s2) at (50mm,-11mm) {$+$};
+  \node[op] (s3) at (30mm,-21mm) {$+$};
+  \node[op, fill=ln-tip!20] (acc) at (30mm,-31mm) {$+$};
+  \draw[->] (m1) -- (s1); \draw[->] (m2) -- (s1);
+  \draw[->] (m3) -- (s2); \draw[->] (m4) -- (s2);
+  \draw[->] (s1) -- (s3); \draw[->] (s2) -- (s3);
+  \draw[->] (s3) -- (acc);
+  \node (cin) at (5mm,-31mm) {$c_{11}$};
+  \draw[->] (cin) -- (acc);
+  \node (cout) at (55mm,-31mm) {$c_{11}$};
+  \draw[->] (acc) -- (cout);
+  \node[anchor=west, align=left, text=ln-muted] at (64mm,-16mm)
+    {\iflangja{乗算器4個\\加算木\\アキュムレータ}{4 multipliers\\adder tree\\accumulate}};
+\end{tikzpicture}

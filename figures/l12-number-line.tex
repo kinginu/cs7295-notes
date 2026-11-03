@@ -1,0 +1,64 @@
+% (a) All non-negative values of a toy floating-point format with 1 sign
+% bit, 2 exponent bits (bias 2) and 2 fraction bits, without infinities:
+% subnormals 1/8, 2/8, 3/8 (exponent field 00), normals 0.5 ... 3.5, whose
+% spacing doubles at every power of two.  (b) The regions of a real format
+% on a logarithmic magnitude axis: overflow, normal, subnormal and
+% underflow on each side of zero.
+% Redraws the outline figures m12l2_floating_basics_diff_details (number
+% line) and m12l2_floating_rep (regions).
+% Usage: \input{figures/l12-number-line}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[font=\scriptsize\sffamily, x=26mm,
+    >={Stealth[length=1.3mm]}]
+  % (a) number line 0..4
+  \node[anchor=west] at (-0.3,1.05) {(a)};
+  \draw[->] (0,0) -- (4.15,0);
+  \foreach \v in {0,1,2,3,4} {
+    \draw (\v,0.12) -- (\v,-0.12) node[below=1pt] {\v};
+  }
+  \fill (0,0) circle (0.5mm);
+  \foreach \v in {0.125,0.25,0.375} {
+    \fill[ln-caution] (\v,0) circle (0.55mm);
+  }
+  \foreach \v in {0.5,0.625,0.75,0.875,1,1.25,1.5,1.75,2,2.5,3,3.5} {
+    \fill[ln-accent] (\v,0) circle (0.55mm);
+  }
+  \node[below=1pt] at (0.5,-0.12) {0.5};
+  \node[below=1pt] at (3.5,-0.12) {3.5};
+  % spacing annotations
+  \draw[|-|, ln-muted] (0,0.35) -- node[above] {1/8} (0.125,0.35);
+  \draw[|-|, ln-muted] (0.5,0.35) -- node[above] {1/8} (0.625,0.35);
+  \draw[|-|, ln-muted] (1,0.35) -- node[above] {1/4} (1.25,0.35);
+  \draw[|-|, ln-muted] (2,0.35) -- node[above] {1/2} (2.5,0.35);
+  \node[text=ln-caution, anchor=west] at (0.0,-0.75)
+    {\iflangja{● 非正規化数（指数フィールド 00）}{$\bullet$ subnormal (exponent field 00)}};
+  \node[text=ln-accent, anchor=west] at (2.0,-0.75)
+    {\iflangja{● 正規化数（01, 10, 11）}{$\bullet$ normal (fields 01, 10, 11)}};
+  % (b) regions, log scale
+  \begin{scope}[yshift=-24mm]
+    \node[anchor=west] at (-0.3,0.75) {(b)};
+    \def\h{0.42}
+    \foreach \a/\b/\c/\t in {
+        -0.2/0.3/ln-caution!25/{\iflangja{オーバー\\フロー}{over-\\flow}},
+        0.3/1.25/ln-accent!18/{\iflangja{正規化数}{normal}},
+        1.25/1.6/ln-tip!25/{\iflangja{非正規}{sub-\\normal}},
+        1.6/1.85/ln-muted!20/{},
+        2.15/2.4/ln-muted!20/{},
+        2.4/2.75/ln-tip!25/{\iflangja{非正規}{sub-\\normal}},
+        2.75/3.7/ln-accent!18/{\iflangja{正規化数}{normal}},
+        3.7/4.2/ln-caution!25/{\iflangja{オーバー\\フロー}{over-\\flow}}} {
+      \draw[fill=\c] (\a,-\h) rectangle (\b,\h);
+      \node[align=center, inner sep=0pt] at ({(\a+\b)/2},0) {\t};
+    }
+    \node at (2,0) {0};
+    \draw[ln-muted] (1.85,-\h) rectangle (2.15,\h);
+    \draw[->, ln-muted] (1.72,-0.6) -- (1.72,-\h);
+    \draw[->, ln-muted] (2.28,-0.6) -- (2.28,-\h);
+    \node[anchor=north, text=ln-muted] at (2,-0.6)
+      {\iflangja{アンダーフロー}{underflow}};
+    \draw[->, ln-muted] (1.6,0.65) -- node[above]
+      {\iflangja{負，絶対値が大}{negative, larger magnitude}} (0.0,0.65);
+    \draw[->, ln-muted] (2.4,0.65) -- node[above]
+      {\iflangja{正，絶対値が大}{positive, larger magnitude}} (4.0,0.65);
+  \end{scope}
+\end{tikzpicture}

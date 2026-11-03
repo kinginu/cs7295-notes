@@ -1,0 +1,916 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{ML Accelerations On GPUs}
+\lessoninfo{
+  video={M12, lessons 1--3 (GPU and ML; Floating Point Formats; Tensor Core)},
+  sources={NVIDIA A100 \cite{nvidia2020ampere} and H100 \cite{nvidia2022hopper} whitepapers (required, as the tensor-core resource); NVIDIA GEMM guide \cite{nvidia2026gemmguide} (optional); PTX ISA \cite{nvidia2026ptx}; IEEE 754-2019 \cite{ieee754-2019}; Cambier et al.\ \cite{cambier2020s2fp8} (S2FP8); Micikevicius et al.\ \cite{micikevicius2022fp8} (FP8); Kung \cite{kung1982systolic}; Jouppi et al.\ \cite{jouppi2017tpu}; Dao et al.\ \cite{dao2022flashattention,dao2023flashattention2} (FlashAttention, background)},
+  textbook={K12 \cite{kim2012gpgpu} §1.3.9; PMPP \cite{hwu2022pmpp} ch.~14, ch.~16, App.~A; CPG \cite{nvidia2024cudaguide} §7.24 Warp Matrix Functions, §7.26 Asynchronous Barrier, §7.27 Asynchronous Data Copies; BPG \cite{nvidia2026cudabestpractices} §7.3 Numerical Accuracy and Precision},
+  keywords={machine learning, GEMM, arithmetic intensity, ops:byte ratio, tensor core, matrix multiply-accumulate, systolic array, Transformer Engine, floating-point format, IEEE 754, subnormal number, bfloat16, TF32, FP8, quantization, mixed precision, structured sparsity, SpMV, asynchronous copy},
+}
+
+Machine learning is the workload that has shaped GPUs most in the last
+decade: the tensor cores, FP16, FP8 and the Transformer Engine of
+Lesson~1 were all added for it.  This last lesson asks why GPUs suit
+machine learning and what dedicated hardware they add for it.  It
+first identifies the operations that dominate neural networks, above
+all matrix multiplication, and measures them with the arithmetic
+intensity and Roofline reasoning of Lesson~8.  It then follows the
+number formats from IEEE single precision down to 8 bits, because the
+format decides how many bytes each operation moves.  The last part
+turns to the design of the matrix units themselves: which operation to
+accelerate, how to build the unit, how to feed it from memory, and how
+to exploit the zeros of sparse matrices.  The compiler view of the
+previous two lessons stays in the background: the new units appear to
+software as new instructions of the ISA.
+
+\section{GPU and ML}
+\label{sec:l12-gpu-ml}
+
+The field of \term{machine learning (ML)}[機械学習] builds models whose
+parameters are fitted to data, and its dominant model today is the
+\term{deep neural network (DNN)}[深層ニューラルネットワーク], a stack of
+layers that each transform a large array of numbers.\source{M12, GPU and
+ML; PMPP ch.~16; \cite{nvidia2026gemmguide}.}  This section explains why
+GPUs suit this workload, which operations it consists of, how
+matrix multiplication is measured, and the two hardware routes to
+accelerating it: SIMD lanes and dedicated matrix units.
+
+\subsection{Why GPUs suit machine learning}
+
+Four properties of GPUs match the needs of ML training and inference.
+\begin{description}
+  \item[Floating-point throughput.]  ML performs a very large number of
+    floating-point operations with high data parallelism, and most of a
+    GPU's transistors serve floating-point throughput (Lesson~1).
+  \item[Memory bandwidth.]  The GPU and its memory are connected
+    directly on the package, so stacked high bandwidth memory (HBM) is
+    easy to adopt; a CPU socket must keep its standard memory
+    interfaces.\margin{HBM bandwidth per GPU:
+    \SI{900}{\giga\byte\per\second} (V100),
+    \SI{1555}{\giga\byte\per\second} (A100 40\,GB),
+    \SI{3000}{\giga\byte\per\second} (H100 SXM5, preliminary) (AWP
+    Table~4 \cite{nvidia2020ampere}; HWP Table~3
+    \cite{nvidia2022hopper}).}
+  \item[Flexible formats.]  GPUs add new number formats quickly: tensor
+    formats, bfloat16, 8-bit floating point, INT8 and INT4
+    (\cref{sec:l12-formats}).
+  \item[Relaxed semantics.]  ML is statistical computing: a result
+    that differs in the last bits, or an operation reordered between
+    threads, does not change what the model learns (floating-point
+    addition is not associative, so a reordering changes only the last
+    bits: BPG §7.3.2 Floating Point Math Is Not Associative).  This fits the GPU's
+    weak memory consistency and its lack of precise exceptions
+    (Lesson~1), both of which would cost hardware to
+    provide.\margin{Lesson~1 contrasts the precise exceptions of a CPU
+    with the GPU, which does not guarantee them.}
+\end{description}
+
+\subsection{Operations of a neural network}
+
+The layers of a DNN are built from three classes of operations, all
+highly data parallel.
+
+\begin{definition}[Classes of DNN operations]
+  The operations of a DNN fall into three classes.
+  \begin{itemize}
+    \item An \term{element-wise operation}[要素ごとの演算] applies the
+      same function independently to every element of an array.  The
+      typical example is an \term{activation function}[活性化関数], the
+      non-linear function applied to every output of a layer, such as
+      $\mathrm{ReLU}(x) = \max(0, x)$.
+    \item A reduction (Lesson~1) combines many elements into one; the
+      DNN example is \term{pooling}[プーリング], which replaces each
+      window of an array by one value, such as its maximum (max
+      pooling).
+    \item A \term{dot product}[内積] $\sum_k a_k b_k$ multiplies two
+      vectors element by element and sums the products.  Dot products
+      make up matrix multiplications and convolutions.
+  \end{itemize}
+\end{definition}
+
+The dot-product class dominates the arithmetic.  A
+\term{fully connected layer}[全結合層] connects every input to every
+output with its own weight, so a batch of inputs times the weight
+matrix is one \term{matrix multiplication}[行列積].  A
+\term{convolution layer}[畳み込み層] slides a small filter over its
+input and is likewise computed as a matrix multiplication (PMPP
+ch.~16).\margin{Element-wise operations and reductions read and write
+every element once and are therefore memory-bound in the sense of the
+Roofline model (Lesson~8); only the dot-product class reuses its
+operands.}
+
+\subsection{GEMM and its arithmetic intensity}
+
+Libraries express the matrix multiplications of ML in one standard
+form.
+
+\begin{definition}[GEMM]
+  The operation \term{GEMM (general matrix multiplication)}[GEMM（一般行列積）]
+  computes
+  \begin{equation}
+    C \leftarrow \alpha A B + \beta C ,
+    \label{eq:l12-gemm}
+  \end{equation}
+  where $A$ is an $M \times K$ matrix, $B$ is $K \times N$, $C$ is
+  $M \times N$, and $\alpha$, $\beta$ are scalars.  With $\alpha = 1$ and
+  $\beta = 0$ it is the plain product $C = AB$.
+\end{definition}
+
+Each of the $MN$ elements of $C$ is a dot product of length $K$, so a
+GEMM performs $MNK$ fused multiply-adds (Lesson~8), that is $2MNK$
+floating-point operations.\margin{The GEMM guide counts \enquote{a total
+of \texttt{2 * M * N * K} FLOPS} \cite[§2]{nvidia2026gemmguide}.}  With
+FP16 inputs (two bytes per element) it reads $A$ and $B$ and writes $C$,
+$2(MK + NK + MN)$ bytes if every matrix crosses the memory interface
+exactly once.  The ratio is its arithmetic intensity (Lesson~8):
+\begin{equation}
+  I_{\text{GEMM}}
+  = \frac{2MNK}{2(MK + NK + MN)}
+  = \frac{MNK}{MK + NK + MN}\ \si{\flop\per\byte} .
+  \label{eq:l12-ai}
+\end{equation}
+\caution{The intensity of \cref{eq:l12-ai} is a first-order estimate:
+it assumes each matrix is read or written exactly once from memory and
+ignores caches and on-chip reuse.  A real kernel moves more bytes
+(tiles of $A$ and $B$ are read several times) or fewer (operands that
+stay in L2).}%
+The machine has an intensity of its own, the peak arithmetic rate
+divided by the memory bandwidth, and the comparison of the two decides
+which resource limits the kernel.
+
+\begin{definition}[Ops:byte ratio; math- and memory-limited]
+  The \term{ops:byte ratio}[演算／バイト比] of a processor is its peak
+  arithmetic rate divided by its peak memory bandwidth, in FLOP per
+  byte; it is the ridge point of the Roofline model of Lesson~8.  The
+  side of the ratio on which a kernel's intensity lies makes it
+  \term{math-limited / memory-limited}[演算律速／メモリ律速]: above the
+  ratio the arithmetic units are the bottleneck (math-limited), below it
+  the memory bandwidth (memory-limited).
+\end{definition}
+
+\begin{example}
+  \label{ex:l12-ai}
+  A square GEMM with $M = N = K = 1024$ in FP16 has
+  $I = 1024^3 / (3 \cdot 1024^2) = 1024/3 \approx
+  \SI{341}{\flop\per\byte}$, well above the
+  \SI{138.9}{\flop\per\byte} of a V100,\margin{V100 with FP16 tensor-core
+  inputs and FP32 accumulation: \enquote{the \texttt{FLOPS:B} ratio is
+  138.9 if data is loaded from the GPU's memory}
+  \cite[§2]{nvidia2026gemmguide}.} so it is math-limited.  A skinny GEMM
+  with $M = K = 4096$ and $N = 16$, a weight matrix applied to a batch
+  of 16 inputs, has
+  \[
+    I = \frac{4096 \cdot 16 \cdot 4096}
+             {4096 \cdot 4096 + 16 \cdot 4096 + 4096 \cdot 16}
+      = \frac{16 \cdot 4096}{4096 + 32}
+      \approx \SI{15.9}{\flop\per\byte} ,
+  \]
+  far below the ratio: it is memory-limited, and a faster arithmetic
+  unit would not speed it up.  The small dimension $N$ caps the
+  intensity, since $I < N$ whenever $N \le M, K$.\tip{For a skinny
+  GEMM with $N \ll M, K$, $I \approx N$ \si{\flop\per\byte} in FP16 (and $2N$ in
+  FP8): read the intensity off the smallest dimension.}
+\end{example}
+
+The GEMM guide adds two effects that \cref{eq:l12-ai} does not
+capture, because a GPU computes $C$ in tiles, each tile assigned to one
+thread block.  The first, \term{tile quantization}[タイル量子化], \enquote{occurs
+when matrix dimensions are not divisible by the thread block tile size}
+\cite[§3.1]{nvidia2026gemmguide}: the last tile of a row or column is
+only partly useful but costs as much as a full one.  The second,
+\term{wave quantization}[ウェーブ量子化], arises because \enquote{the
+total number of tiles is quantized to the number of multiprocessors on
+the GPU} \cite[§3.2]{nvidia2026gemmguide}: tiles run in waves of one
+tile per SM, and a last wave with few tiles leaves most SMs
+idle.\margin{The guide's example: on an A100 with 108 SMs,
+$9 \times 12 = 108$ tiles make one full wave, while $9 \times 13 = 117$
+tiles add a second wave of only 9 tiles
+\cite[§3.2]{nvidia2026gemmguide}.}  Tensor cores are also most efficient
+when the GEMM dimensions are multiples of 8 elements for FP16 (on A100,
+multiples of 64) \cite[§2.2]{nvidia2026gemmguide}.
+
+\subsection{SIMD lanes versus a matrix unit}
+
+On ordinary SIMT lanes, a matrix product is a loop of scalar
+multiply-adds.  The kernel of \cref{lst:l12-matmul4} computes a
+$4 \times 4$ product with one thread per element of $C$; each thread
+runs the loop over $k$ sequentially and keeps its running sum in a
+private register.
+
+\begin{lstlisting}[language=C++, numbers=none, caption={A $4 \times 4$ matrix product on SIMT lanes, one thread per output element.}, label={lst:l12-matmul4}]
+__global__ void matmul4(const float *A,
+                        const float *B, float *C)
+{
+  const int N = 4;
+  int row = threadIdx.y, col = threadIdx.x;
+  float sum = 0.0f;           // private register
+  for (int i = 0; i < N; ++i)
+    sum += A[row * N + i] * B[i * N + col];
+  C[row * N + col] = sum;
+}
+// launch: matmul4<<<1, dim3(4, 4)>>>(dA, dB, dC);
+\end{lstlisting}
+
+Because a CUDA thread's registers are private, one thread must perform
+the whole accumulation of an output element.  Fewer threads (four, say,
+one per row) simply loop longer.  Spreading one dot product over
+several threads instead, for instance 16 threads that each compute one
+product $a_{ik} b_{kj}$, requires a reduction of the partial sums
+through shared memory or warp shuffles (Lesson~5), which adds
+instructions and synchronisation.\margin{The reduction patterns of
+Lesson~5 (tree reduction in shared memory, \texttt{\_\_shfl\_xor\_sync})
+are exactly this overhead.}
+
+A SIMD datapath can at best compute one element per operation: four
+multipliers take a row of $A$ and a column of $B$, an adder tree sums
+the four products, and the result is accumulated
+(\cref{fig:l12-dot-unit}).  Row~1 of $C$ alone takes four of them,
+\[
+  c_{1j} = \sum_{k=1}^{4} a_{1k} b_{kj} , \qquad j = 1, \ldots, 4 ,
+\]
+each the dot product of row~1 of $A$ with one column of $B$, and the
+product of two $4 \times 4$ matrices needs 16 such operations, one per
+output element.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l12-dot-unit}
+  \caption{One SIMD dot-product step: four multipliers, an adder tree and
+    the accumulation compute $c_{11} \mathrel{+}= \sum_k a_{1k} b_{k1}$.
+    A $4 \times 4$ product needs 16 such steps.}
+  \label{fig:l12-dot-unit}
+\end{figure}
+
+\begin{definition}[MAC, MMA, tensor core instruction]
+  A \term{multiply-accumulate (MAC)}[積和演算（MAC）] adds a product to
+  a running sum, $c \leftarrow c + a b$; done with a single rounding it is
+  the FMA.\caution{Lecture vs ISA: \texttt{HMMA.1688} names the warp-level shape
+$m16n8k8$ (a $16 \times 8$ result, $K = 8$), the PTX \texttt{mma}
+shape \texttt{.m16n8k8} \cite{nvidia2026ptx}, not a $4 \times 4$
+product.  The $4 \times 4 \times 4$ figure is the per-clock datapath of
+one Volta tensor core \cite{nvidia2020ampere}.}  A
+  \term{matrix multiply-accumulate (MMA)}[行列積和演算（MMA）] applies
+  the same idea to whole matrices, $D \leftarrow A B + C$, as one
+  operation.  The tensor core (Lesson~1) is NVIDIA's MMA unit; the GPU
+  has hundreds of them.  In NVIDIA's machine code (SASS) the half-precision MMA
+  instruction is \term{HMMA}[HMMA], for instance
+  \texttt{HMMA.1688.F16}: one instruction does the work that the SIMT
+  loop does with many.
+\end{definition}
+
+
+The 32 threads of a warp issue the HMMA together, each supplying a
+fragment of the operands from its registers, so the tensor core
+sidesteps the private-register problem above.\margin{CUDA C++ reaches
+the tensor cores through the warp-level matrix functions
+(\texttt{wmma::load\_matrix\_sync}, \texttt{wmma::mma\_sync}): CPG §7.24
+Warp Matrix Functions.  PTX and SASS are the subject of Lesson~10.}
+Tensor-core generations differ mainly in the size of the product they
+complete per clock and in the formats they accept
+(\cref{tab:l12-tensor-cores}).  The A100 tensor core \enquote{can execute
+256 FP16 FMA operations per clock}, an $8 \times 4 \times 8$
+mixed-precision product, and accepts TF32, BF16 and FP64 inputs as
+well as INT8, INT4 and binary (1-bit) \cite{nvidia2020ampere}; the
+integer and binary modes date from Turing, the generation between the
+two; sparsity support doubles the peak
+again (\cref{sec:l12-tensor-core}).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Tensor cores of three NVIDIA generations (AWP
+    \cite{nvidia2020ampere}; HWP V1.02, SXM5, preliminary
+    \cite{nvidia2022hopper}).  Peak rates are dense / with 2:4
+    sparsity.}
+  \label{tab:l12-tensor-cores}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{46mm}lll}
+    \toprule
+    & V100 & A100 & H100 \\
+    \midrule
+    Tensor cores per SM & 8 & 4 & 4 \\
+    FP16 FMA per clock per core & 64 & 256 & 512 \\
+    Product per core per clock & $4 \times 4 \times 4$ & $8 \times 4 \times 8$ & --- \\
+    \addlinespace
+    FP16 tensor TFLOP/s & 125 & 312 / 624 & 1000 / 2000 \\
+    TF32 tensor TFLOP/s & --- & 156 / 312 & 500 / 1000 \\
+    FP8 tensor TFLOP/s & --- & --- & 2000 / 4000 \\
+    FP32 (non-tensor) TFLOP/s & 15.7 & 19.5 & 60 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l12-systolic}
+  \caption{A $4 \times 4$ output-stationary systolic array at the start of
+    $C = AB$.  The skew makes $a_{ik}$ and $b_{kj}$ meet in PE$(i,j)$ in
+    cycle $i + j + k - 2$; dots mark empty slots.}
+  \label{fig:l12-systolic}
+\end{figure}
+
+\subsection{Systolic arrays}
+
+The traditional hardware for matrix multiplication is the systolic
+array.
+
+\begin{definition}[Systolic array]
+  A \term{systolic array}[シストリックアレイ] is a grid of identical
+  processing elements (PEs), each a MAC unit, connected only to their
+  neighbours.  Data enter at the edges and move one PE per cycle; every
+  PE computes on the values that pass through it and forwards
+  them.\sidenote{Kung named the structure after the rhythmic,
+  pulsed flow of data through the array.  Each value fetched from
+  memory is used by many PEs before it leaves, which is what makes the
+  structure attractive when memory bandwidth is the limit
+  \cite{kung1982systolic}.  Google's first TPU is built around a
+  $256 \times 256$ array, \enquote{a 65,536 8-bit MAC matrix multiply
+  unit} with a peak of 92~TOPS \cite{jouppi2017tpu}.}
+\end{definition}
+
+In the \emph{output-stationary} arrangement of
+\cref{fig:l12-systolic}, PE$(i,j)$ owns the output element $c_{ij}$.
+The rows of $A$ enter from the left and the columns of $B$ from the
+top, each row and column delayed by one cycle relative to the previous
+one (the \emph{skew}).  In every cycle each PE multiplies the $a$ and
+$b$ that arrive, adds the product to its stationary partial sum, and
+passes $a$ to the right and $b$ downwards.  In cycle~1 PE$(1,1)$
+computes $a_{11} b_{11}$; in cycle~2 $a_{11}$ has moved right to meet
+$b_{12}$ in PE$(1,2)$, while PE$(1,1)$ adds $a_{12} b_{21}$; and so on.
+
+With this skew, PE$(i,j)$ performs step $k$ in cycle $t = i + j + k - 2$.
+For an $n \times n$ array the first PE starts in cycle~1, the last
+PE$(n,n)$ starts in cycle $2n - 1$ and finishes in cycle $3n - 2$.
+\Cref{tab:l12-systolic-trace} traces $n = 4$: the 64 MACs take 10
+cycles, and no cycle has all 16 PEs busy.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Activity of the $4 \times 4$ array of \cref{fig:l12-systolic}
+    for one $4 \times 4 \times 4$ product (our model:
+    PE$(i,j)$ performs step $k$ in cycle $i + j + k - 2$).}
+  \label{tab:l12-systolic-trace}
+  \begin{tabular}{lcccccccccc}
+    \toprule
+    Cycle & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 & 10 \\
+    \midrule
+    Busy PEs & 1 & 3 & 6 & 10 & 12 & 12 & 10 & 6 & 3 & 1 \\
+    Outputs finished & -- & -- & -- & 1 & 2 & 3 & 4 & 3 & 2 & 1 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[Fill and drain]
+  The \term{fill and drain}[充填と排出] of a systolic array are the
+  cycles at the start of a computation, while the skewed inputs are
+  still entering and only some PEs are busy, and at its end, while the
+  last operands pass through and the PEs fall idle again.
+\end{definition}
+
+In the trace, the array does 64 MACs in 10 cycles on 16 PEs, a
+utilisation of $64/160 = 40\,\%$; the rest is fill and drain.  When
+many tiles are streamed through back to back, the next tile fills the
+array while the previous one drains, and the utilisation approaches
+100\,\%.\caution{The lecture describes the array as fully busy around
+cycle~4 and finished in about seven cycles; it counts differently from
+the model above.  Under our model, cycle~4 has 10 of 16 PEs busy,
+PE$(4,4)$ starts in cycle $2n - 1 = 7$, and the product completes in
+cycle $3n - 2 = 10$.}
+
+\subsection{Transformer Engine and data movement}
+\label{sec:l12-te}
+
+Hopper's Transformer Engine (Lesson~1) accelerates the layers of
+transformer models by scaling tensor data dynamically into the
+representable range of a narrow format, which makes FP8 arithmetic
+usable \cite{nvidia2022hopper}.\margin{\Cref{sec:l12-formats} explains
+why a narrow format needs this scaling: FP8 E4M3 covers magnitudes only
+from $2^{-9}$ to 448.}  Fast arithmetic is only half of the problem:
+the units must be fed.  The Tensor Memory Accelerator (Lesson~1) moves
+blocks of a tensor between global and shared memory in chunks and
+generates the addresses itself.
+
+\begin{definition}[Copy descriptor]
+  A \term{copy descriptor}[コピー記述子] is a data structure that
+  describes a multidimensional tensor and the blocks to be copied from it
+  (base address, tensor sizes and strides, and the shape of the block), so
+  that the TMA generates all addresses of a transfer from it.  The
+  coordinates of a block are given with each copy instruction, so one
+  descriptor serves all the tiles of a tensor.  In Hopper, \enquote{a
+  single thread creates a copy descriptor} before issuing the transfer
+  \cite{nvidia2022hopper}, instead of every thread computing its own
+  addresses.
+\end{definition}
+
+\begin{keypoint}
+  SIMD/SIMT lanes can accelerate matrix multiplication, dedicated
+  matrix units accelerate it much further, and in both cases keeping
+  the memory bandwidth fully used is critical: a GEMM whose intensity
+  is below the ops:byte ratio gains nothing from a faster unit.
+\end{keypoint}
+
+\section{Floating-point formats}
+\label{sec:l12-formats}
+
+Scientific computing relies on IEEE single (32-bit) and double
+(64-bit) precision; ML reduces the precision.\source{M12, floating-point
+formats; PMPP App.~A; BPG §7.3 Numerical Accuracy and Precision; \cite{ieee754-2019,nvidia2020ampere,nvidia2022hopper}.}
+This section explains why narrower formats pay, how a floating-point
+number is encoded, and how ML-specific formats trade precision for
+range.
+
+\subsection{Why lower precision pays}
+
+The number of floating-point operations of a GEMM depends on its shape,
+not on its format.  The bytes moved depend on the format: halving the
+input width halves the bytes and therefore doubles the arithmetic
+intensity.  With FP8 inputs (one byte per element), \cref{eq:l12-ai}
+becomes
+\begin{equation}
+  I_{\text{GEMM, FP8}} = \frac{2MNK}{MK + NK + MN} ,
+  \label{eq:l12-ai-fp8}
+\end{equation}
+twice the FP16 value; the skinny GEMM of \cref{ex:l12-ai} rises from
+15.9 to \SI{31.8}{\flop\per\byte}.\margin{\Cref{eq:l12-ai-fp8} counts $C$
+at the input width as well; an FP32 output would add $2MN$ bytes.}
+
+\begin{definition}[Quantization, mixed precision, accumulator]
+  The representation of values with fewer bits than the format they were computed in, for instance FP32
+  weights stored in FP8, is called \term{quantization}[量子化].  In
+  \term{mixed precision}[混合精度] arithmetic the inputs of an operation
+  are in a narrow format while the
+  \term{accumulator}[アキュムレータ], the register or variable that
+  holds the running sum, stays in a wider one, typically FP16 or FP8
+  inputs with FP32 accumulation.
+\end{definition}
+
+Quantization brings three benefits: smaller storage, higher arithmetic
+intensity, and, on recent hardware, higher arithmetic throughput,
+because a unit of the same area completes more narrow operations per
+cycle.  On older units only the first two applied: the operands shrank,
+but the operations per cycle stayed the same.\margin{Hopper:
+\enquote{FP8 halves data storage requirements and doubles throughput
+compared to FP16 or BF16} \cite{nvidia2022hopper}; compare the FP16 and
+FP8 rows of \cref{tab:l12-tensor-cores}.}\caution{The accumulator stays
+wide for a reason: a long sum of narrow terms loses the small addends
+(Lesson~5, lower precision).  Volta's tensor cores already took FP16 inputs with
+\enquote{FP32 accumulation} \cite{nvidia2020ampere}.}
+
+\subsection{Sign, exponent and fraction}
+
+A floating-point number is the binary form of scientific notation.  In
+decimal, $0.0012 = 1.2 \times 10^{-3}$ and
+$0.0000012 = 1.2 \times 10^{-6}$ share the fraction $1.2$ and differ
+only in the exponent; a binary format uses base~2 in the same way.
+
+\begin{definition}[Floating-point format]
+  A binary \term{floating-point format}[浮動小数点形式] stores a number
+  in three fields: a \term{sign bit}[符号ビット] $s$, an
+  \term{exponent}[指数部] field $e$ of $w$ bits, and a
+  \term{mantissa (fraction)}[仮数部] field $f$ of $p$ bits.\margin{\enquote{Mantissa},
+\enquote{fraction} and \enquote{significand} name the same field in
+practice; IEEE 754 calls the stored field the trailing significand
+\cite{ieee754-2019}.}  The total
+  width is $1 + w + p$ bits.  Because the exponent must represent both
+  negative and positive powers (values below and above~1) while the
+  sign bit belongs to the value, the exponent is stored with an offset,
+  the \term{exponent bias}[指数バイアス] $b = 2^{w-1} - 1$.  A
+  \emph{normal} number has $0 < e < 2^w - 1$ and the value
+  \begin{equation}
+    x = (-1)^{s} \times \Bigl(1 + \frac{f}{2^{p}}\Bigr) \times 2^{e - b} ,
+    \label{eq:l12-normal}
+  \end{equation}
+  where the leading 1 is implicit and not stored.
+\end{definition}
+
+More exponent bits cover a wider range; more fraction bits give more
+precision.  \Cref{fig:l12-formats} encodes the same value in the six
+formats of this chapter, and \cref{tab:l12-formats} gives their
+parameters.  Formats need not have power-of-two widths:
+TF32 is $1 + 8 + 10 = 19$ bits wide.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l12-formats}
+  \caption{The value $0.15625 = 1.01_2 \times 2^{-3}$ in six formats
+    (sign/exponent/fraction bits on the left).  The biased exponent is
+    $-3 + 127 = 124$ in FP32, TF32 and BF16, $-3 + 15 = 12$ in FP16 and
+    E5M2, and $-3 + 7 = 4$ in E4M3; the fraction is $01$ followed by
+    zeros.}
+  \label{fig:l12-formats}
+\end{figure}
+
+\begin{definition}[ML formats]
+  The format \term{bfloat16 (BF16)}[bfloat16] \enquote{includes an 8-bit exponent,
+  7-bit mantissa, and 1 sign-bit} \cite{nvidia2020ampere}: the range of
+  FP32 with less precision than FP16.\margin{In practice E4M3 tends to be used for
+weights and activations and E5M2 for gradients, which span a wider
+range \cite{micikevicius2022fp8}.}
+  The format \term{TensorFloat-32 (TF32)}[TF32] has an \enquote{8-bit exponent
+  (same as FP32), 10-bit mantissa (same precision as FP16) and 1
+  sign-bit} \cite{nvidia2020ampere}; the A100 tensor cores use it for
+  FP32 inputs.  The 8-bit format \term{FP8}[FP8] has two encodings: \enquote{E4M3 with 4
+  exponent bits, 3 mantissa bits, and 1 sign bit} and \enquote{E5M2,
+  with 5 exponent bits, 2 mantissa bits, and 1 sign bit}
+  \cite{nvidia2022hopper}.
+\end{definition}
+
+The two FP8 encodings divide the work of training: \enquote{E4M3
+supports computations requiring less dynamic range with more precision,
+while E5M2 provides a wider dynamic range and less precision}
+\cite{nvidia2022hopper}.\caution{E4M3 is not IEEE-like at the top: it has no infinity, and only
+the all-ones pattern \texttt{S.1111.111} is NaN \cite{micikevicius2022fp8};
+the PTX ISA lists its NaNs as \texttt{0x7f} and \texttt{0xff}
+\cite[§5.2.3 Alternate Floating-Point Data Formats]{nvidia2026ptx}.  The
+largest value is therefore $1.110_2 \times 2^{15-7} = 1.75 \times 256 =
+448$, not the $240$ the IEEE rules would give.}  The
+\term{dynamic range}[ダイナミックレンジ] of a format is the ratio of
+its largest to its smallest representable positive magnitude, often
+quoted in powers of two (binades).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Parameters of the formats of \cref{fig:l12-formats}.  Maxima
+    and minima are derived from \cref{eq:l12-normal}, except the E4M3
+    maximum, which uses the exponent field $1111$ (no infinities; see
+    the caution in the text); $\varepsilon =
+    2^{-p}$ is the spacing of values just above~1.}
+  \label{tab:l12-formats}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lcrlll}
+    \toprule
+    Format & $s/w/p$ & Bias & Max normal & Min normal & $\varepsilon$ \\
+    \midrule
+    FP64 & 1/11/52 & 1023 & $\approx 1.80 \times 10^{308}$ & $2^{-1022}$ & $2^{-52}$ \\
+    FP32 & 1/8/23 & 127 & $\approx 3.40 \times 10^{38}$ & $2^{-126}$ & $2^{-23}$ \\
+    TF32 & 1/8/10 & 127 & $\approx 3.40 \times 10^{38}$ & $2^{-126}$ & $2^{-10}$ \\
+    BF16 & 1/8/7 & 127 & $\approx 3.39 \times 10^{38}$ & $2^{-126}$ & $2^{-7}$ \\
+    \addlinespace
+    FP16 & 1/5/10 & 15 & \num{65504} & $2^{-14}$ & $2^{-10}$ \\
+    FP8 E5M2 & 1/5/2 & 15 & \num{57344} & $2^{-14}$ & $2^{-2}$ \\
+    FP8 E4M3 & 1/4/3 & 7 & 448 & $2^{-6}$ & $2^{-3}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+
+\begin{example}
+  \label{ex:l12-bf16}
+  Range against precision in FP16 and BF16.\tip{BF16 is the upper
+  half of FP32: converting FP32 to BF16 drops the low 16 fraction bits,
+  by truncation or by rounding.}  The value \num{70000}
+  exceeds the FP16 maximum of \num{65504} and overflows; in BF16 it is
+  in range, and since the spacing of BF16 values between $2^{16}$ and
+  $2^{17}$ is $2^{16-7} = 512$, it rounds to the nearest multiple,
+  $137 \times 512 = \num{70144}$.  Conversely, $1 + 2^{-8}$ is exact in
+  FP16 ($\varepsilon = 2^{-10}$), but in BF16 it lies halfway between
+  $1$ and $1 + 2^{-7}$ and rounds to the neighbour with an even
+  fraction, $1$: the increment is lost.
+\end{example}
+
+\subsection{Subnormals, special values and IEEE 754}
+
+\Cref{eq:l12-normal} cannot represent zero, and its smallest magnitude
+$2^{1-b}$ leaves a gap down to zero.  The exponent field values $0$ and
+$2^w - 1$ are reserved to fill these holes.
+
+\begin{definition}[Subnormal number, underflow, overflow, NaN]
+  A \term{subnormal number}[非正規化数] has exponent field $e = 0$ and
+  the value $(-1)^{s} \times (f / 2^{p}) \times 2^{1 - b}$, without the
+  implicit leading~1; with $f = 0$ it is $\pm 0$.  Subnormals fill the
+  gap between zero and the smallest normal number with evenly spaced
+  values.  A nonzero result whose magnitude is below the smallest normal number
+  $2^{1-b}$ suffers \term{underflow}[アンダーフロー] (it is rounded to a
+  subnormal or to zero); a result beyond the largest finite value suffers
+  \term{overflow}[オーバーフロー] (under the default rounding it becomes
+  $\pm\infty$; a format without infinities, such as E4M3, saturates or
+  gives NaN).  The exponent
+  field $e = 2^w - 1$ encodes $\pm\infty$ ($f = 0$) and
+  \term{NaN (not a number)}[非数（NaN）] ($f \ne 0$), the result of an
+  invalid operation such as $0/0$ or $\infty - \infty$.
+\end{definition}
+
+\Cref{fig:l12-number-line}(a) lists every non-negative value of a toy
+format with two exponent bits (bias~2) and two fraction bits,\margin{Toy format: $s/w/p = 1/2/2$, $b = 2$.
+Normals: $1.f \times 2^{e-2}$ for $e = 1, 2, 3$, from $0.5$ to $3.5$;
+subnormals $0.f \times 2^{-1}$: $1/8$, $2/8$, $3/8$.} using all
+exponent codes for numbers.  The normal values in $[2^{k}, 2^{k+1})$ are
+evenly spaced, and the spacing doubles at each power of two; the three
+subnormals continue the spacing of the lowest binade down to zero.
+Representable values are therefore dense near zero and sparse at large
+magnitudes: precision, the spacing relative to the value, is roughly
+constant, but the absolute error grows with the magnitude.
+\Cref{fig:l12-number-line}(b) shows the regions of a real format on a
+logarithmic scale.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l12-number-line}
+  \caption{(a) The non-negative values of a toy format (1/2/2 bits, bias
+    2, no infinities): three subnormals, then normals whose spacing
+    doubles at every power of two.  (b) The regions of a format on a
+    logarithmic magnitude axis.}
+  \label{fig:l12-number-line}
+\end{figure}
+
+\begin{definition}[IEEE 754; rounding mode]
+  The standard \term{IEEE 754}[IEEE 754] defines binary floating-point
+  arithmetic \cite{ieee754-2019}.\margin{IEEE 754 binary16, binary32 and binary64 are the FP16,
+FP32 and FP64 of this chapter (Lesson~1 introduced the three
+precisions).}  It specifies the layout of sign,
+  exponent and significand for its binary formats (binary16, binary32,
+  binary64, \ldots), the special values ($\pm 0$, $\pm\infty$, NaN),
+  subnormal numbers, the exact results of the basic operations, and the
+  \term{rounding mode}[丸めモード]s that choose a representable result
+  when the exact one is not representable: round toward $+\infty$
+  (up), toward $-\infty$ (down), toward zero, and to nearest.
+\end{definition}
+
+\caution{The default rounding mode, which the list \enquote{round up,
+round down} omits, is round to nearest with ties to even
+\cite{ieee754-2019}, as in \cref{ex:l12-bf16}.}%
+BF16, TF32 and FP8 are not IEEE 754 interchange formats; they borrow its
+encoding rules, and E4M3 departs from them at the top of its
+range.
+
+\subsection{Quantization in practice}
+
+Fewer bits mean fewer and cheaper operations, so ML typically
+quantizes the inputs of an operation to a low precision and keeps a
+high-precision accumulator.  The values of a tensor are rarely spread
+evenly: most weights and gradients cluster near zero, with a long tail.
+A format whose values are spaced evenly in the log domain then wastes
+codes, and ML practice transforms the values before quantizing them, a
+non-uniform quantization.\margin{The Transformer Engine of
+\cref{sec:l12-te} applies the simplest such transform: it scales a tensor,
+from statistics of its values, before casting it to FP8
+\cite{nvidia2022hopper}.}  The resolution near zero matters most.
+
+\begin{definition}[S2FP8]
+  The format \term{shifted and squeezed FP8 (S2FP8)}[S2FP8]
+  \cite{cambier2020s2fp8} stores a tensor $X$ in FP8 after a power
+  transform with two per-tensor parameters $\alpha$ (squeeze) and $\beta$
+  (shift):
+  \begin{equation}
+    X_{\text{truncated}} =
+    \Bigl[\, 2^{-\beta} \cdot
+      \mathrm{truncate}_{\text{FP8}}\bigl(2^{\beta} \cdot |X|^{\alpha}\bigr)
+    \Bigr]^{1/\alpha} .
+    \label{eq:l12-s2fp8}
+  \end{equation}
+  The transform acts on magnitudes; each element keeps the sign of $X$.
+  In the log domain, $\log_2 (2^{\beta} |X|^{\alpha}) = \alpha \log_2 |X|
+  + \beta$: $\alpha$ scales the spread of the exponents to fit the range
+  of FP8 and $\beta$ shifts their centre, so the codes of the format fall
+  where the values of the tensor are.  Both are computed for each tensor
+  from the mean $\mu$ and the maximum $m$ of $\log_2 |X|$ over its
+  non-zero elements: $\alpha = 15/(m - \mu)$ and $\beta = -\alpha\mu$, so
+  that the transformed values have a mean exponent of~0 and a maximum
+  of~15 \cite[§3.2]{cambier2020s2fp8}.
+\end{definition}
+
+\begin{keypoint}
+  A floating-point format is a choice between range (exponent bits) and
+  precision (fraction bits) at a given width.  ML lowers the width of
+  the inputs and keeps the accumulator wide; each halving of the input
+  width doubles the arithmetic intensity, and on recent tensor cores
+  also the peak rate.
+\end{keypoint}
+
+\section{Tensor core}
+\label{sec:l12-tensor-core}
+
+A tensor core is one instance of a general task: adding an accelerator
+for ML to a GPU.\source{M12, tensor core design; CPG §7.24,
+§7.26, §7.27; PMPP ch.~14; \cite{nvidia2020ampere,nvidia2022hopper}.}
+This section follows the design questions in order: which function to
+build, how to build the compute units, how to store and move their
+data, and how to exploit sparsity.
+
+\subsection{Design questions and steps}
+
+The design of an ML accelerator component raises four questions: what
+functionality to add; what benefit it brings over the existing GPU;
+how to build the compute units, and how many; and how to store and move
+the data they need.  The answers follow a common sequence of steps.
+\begin{enumerate}
+  \item Identify the frequently executed operations, from knowledge of
+    the algorithms or from profiling.
+  \item Estimate the benefit over the existing data-parallel units:
+    how much faster the operation would be in hardware than in
+    software with the existing ISA.\margin{For the V100, at equal precision, a
+    factor of about 4: \SI{125}{\tera\flop\per\second} on the FP16 tensor
+    cores against \SI{31.4}{\tera\flop\per\second} for FP16 on the SIMT
+    lanes (AWP Table~4 \cite{nvidia2020ampere}); against FP32's
+    \SI{15.7}{\tera\flop\per\second} the factor of 8 includes the
+    narrower format.}
+  \item Design the interface: the new instructions, how data are fed to
+    the unit, the storage format, and whether operands live in registers
+    or in memory (private or shared).
+  \item Decide whether to merge accelerator components into one unit,
+    weighing programmability and usability against hardware cost and
+    timing overhead.\margin{Step~3 is where the compiler of Lessons~10
+    and~11 enters: a new unit is reached only through new instructions,
+    which the compiler or a library must emit.}
+\end{enumerate}
+
+\subsection{The matrix multiply-accumulate unit}
+
+GPUs chose an MMA unit because GEMM dominates ML
+(\cref{sec:l12-gpu-ml}), and SIMD lanes still work one row--column pair
+at a time.  The design space is between many small MMA units and one
+large unit such as a systolic array, and every unit takes chip area
+from other GPU functions; programmability matters as much as the raw
+rate.  NVIDIA started with a $4 \times 4$ unit (Volta's
+$4 \times 4 \times 4$ product per clock), and other vendors have
+similar units: Intel's \term{Advanced Matrix Extensions (AMX)}[AMX]
+add $16 \times 16$ matrix tiles and tile instructions to x86
+CPUs.\caution{Lecture vs documentation: Intel documents
+eight AMX tile registers of at most 16 rows of 64 bytes each; its INT8
+example multiplies $16 \times 64$ inputs into a $16 \times 16$ INT32
+result \cite{intel2024amxintrinsics}.  So $16 \times 16$ is the output
+tile of that example, not a fixed matrix size.}
+
+Within an MMA unit, three organisations are possible.
+\begin{description}
+  \item[Systolic array.]  Efficient for large tiles, but the fill and
+    drain time is wasted on small ones: a $4 \times 4$ array was 40\,\%
+    busy on a single product (\cref{tab:l12-systolic-trace}).
+  \item[Option 1: parallel units.]  One dot-product unit
+    (\cref{fig:l12-dot-unit}) per output element: 16 units of 4 FMAs
+    compute a whole $4 \times 4 \times 4$ product at once
+    (\cref{fig:l12-mma-options}, left).
+  \item[Option 2: pipelining.]  Fewer units, shared over time: row~1
+    times column~1, then row~1 times column~2, and so on, with the load,
+    compute and store of successive pairs overlapped
+    (\cref{fig:l12-mma-options}, right).
+\end{description}
+Parallel units give the highest throughput for the most area; a
+pipelined unit trades throughput for area.\margin{Option~1 performs $16
+\times 4 = 64$ FMAs per cycle, the rate of one Volta tensor core
+(\cref{tab:l12-tensor-cores}).}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l12-mma-options}
+  \caption{Two ways to build a $4 \times 4 \times 4$ MMA unit.  Option 1:
+    16 dot-product units, one per element of $C$.  Option 2: a pipelined
+    unit through which the row--column pairs pass one cycle apart.}
+  \label{fig:l12-mma-options}
+\end{figure}
+
+\subsection{Storing and moving the operands}
+
+The operands of an MMA unit come from memory, and their volume is
+large: a $4 \times 4 \times 4$ operation needs at least
+$3 \times 16$ values ($A$, $B$ and $C$) in registers.  NVIDIA's
+registers are private to a thread, which complicates feeding one unit
+from them; the warp-level interface of \cref{sec:l12-gpu-ml} spreads
+the operands over the registers of 32 threads.  The alternative is a
+memory close to the unit, shared memory (Lesson~3), at the cost of
+moving the data there from global memory first.\margin{Register file
+size and banking, and the pressure that wide operands put on them, are
+the subject of Lessons~4 and~6.}
+
+For that move NVIDIA added an asynchronous copy inside the GPU.  The
+A100's instruction \enquote{loads data directly from global memory into
+shared memory, optionally bypassing L1 cache, and eliminating the need
+for intermediate register file (RF) usage}
+\cite{nvidia2020ampere}.\caution{Two different copies are called
+asynchronous: \texttt{cudaMemcpyAsync} of Lesson~5 is a host-issued
+transfer between host and device; the A100 copy is a device instruction
+(\texttt{cp.async} in PTX, \texttt{memcpy\_async} in CUDA C++, CPG
+§7.27) between global and shared memory.}  Because the threads no
+longer wait for the data, they need a way to learn when it has
+arrived.
+
+\begin{definition}[Asynchronous barrier]
+  An \term{asynchronous barrier}[非同期バリア] is a barrier split into
+  an \emph{arrive} and a \emph{wait} operation: a thread signals its
+  arrival, continues with independent work, and waits only when it
+  needs the result (CPG §7.26 Asynchronous Barrier).  Combined with the
+  asynchronous copy, a block can start the copy of the next tile, compute
+  on the current one, and wait for the copy just before it is
+  used.\margin{\texttt{\_\_syncthreads()} (Lesson~3) is the
+  synchronous case: arrival and wait are one operation.  Hopper extends
+  the barrier to count the bytes of TMA transfers (the asynchronous
+  transaction barrier \cite{nvidia2022hopper}).}
+\end{definition}
+
+\subsection{Attention: data movement beyond GEMM}
+
+The same concern, keeping fast units fed, drives the main kernel of
+transformer models.  The operation called
+\term{attention}[アテンション] computes, for
+query, key and value matrices $Q$, $K$, $V$ of $N$ rows,
+$\mathrm{softmax}(QK^{\mathsf T}/\sqrt{d})\,V$, where $d$ is the row
+length; the intermediate $N \times N$ score matrix is large, and a
+straightforward implementation writes it to HBM and reads it back.
+\term{FlashAttention}[FlashAttention] is \enquote{an IO-aware exact
+attention algorithm that uses tiling to reduce the number of memory
+reads/writes between GPU high bandwidth memory (HBM) and GPU on-chip
+SRAM} \cite{dao2022flashattention}: it computes the same result without
+storing the full score matrix in HBM.\margin{FlashAttention-2
+partitions the work better across thread blocks and warps,
+\enquote{reaching 50-73\,\% of the theoretical maximum FLOPs/s on A100}
+\cite{dao2023flashattention2}.}  Its argument is the one of
+\cref{eq:l12-ai}: attention is limited by memory traffic, not by
+arithmetic, so the gain comes from fewer bytes.
+
+\subsection{Sparse operations}
+
+Many matrices of HPC and graph workloads are mostly zeros, and ML
+creates more of them on purpose.
+
+\begin{definition}[Sparsity, sparse matrix, compressed format]
+  The \term{sparsity}[スパース性] of a matrix or tensor is the fraction
+  of its elements that are zero; a \term{sparse matrix}[疎行列] is one with enough
+  zeros that storing and computing only the non-zeros pays.  A
+  \term{compressed sparse format}[疎行列圧縮形式] stores only the
+  non-zeros together with their positions.  The simplest is the
+  coordinate format (COO), one (row, column, value) triple per
+  non-zero.\margin{Compressed sparse row (CSR), the usual format for
+  SpMV, replaces the row indices of COO by one offset per row (PMPP
+  ch.~14).}
+\end{definition}
+
+\Cref{fig:l12-sparse}(a) and (b) show a $4 \times 4$ matrix with six
+non-zeros in dense and COO form.  COO needs 18 numbers where the dense
+form needs 16: the index overhead outweighs the saved zeros unless the
+matrix is much sparser, and the irregular indices make hardware support
+hard.  ML therefore restricts where the non-zeros may be.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l12-sparse}
+  \caption{One sparse matrix in three forms: (a) dense, 16 values; (b)
+    COO triples, 18 numbers; (c) a structured format keeping one value
+    per pair of columns (left of the red line, right of it) with a bit
+    for its position, left (L) or right (R).}
+  \label{fig:l12-sparse}
+\end{figure}
+
+\begin{definition}[Pruning, structured sparsity]
+  The operation called \term{pruning}[枝刈り] sets weights of a trained
+  network that contribute little to zero, which raises its sparsity.
+  The constraint called \term{structured sparsity}[構造化スパース性]
+  restricts the pattern:
+  only a fixed fraction of the elements in every small group may be
+  non-zero, so every group compresses to the same size and the index is
+  short and regular.
+\end{definition}
+
+With 50\,\% structured sparsity and one non-zero per pair of elements,\caution{The one-bit left/right index here is a toy for one non-zero
+in two.  In 2:4 sparsity each kept value can sit in any of four
+positions, and for FP16 and BF16 the non-zeros of a group \enquote{are
+indicated by two 2-bit indices in the metadata operand}
+\cite{nvidia2026ptx} (\texttt{mma.sp}).}
+16 elements are stored as 8 values plus 8 one-bit indices that say
+whether each kept value was the left or the right element of its pair
+(\cref{fig:l12-sparse}(c)).  The fixed layout simplifies the hardware
+and nearly halves the storage, and the unit skips the multiplications by
+zero, which raises its throughput.
+
+\begin{definition}[2:4 structured sparsity]
+  The scheme \term{2:4 structured sparsity}[2:4構造化スパース性], introduced with
+  the A100, is \enquote{a new 2:4 sparse matrix definition that allows
+  two non-zero values in every four-entry vector}
+  \cite{nvidia2020ampere}.\margin{Row~1 of the matrix
+of \cref{fig:l12-sparse}, $[0, 4, 0, 2]$, is already 2:4: it keeps
+$4$ and $2$ with the indices $1$ and $3$ (counting from~0).}  A row of $A$ is stored as half its values
+  plus metadata giving the positions of the two kept values in each
+  group of four.
+\end{definition}
+
+
+The A100's sparse format \enquote{can be compressed efficiently and
+reduce memory storage and bandwidth by almost 2x}
+\cite{nvidia2020ampere},\tip{2:4 with FP16 stores a group of four
+as two values plus two 2-bit indices: $32 + 4 = 36$ of 64 bits, about
+56\,\%.} and its sparse tensor-core rates are twice the
+dense ones (\cref{tab:l12-tensor-cores}).  Beyond
+matrix--matrix products,
+\term{sparse matrix-vector multiplication (SpMV)}[疎行列ベクトル積],
+$y = Ax$ with a sparse $A$, is the core of many HPC and graph
+algorithms, and accelerating it is an active research topic: its
+intensity is low and its accesses irregular, so it profits little from
+a dense matrix unit.
+
+\begin{keypoint}[Lesson summary]
+  GPUs suit ML: it is floating-point heavy, data parallel and tolerant
+  of relaxed semantics, and GPUs have HBM and adopt new formats quickly.
+  GEMM dominates DNNs; its intensity $MNK/(MK + NK + MN)$ (FP16) against
+  the ops:byte ratio tells whether it is math- or memory-limited.  An
+  MMA unit (the tensor core) replaces 16 SIMD dot products of a
+  $4 \times 4$ product by one instruction; systolic arrays pay fill and
+  drain.  A floating-point format trades exponent bits (range) for
+  fraction bits (precision); ML narrows the inputs (BF16, TF32, FP8),
+  keeps the accumulator wide and transforms values (S2FP8).  A
+  tensor-core design chooses parallel or pipelined units, operand
+  storage fed by asynchronous copies and barriers, and a sparse format:
+  2:4 structured sparsity nearly halves storage and doubles the peak
+  tensor-core rate.
+\end{keypoint}
+
+\end{document}
