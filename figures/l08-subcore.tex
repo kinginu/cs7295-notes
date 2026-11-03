@@ -1,0 +1,30 @@
+% An SM divided into sub-cores (Lesson 8).  Each sub-core has its own
+% PC registers, decoder, warp scheduler and execution lanes; all
+% sub-cores share the instruction cache at the top and, through a
+% crossbar, the large caches at the bottom.
+% Redraws the outline figure m8l3_subcore (four sub-cores instead of
+% three, as in current NVIDIA SMs).
+% Usage: \input{figures/l08-subcore}
+% Width: body (120 mm); the drawing is about 108 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    u/.style={draw, fill=white, minimum width=21mm, minimum height=4.6mm,
+              inner sep=0.5pt}]
+  \draw[ln-accent, thick, rounded corners=1.5mm] (0,-2) rectangle (108,50);
+  \node[anchor=north west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+    at (1,49) {SM};
+  \node[draw, fill=ln-tip!15, minimum width=96mm, minimum height=5mm]
+    at (57,43) {\iflangja{命令キャッシュ（共有）}{instruction cache (shared)}};
+  \foreach \k in {0,...,3} {
+    \pgfmathsetmacro{\x}{8+\k*25}
+    \draw[fill=ln-accent!10] (\x,11) rectangle ++(23,28);
+    \node[anchor=north] at (\x+11.5,38.6) {\iflangja{サブコア}{sub-core} \k};
+    \node[u] at (\x+11.5,31) {\iflangja{PC レジスタ}{PC registers}};
+    \node[u] at (\x+11.5,26) {\iflangja{デコーダ}{decoder}};
+    \node[u] at (\x+11.5,21) {\iflangja{ワープスケジューラ}{warp scheduler}};
+    \node[u, fill=ln-caution!12] at (\x+11.5,15.6) {\iflangja{実行レーン}{lanes (SPs)}};
+  }
+  \node[draw, fill=ln-box, minimum width=96mm, minimum height=4.5mm]
+    at (57,6) {\iflangja{クロスバ}{crossbar}};
+  \node[draw, fill=ln-tip!15, minimum width=96mm, minimum height=4.5mm]
+    at (57,0.8) {\iflangja{共有メモリと L1 キャッシュ（共有）}{shared memory and L1 cache (shared)}};
+\end{tikzpicture}

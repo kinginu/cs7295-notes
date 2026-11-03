@@ -1,0 +1,22 @@
+% A CPI stack (Lesson 8): the CPI of 1.31 of the five-stage example
+% split into its base (steady-state) component of 1.00 and the
+% contributions of branch mispredictions (0.06) and cache misses (0.25).
+% Original.
+% Usage: \resizebox{\linewidth}{!}{\input{figures/l08-cpi-stack}}
+% Width: margin (50 mm); the drawing is about 45 mm wide.
+\begin{tikzpicture}[x=1mm, y=24mm, font=\scriptsize\sffamily]
+  \draw[fill=ln-accent!20] (0,0) rectangle (12,1.00)
+    node[midway, align=center] {\iflangja{基本}{base}\\1.00};
+  \draw[fill=ln-tip!30] (0,1.00) rectangle (12,1.06);
+  \draw[fill=ln-caution!25] (0,1.06) rectangle (12,1.31);
+  \draw[ln-muted] (12,1.03) -- (15,1.03)
+    node[right, text=black] {\iflangja{分岐予測ミス 0.06}{branch mispred.\ 0.06}};
+  \draw[ln-muted] (12,1.185) -- (15,1.185)
+    node[right, text=black] {\iflangja{キャッシュミス 0.25}{cache misses 0.25}};
+  \draw[->] (-2,0) -- (-2,1.45) node[above, inner sep=1pt] {CPI};
+  \foreach \v in {0,0.5,1} {
+    \draw (-2,\v) -- (-2.8,\v) node[left, inner sep=1pt] {\v};
+  }
+  \draw[dashed, ln-muted] (-2,1.31) -- (0,1.31);
+  \node[left, inner sep=1pt] at (-2.8,1.31) {1.31};
+\end{tikzpicture}

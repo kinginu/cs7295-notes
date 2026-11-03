@@ -1,0 +1,47 @@
+% Coalescing and sectored caches in a simulator (Lesson 8).  Top: one
+% 64-byte cache block of a sectored cache, four 16-byte sectors sharing
+% one tag, each with its own valid bit.  Bottom: the uncoalesced load R2
+% (eight threads, addresses 128 B apart) misses in eight blocks; a
+% conventional cache fills eight whole blocks (512 B), a sectored cache
+% only the eight sectors that hold the requested words (128 B).
+% Redraws the outline figures m8l2_memory_coalescing and
+% m8l2_sector_cache (toy sizes of the lecture: 64 B block, 16 B sector;
+% sector address typo corrected).
+% Usage: \input{figures/l08-sector-cache}
+% Width: body (120 mm); the drawing is about 114 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  % one block: tag + 4 sectors with valid bits
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,51)
+    {\iflangja{(a) セクタキャッシュのブロック（64\,B）}{(a) one block of a sectored cache (64\,B)}};
+  \draw[fill=ln-accent!15] (0,40) rectangle (16,46) node[midway] {\iflangja{タグ}{tag}};
+  \foreach \i in {0,...,3} {
+    \draw[fill=ln-box] (17+\i*24,40) rectangle ++(4,6) node[midway] {V};
+    \draw[fill=ln-tip!15] (21+\i*24,40) rectangle ++(19,6)
+      node[midway] {\iflangja{セクタ}{sector} \i: 16\,B};
+  }
+  \node[anchor=west, text=ln-muted] at (0,36.5)
+    {\iflangja{4つのセクタが1つのタグを共有し，セクタごとに有効ビットを持つ}{four sectors share one tag; each sector has its own valid bit}};
+  % R2: eight misses
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,31)
+    {\iflangja{(b) R2 のミス（アドレス 0, 128, \dots, 896）}{(b) misses of R2 (addresses 0, 128, \dots, 896)}};
+  \node[anchor=west] at (0,21) {\iflangja{従来型}{conventional}};
+  \node[anchor=west] at (0,13) {\iflangja{セクタ型}{sectored}};
+  \foreach \k in {0,...,7} {
+    \pgfmathsetmacro{\x}{20+\k*11.5}
+    \node[text=ln-muted] at (\x+5,26) {\pgfmathparse{int(\k*128)}\pgfmathresult};
+    \foreach \s in {0,...,3} {
+      \draw[fill=ln-caution!25] (\x+\s*2.5,18) rectangle ++(2.5,6);
+      \ifnum\s=0
+        \draw[fill=ln-caution!25] (\x+\s*2.5,10) rectangle ++(2.5,6);
+      \else
+        \draw[fill=white] (\x+\s*2.5,10) rectangle ++(2.5,6);
+      \fi
+    }
+  }
+  \node[anchor=west] at (20,5.5)
+    {\iflangja{従来型: $8 \times 64 = 512$\,B を転送}{conventional: $8 \times 64 = 512$\,B fetched}};
+  \node[anchor=west] at (68,5.5)
+    {\iflangja{セクタ型: $8 \times 16 = 128$\,B を転送}{sectored: $8 \times 16 = 128$\,B fetched}};
+  \node[anchor=west, text=ln-muted] at (20,1)
+    {\iflangja{使われるのは各ブロックの 4\,B（合計 32\,B）}{each block supplies one 4\,B word (32\,B in total)}};
+\end{tikzpicture}

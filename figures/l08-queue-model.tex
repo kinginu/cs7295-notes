@@ -1,0 +1,57 @@
+% Queue-based model of a pipeline (Lesson 8).  The stages fetch, decode,
+% schedule, execute and write-back are connected by FIFO queues
+% (FE, DE and EX queue); the scheduler is drawn as a pool from which
+% ready instructions are picked, not as a FIFO.  Execute talks to the
+% memory model; completion wakes up dependent instructions.
+% Redraws the outline figure m8l1_queue.
+% Usage: \input{figures/l08-queue-model}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.5mm]},
+    st/.style={draw, fill=ln-accent!15, minimum width=14mm,
+               minimum height=8mm, align=center, inner sep=1pt},
+    q/.style={draw, fill=ln-box, minimum width=12mm, minimum height=4mm,
+              inner sep=0pt}]
+  % \fifo{x}{y}{name}{label}: a queue drawn as four slots
+  \newcommand{\fifo}[4]{%
+    \foreach \i in {0,...,3} {
+      \draw[fill=ln-box] (#1+\i*3,#2-2) rectangle ++(3,4);
+    }
+    \coordinate (#3-in) at (#1,#2);
+    \coordinate (#3-out) at (#1+12,#2);
+    \node[above, inner sep=1pt] at (#1+6,#2+2) {#4};}
+  \node[st] (fe) at (7,20) {\iflangja{フェッチ}{fetch}};
+  \fifo{18}{20}{feq}{FE queue}
+  \node[st] (de) at (41,20) {\iflangja{デコード}{decode}};
+  \fifo{52}{20}{deq}{DE queue}
+  % scheduler: a pool, not a FIFO
+  \node[draw, fill=ln-caution!12, rounded corners=2mm, minimum width=18mm,
+        minimum height=10mm, align=center, inner sep=1pt] (sch) at (79,20)
+    {\iflangja{スケジューラ}{scheduler}\\[-0.3mm]%
+     \iflangja{（FIFO ではない）}{(not a FIFO)}};
+  \node[st] (ex) at (103,20) {\iflangja{実行}{execute}};
+  \node[st, fill=ln-tip!15] (mem) at (103,4)
+    {\iflangja{キャッシュ・メモリ}{caches, memory}};
+  \fifo{70}{-2}{exq}{}
+  \node[below, inner sep=1pt] at (76,-4) {EX queue};
+  \node[st] (wb) at (49,-2) {\iflangja{ライトバック}{write-back}};
+  \draw[->] (fe) -- (feq-in);
+  \draw[->] (feq-out) -- (de);
+  \draw[->] (de) -- (deq-in);
+  \draw[->] (deq-out) -- (sch);
+  \draw[->] (sch) -- (ex);
+  \draw[<->] (ex) -- (mem);
+  \draw[->] (ex.east) -- ++(4,0) |- (exq-out);
+  \draw[->] (exq-in) -- (wb);
+  % wake-up of dependants
+  \draw[->, dashed, ln-caution] (wb.north) -- ++(0,5) -| (sch.south)
+    node[pos=0.25, above, text=ln-caution, inner sep=1.5pt]
+    {\iflangja{完了で依存命令を起こす}{completion wakes dependants}};
+  % legend: depth and width
+  \draw[|-|, ln-accent] (18,27) -- (30,27)
+    node[midway, above, text=ln-accent, inner sep=1.5pt]
+    {\iflangja{深さ = ステージの遅延}{depth = stage latency}};
+  \draw[->, thick, ln-accent] (45,27) -- (53,27)
+    node[right, text=ln-accent, inner sep=1.5pt]
+    {\iflangja{幅 = 1サイクルに移動できる命令数}{width = instructions moved per cycle}};
+\end{tikzpicture}

@@ -1,0 +1,38 @@
+% Interval analysis (Lesson 8): dispatch rate over time.  Each interval
+% is a steady state at the effective dispatch rate followed by one miss
+% event.  Dashed: the simple model, in which dispatch stops abruptly for
+% the penalty.  Solid: the first-order model, with the pipeline drain
+% before and the refill after the penalty.
+% Redraws the outline figure m8l3_interval_based (both panels merged).
+% Usage: \input{figures/l08-interval}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.5mm]}]
+  \draw[->] (0,0) -- (110,0) node[below left, inner sep=1pt]
+    {\iflangja{時間}{time}};
+  \draw[->] (0,0) -- (0,24);
+  \node[rotate=90, align=center, inner sep=1pt] at (-7,8)
+    {\iflangja{ディスパッチ率}{dispatch rate}};
+  \node[left, inner sep=1pt] at (0,14) {$D$};
+  % simple model (dashed)
+  \draw[dashed, ln-muted] (2,14) -- (36,14) -- (36,0.3) -- (56,0.3)
+    -- (56,14) -- (90,14) -- (90,0.3) -- (104,0.3);
+  % first-order model (solid)
+  \draw[very thick, ln-accent] (2,14) -- (32,14) -- (38,0.6) -- (50,0.6)
+    -- (58,14) -- (86,14) -- (92,0.6) -- (104,0.6);
+  % labels
+  \draw[->, ln-caution] (32,21) node[above, text=ln-caution, inner sep=1pt]
+    {\iflangja{ミスイベント}{miss event}} -- (32,15);
+  \draw[->, ln-caution] (86,21) node[above, text=ln-caution, inner sep=1pt]
+    {\iflangja{ミスイベント}{miss event}} -- (86,15);
+  \node[above, text=ln-accent] at (17,14)
+    {\iflangja{定常状態}{steady state}};
+  \node[text=ln-muted] at (35,6) [left] {\iflangja{ドレイン}{drain}};
+  \node[text=ln-muted] at (55,6) [right] {\iflangja{リフィル}{refill}};
+  \node[above, inner sep=1pt] at (45,1) {\iflangja{ペナルティ}{penalty}};
+  % intervals
+  \draw[|-|] (2,-4) -- (56,-4) node[midway, below, inner sep=1.5pt]
+    {\iflangja{インターバル 1}{interval 1}};
+  \draw[|-|] (56,-4) -- (104,-4) node[midway, below, inner sep=1.5pt]
+    {\iflangja{インターバル 2}{interval 2}};
+\end{tikzpicture}

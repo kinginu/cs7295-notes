@@ -1,0 +1,1155 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPU Simulation}
+\lessoninfo{
+  video={M8, lessons 1--4 (GPU Cycle Level Simulation, Parts 1 and 2; Analytical Models of GPUs; Accelerating GPU Simulation)},
+  sources={Liu et al.\ \cite{liu2023photon} (Photon, assigned); Williams et al.\ \cite{williams2009roofline} (Roofline, assigned); Hong and Kim \cite{hong2009analytical} (MWP/CWP model); Huang et al.\ \cite{huang2014gpumech} (GPUMech); Karkhanis and Smith \cite{karkhanis2004firstorder} (first-order model); simulators \cite{bakhoda2009gpgpusim,khairy2020accelsim,sun2019mgpusim,gthparch2026macsim,power2015gem5gpu}; Sherwood et al.\ \cite{sherwood2002simpoint} (SimPoint); NVIDIA GEMM guide \cite{nvidia2026gemmguide}},
+  textbook={Eeckhout \cite{eeckhout2010perfeval} (optional); K12 \cite{kim2012gpgpu} ch.~2 Performance Principles, §4.1.1 Execution Time Modeling, §4.2.4 Roofline Model, §4.2.6 Other GPGPU Performance Modeling Techniques; BPG \cite{nvidia2026cudabestpractices} §10.2.1 Coalesced Access to Global Memory},
+  keywords={performance modeling, cycle-level simulation, execution-driven and trace-driven simulation, queue-based model, sectored cache, analytical model, Roofline model, arithmetic intensity, ridge point, CPI stack, interval analysis, MWP and CWP, sub-core, event-driven simulation, sampled simulation, SimPoint, data-driven model},
+}
+
+The mechanisms of the previous lessons (the SIMT stack and dynamic warp
+formation of Lesson~6, register file caches, the warp schedulers of
+Lesson~7) were all proposed and evaluated before any of them existed in
+silicon.  This lesson is about the tools that make such evaluations
+possible.  It first builds a cycle-level simulator of a GPU from
+queues and a clock, and then adds what is specific to GPUs: warps,
+divergence, coalescing and sectored caches.  It then turns to
+analytical models, which predict performance from a few parameters
+without simulating anything: a first-order design of a GPU, the
+Roofline model, CPI stacks and interval analysis.  The last part asks
+why detailed simulation is so slow and what can be done about it:
+parallel and event-driven simulators, simpler models, sampling, smaller
+workloads and models learned from data.
+
+\section{Cycle-level simulation}
+\label{sec:l08-cycle-level}
+
+Before a processor is built, its designers must predict how fast it
+will run real programs and how each design choice changes that
+speed.\source{M8, cycle-level simulation (part~1); Eeckhout
+\cite{eeckhout2010perfeval}.}  This section lists the
+techniques for doing so, defines cycle-level simulation and its two
+flavours, and shows how a simulator of a pipeline is organised as
+queues advanced by a clock.
+
+\subsection{Six techniques}
+
+\begin{definition}[Performance modeling]
+  \label{def:l08-performance-modeling}
+  The prediction of the performance of a processor design, or of a
+  program on a design, without measuring it on the finished hardware,
+  is \term{performance modeling}[性能モデリング].  A program that
+  imitates the behaviour of the hardware in enough detail to produce
+  such a prediction is a \term{simulator}[シミュレータ].
+\end{definition}
+
+Six techniques are in common use:
+\begin{enumerate}
+  \item \emph{cycle-level simulation}: model what every part of the
+    machine does in every cycle (this section and the next);
+  \item \emph{event-driven simulation}: model only the moments at which
+    something changes (\cref{sec:l08-accelerating});
+  \item \emph{analytical models}: equations in a few parameters
+    (\cref{sec:l08-analytical});
+  \item \emph{sampling-based techniques}: simulate in detail only
+    selected parts of a program (\cref{sec:l08-accelerating});
+  \item \emph{data-driven, statistical or machine-learning models}:
+    fit a model to measured or simulated data
+    (\cref{sec:l08-accelerating});
+  \item \term{FPGA emulation}[FPGAエミュレーション]: implement the
+    design, or a model of it, on a field-programmable gate array, which
+    runs it orders of magnitude faster than a software simulator at the
+    cost of much more design effort.\margin{FPGA emulation is as
+    detailed as cycle-level simulation, only faster: FPGA-based
+    simulators are \enquote{fast and accurate, but they take significant
+    effort to develop and use} \cite{sanchez2013zsim}.  This chapter
+    does not treat them further.}
+\end{enumerate}
+
+\subsection{The cycle-level approach}
+
+\begin{definition}[Cycle-level simulation]
+  \label{def:l08-cycle-level}
+  In \term{cycle-level simulation}[サイクルレベルシミュレーション] the
+  simulator keeps a global clock and, in every simulated cycle, models
+  the events of that cycle in each unit: which instruction is fetched,
+  which is decoded, which leaves the scheduler, which request reaches
+  the cache.
+\end{definition}
+
+Cycle-level simulators are the standard tool of architecture research
+and are used especially early in a design, when there is no hardware
+to measure.  A single clock is a simplification: a real chip runs its
+cores, its memory and its on-chip network at different frequencies.
+A part of a design driven by one clock is a
+\term{clock domain}[クロックドメイン], and a simulator can keep one
+clock per domain (core, memory, network on chip) and advance each at
+its own rate.\margin{On NVIDIA GPUs the SM clock and the memory clock
+are independent: \texttt{nvidia-smi -q -d CLOCK} reports
+\enquote{Graphics}, \enquote{SM} and \enquote{Memory} clocks
+separately.}
+
+\subsection{Execution-driven and trace-driven simulation}
+
+A cycle-level simulator models timing.  It must also know
+\emph{which} instructions run, with which addresses and which branch
+outcomes, and there are two ways to obtain them.
+
+\begin{definition}[Execution-driven and trace-driven simulation]
+  \label{def:l08-exec-trace}
+  In \term{execution-driven simulation}[実行駆動シミュレーション] the
+  simulator executes the program's instructions itself, computing
+  their results as the simulation proceeds.  In
+  \term{trace-driven simulation}[トレース駆動シミュレーション] it
+  replays a \term{trace}[トレース], a record of the instructions (and
+  their addresses and branch outcomes) collected beforehand from a real
+  or functional execution, so that execution and timing are decoupled.
+\end{definition}
+
+An execution-driven simulator still chooses \emph{when} to execute an
+instruction functionally.  It can do it when the instruction is
+fetched (\emph{execute-at-fetch}), which keeps the functional model
+simple, or when the timing model reaches the execute stage
+(\emph{execute-at-execute}), which lets values depend on the simulated
+order of events.\caution{The two choices usually give the same
+result.  They differ when the simulated timing changes the value, for
+example when two threads race for a lock: execute-at-fetch fixes the
+winner in fetch order, execute-at-execute in the simulated execution
+order.}  The two flavours trade off as follows.
+\begin{description}
+  \item[Execution-driven.]  No traces have to be stored, and behaviour
+    that depends on the run itself is modeled faithfully: which thread
+    acquires a lock first, how long a thread waits at a barrier, which
+    path a data-dependent branch takes under a different schedule.
+  \item[Trace-driven.]  The simulator needs no functional model, so it
+    is simpler, lighter and easier to develop.  A study of caches alone
+    needs only the memory addresses (a memory trace).  But the trace
+    fixes the order of events as it was recorded: lock acquisition,
+    barriers and anything else that depends on run-time timing cannot
+    change in the simulated machine.
+\end{description}
+\tip{Rule of thumb: if the question is \enquote{how fast is this
+design}, a trace suffices; if the design can change \emph{what} the
+program does (its synchronisation or the paths its threads take), the
+simulation must be execution-driven.}
+
+\subsection{Queue-based modeling}
+
+The pipeline of Lesson~4 is modeled most easily as stages connected by
+queues (\cref{fig:l08-queue-model}).
+
+\begin{definition}[Queue-based model]
+  \label{def:l08-queue-model}
+  A \term{queue-based model}[キューベースモデル] represents a pipeline
+  as a set of stages connected by queues.  Each queue is a
+  \term{FIFO}[FIFO] (first in, first out): instructions leave in the
+  order in which they entered.  The exception is the scheduler, which
+  picks any \emph{ready} instruction, so it is a pool rather than a
+  FIFO.  Two parameters describe each connection: the \emph{depth} of a
+  queue is the number of cycles an instruction spends in that stage,
+  and the \term{pipeline width}[パイプライン幅] is the number of
+  instructions that can move from one queue to the next per cycle (the
+  fetch, issue or execute bandwidth).
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-queue-model}
+  \caption{A queue-based model of a pipeline.  Fetch, decode,
+    schedule, execute and write-back are connected by FIFO queues; the
+    scheduler is a pool from which ready instructions are picked.  The
+    execute stage obtains memory latencies from a model of the caches
+    and memory, and a completing instruction wakes up its dependants.}
+  \label{fig:l08-queue-model}
+\end{figure}
+
+Three things give the model its timing.  First, dependences: when an
+instruction completes, its result must be broadcast to the
+instructions waiting for it, which then become ready, exactly as the
+scoreboard of Lesson~4 does in hardware.  Second, the latency of memory
+instructions comes from a model of the caches and memory, which
+decides hit or miss at each level.  Third, the latency of other
+instructions is a parameter, for example \num{1}~cycle for an integer
+add and \num{3}~cycles for a multiply, taken from the literature,
+from a circuit model such as CACTI, or from the register-transfer-level
+(RTL) description of the design; the simulator itself simulates no
+circuits.\margin{CACTI is a widely used model of the access time,
+area and energy of SRAM arrays such as caches and register files,
+from their size and organisation.}  Execution latencies that do not
+depend on the run are therefore a lookup table.
+
+\subsection{Structure of a simulator}
+
+A cycle-level simulator is a loop that advances the clock by one cycle
+per iteration and asks every component to do one cycle's work.  The
+components form a hierarchy: the simulator ticks the cores, the memory
+system and the network on chip, and each core ticks its pipeline
+stages.\margin{MacSim, a CPU and GPU simulator from Georgia Tech
+\cite{gthparch2026macsim}, is organised this way; the listing is our
+own sketch, not its code.}
+
+\begin{lstlisting}[language=C++, numbers=none]
+// Top level: one iteration = one simulated cycle.
+while (!sim.all_done()) {
+  ++sim.cycle;
+  for (Core &c : sim.cores) c.tick();
+  sim.memory.tick();
+  sim.noc.tick();
+}
+
+// One core: stages in REVERSE pipeline order.
+void Core::tick() {
+  writeback(); execute(); schedule();
+  decode(); fetch();
+}
+\end{lstlisting}
+
+The stages are called from the last to the first.  When
+\texttt{execute()} runs, it consumes the instructions that
+\texttt{schedule()} produced in the \emph{previous} cycle, before
+\texttt{schedule()} overwrites them with this cycle's output.  Calling
+them in pipeline order would let an instruction pass through all
+five stages in a single cycle.\tip{Reverse order is the software
+equivalent of the pipeline registers between stages: each stage reads
+what the stage before it wrote one cycle earlier.}
+
+Each simulated instruction is represented by a small record (an
+\emph{op}) that carries it through the stages, together with its
+timing state.  The key field is the cycle at which it completes:
+\begin{equation}
+  \textit{done\_cycle} = \textit{schedule\_cycle} + \textit{latency}.
+  \label{eq:l08-done-cycle}
+\end{equation}
+For an instruction of fixed latency the scheduler can compute it at
+the moment of issue.  The latency of a load is not fixed, since it
+depends on whether the access hits in the L1 cache, the L2 cache or
+neither; it becomes known only after the access has been simulated
+in the cache hierarchy, and is then added to the issue cycle.
+
+\begin{example}
+  \label{ex:l08-done-cycle}
+  With latencies of \num{1}~cycle for \texttt{add}, \num{3} for
+  \texttt{mul}, and \num{4}, \num{30} or \num{200}~cycles for a load
+  that hits in L1, hits in L2 or misses in both (our own numbers), a
+  simulator schedules four instructions as in
+  \cref{tab:l08-done-cycle}.  The \texttt{add} depends on the load, so
+  it becomes ready only at the load's \textit{done\_cycle}.
+\end{example}
+
+\begin{table}[tb]
+  \centering
+  \caption{Completion times computed by a simulator for four
+    instructions (our own latencies).  The load's latency is known only
+    after the cache model has decided where it hits.}
+  \label{tab:l08-done-cycle}
+  \begin{tabular}{@{}l c c c >{\raggedright\arraybackslash}p{40mm}@{}}
+    \toprule
+    instruction & schedule & latency & done & latency from \\
+    \midrule
+    \texttt{mul r1, r2, r3} & 10 & 3 & 13 & table \\
+    \texttt{ld r4, [r5]} & 11 & 30 & 41 & cache model: L1 miss, L2 hit \\
+    \texttt{mul r6, r1, r1} & 13 & 3 & 16 & table; waits for \texttt{r1} \\
+    \texttt{add r7, r4, 1} & 41 & 1 & 42 & table; waits for \texttt{r4} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The scheduler is the most detailed part of the model.  Each cycle it
+selects instructions that are ready, subject to the resources they
+need: a free floating-point unit, an entry in the load or store queue,
+a free execution or cache port.  An instruction that occupies a unit for
+several cycles keeps the resource for all of them, and the scheduler
+must not issue a second instruction to it in the meantime.
+
+\subsection{Modeling a GPU}
+
+A cycle-level GPU simulator has the same structure, with one change
+of unit: it models \emph{warps}, not threads, because the SIMT hardware
+fetches, decodes, schedules and executes one warp instruction for all
+its threads together (Lesson~4).  The scheduler considers the
+instruction at the head of each warp; instructions of one warp issue in
+order, those of different warps in any order.\margin{A GPU simulator
+has far more to model per cycle than a CPU simulator: every SM can
+hold up to 64 resident warps (CPG Table~21 \cite{nvidia2024cudaguide}),
+and a GPU has tens of SMs.}  Three things have no CPU
+counterpart: divergent warps (\cref{sec:l08-divergence-memory}), the
+hierarchy of warps, thread blocks and kernels, and the warp scheduling
+policies of Lesson~7.
+
+The hierarchy also decides when a simulation ends.  A whole thread
+block is assigned to one SM (Lesson~3), and the simulator tracks every
+thread until it executes its last instruction.\margin{How many blocks
+an SM holds at once is itself a modeled limit: at most 32 resident
+blocks per SM on compute capabilities 7.0, 8.0 and 9.0, 16 on 7.5 and
+8.6 (CPG Table~21 \cite{nvidia2024cudaguide}).}  A block finishes when
+all of its threads have finished, which frees its SM resources for the
+next block; a kernel finishes when all of its blocks have finished; and
+the application finishes when all of its kernels have.
+
+\begin{keypoint}
+  A cycle-level simulator advances a global clock (one per clock
+  domain) and models every unit in every cycle.  It obtains the
+  instruction stream by executing the program or by replaying a trace.
+  The pipeline is a set of FIFO queues whose depths are stage
+  latencies and whose transfer rates are the pipeline widths, plus a
+  scheduler that picks ready instructions under resource constraints.
+  A GPU simulator models warps instead of threads.
+\end{keypoint}
+
+\section{Divergence and memory in GPU simulators}
+\label{sec:l08-divergence-memory}
+
+The modeling unit of a GPU simulator is the warp: an instruction-cache
+access and a program counter belong to a warp, not to a
+thread.\source{M8, cycle-level simulation (part~2); BPG
+§10.2.1 Coalesced Access to Global Memory
+\cite{nvidia2026cudabestpractices}.}  Not every thread of a warp takes
+part in every instruction, so the simulator also keeps the active mask
+of Lesson~4, both to compute results and to count the resources an
+instruction really uses.  This section shows how a simulator handles
+the two GPU-specific effects of the previous lessons, divergence and
+coalescing, and then lists the open-source GPU simulators.
+
+\subsection{Divergent branches}
+
+How a simulator handles a divergent branch (Lesson~6) depends on how
+it obtains its instructions.
+\begin{description}
+  \item[Execution-driven.]  The simulator computes each thread's branch
+    outcome and maintains the SIMT stack itself, exactly as the
+    hardware would.  Because the stack is part of the model, a
+    different mechanism (dynamic warp formation, another reconvergence
+    rule) can be modeled by replacing it.
+  \item[Trace-driven.]  The trace must record every path the warp
+    executed, with the active mask of each basic block, for example
+    BB1 \texttt{1111}, BB2 \texttt{1100}, BB3 \texttt{0011} and BB4
+    \texttt{1111} for the branch of Lesson~6.  The simulator replays
+    these blocks in the recorded order.
+\end{description}
+\caution{A trace records the divergence behaviour of the machine on
+which it was collected.  Simulating a different divergence-handling
+mechanism from such a trace is difficult, because the trace contains
+neither the branch conditions nor the order the new mechanism would
+choose.}%
+A trace-driven simulator is therefore poorly suited to studying
+divergence handling itself; it is adequate when divergence is only one
+of the effects that shape the timing.
+
+\subsection{Coalescing}
+
+The number of memory transactions a warp instruction generates, not
+the number of threads, drives everything downstream: cache accesses,
+misses, DRAM traffic and bandwidth.  Modeling memory coalescing
+(Lesson~4) is therefore one of the most important parts of a GPU
+simulator.  Requests are merged at the granularity of the first cache
+they reach, typically one cache line.  In the toy configuration of this
+section, with \SI{64}{\byte} lines and eight threads per warp, a load
+\texttt{R1} whose threads read consecutive \SI{4}{\byte} words is
+merged into one \SI{64}{\byte} request, while a load \texttt{R2} whose
+threads read words \SI{128}{\byte} apart produces eight requests, one
+per thread, each for a full line.
+
+A trace can represent the memory accesses of a warp instruction in
+two ways.  It can list the address of every thread (\texttt{0x00},
+\texttt{0x04}, \texttt{0x08}, \dots), leaving the coalescing to the
+simulator, or it can store the result of coalescing, one base address
+and a size per transaction.  The second form is much smaller, but it
+fixes the transaction size of the machine on which the trace was
+collected.\caution{A pre-coalesced trace is tied to one
+microarchitecture: to study a cache with another line or transaction
+size, new traces must be collected.}
+
+\subsection{Cache hierarchy and sectored caches}
+
+After coalescing, the requests enter a cache hierarchy that is modeled
+much as for a CPU: the address is translated by a TLB (with a page
+table walk on a miss, Lesson~7), then the L1 and L2 caches are
+accessed, depending on the microarchitecture being modeled.  What
+differs is the importance of coalescing in front of it, and one
+feature of the caches themselves.
+
+\begin{definition}[Sectored cache]
+  \label{def:l08-sectored-cache}
+  A \term{sectored cache}[セクタキャッシュ] divides each cache block
+  into several sectors, each with its own valid bit, all sharing the
+  block's single tag.  A \term{sector}[セクタ] is the unit that is
+  filled from memory on a miss: the cache brings in only the sector
+  that holds the requested data rather than the whole block
+  (\cref{fig:l08-sector-cache}).
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-sector-cache}
+  \caption{A sectored cache (toy sizes: \SI{64}{\byte} block,
+    \SI{16}{\byte} sectors).  (a) The sectors share one tag.  (b) The
+    uncoalesced load \texttt{R2} misses in eight blocks; a conventional
+    cache fills eight whole blocks, a sectored cache only one sector
+    in each.}
+  \label{fig:l08-sector-cache}
+\end{figure}
+
+For the coalesced load \texttt{R1} (eight consecutive \SI{4}{\byte}
+words, \SI{32}{\byte} at addresses 0 to 31) the conventional cache fills
+the whole \SI{64}{\byte} block, while the sectored cache fills only
+sectors 0 and~1, the \SI{32}{\byte} that hold the data.  The saving is
+a factor of two, and every fetched byte is used.  For the uncoalesced load \texttt{R2} the conventional cache
+fetches $8 \times 64 = \SI{512}{\byte}$ to deliver $8 \times 4 =
+\SI{32}{\byte}$ of useful data, the sectored cache
+$8 \times 16 = \SI{128}{\byte}$.  The benefit of sectoring is
+therefore lower memory bandwidth for scattered accesses, and sharing
+one tag among several sectors keeps the tag storage of a large block.
+The cost is less implicit prefetching: a block that is filled sector by
+sector no longer brings in the neighbouring data that spatial locality
+would have used soon after.\caution{Lecture vs guide: the
+\SI{16}{\byte} sector in a \SI{64}{\byte} block is a toy size.  NVIDIA
+GPUs use \SI{32}{\byte} sectors in \SI{128}{\byte} lines, and since
+compute capability 6.0 a warp's accesses cost \enquote{the number of
+32-byte transactions necessary to service all of the threads of the
+warp} (BPG §10.2.1 \cite{nvidia2026cudabestpractices}); Lesson~4 counts
+these sectors.}
+
+\begin{note}
+  Simulating a sectored cache changes what the simulator counts.  A
+  block can be present with only some sectors valid, so an access can
+  hit the tag and still miss the sector; a simulator that counts only
+  tag hits overestimates the hit rate and underestimates DRAM traffic.
+\end{note}
+
+\subsection{Open-source GPU simulators}
+
+\Cref{tab:l08-simulators} lists the open-source GPU simulators that
+are widely used in research.  They differ in the ISA they model, in how
+they obtain instructions, and in what they model beyond one GPU.
+
+\begin{table}[tb]
+  \centering
+  \caption{Open-source GPU simulators, as classified in this chapter.}
+  \label{tab:l08-simulators}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{25mm}
+                  >{\raggedright\arraybackslash}p{19mm}
+                  >{\raggedright\arraybackslash}p{40mm}@{}}
+    \toprule
+    simulator & ISA & type & scope \\
+    \midrule
+    GPGPU-Sim \cite{bakhoda2009gpgpusim} & NVIDIA PTX, SASS
+      & execution-driven & a GPU running general-purpose code \\
+    Accel-Sim \cite{khairy2020accelsim} & NVIDIA PTX, SASS
+      & trace-driven & GPUs and accelerators \\
+    MGPUSim \cite{sun2019mgpusim} & AMD GPU & execution-driven
+      & multiple GPUs \\
+    MacSim \cite{gthparch2026macsim} & NVIDIA and Intel GPUs
+      & trace-driven & heterogeneous CPU and GPU systems \\
+    gem5-gpu \cite{power2015gem5gpu} & AMD GPU or NVIDIA PTX
+      & execution-driven & heterogeneous CPU and GPU systems \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+GPGPU-Sim is the most widely used of them.  gem5-gpu combines it with
+gem5, the most widely used CPU simulator, so that a CPU and a GPU
+execute together and share a memory system.  MGPUSim models AMD GPUs
+and is the base on which the Photon sampling methodology of
+\cref{sec:l08-accelerating} was built.\sidenote{GPGPU-Sim was introduced with a study of CUDA
+workloads at ISPASS 2009 \cite{bakhoda2009gpgpusim}.  The table
+follows the classification of this chapter's source.  In detail, Accel-Sim keeps GPGPU-Sim's
+execution-driven PTX mode next to its trace-driven SASS mode
+\cite{khairy2020accelsim}, and gem5-gpu, the
+combination also listed as \enquote{Gem5-GPGPU-Sim}, couples gem5
+with GPGPU-Sim's NVIDIA model; the AMD GPU model of gem5 is a separate
+development.  MacSim's documentation describes it as configurable
+as \enquote{either a trace driven or execution-driven cycle level
+simulator} for x86, ARM64, PTX and Intel GEN instructions
+\cite{gthparch2026macsim}.}
+
+\begin{keypoint}
+  A GPU simulator models warps with their active masks.  It either
+  maintains the SIMT stack itself (execution-driven) or replays the
+  recorded blocks and masks (trace-driven, tied to the trace machine's
+  divergence handling).  Coalescing decides the number of transactions
+  and is among the most important things to model; pre-coalesced
+  traces fix the transaction size.  Sectored caches fill one sector per
+  miss: less bandwidth, less implicit prefetching.
+\end{keypoint}
+
+\section{Analytical models of GPUs}
+\label{sec:l08-analytical}
+
+A cycle-level simulator answers a question about one design and one
+program by running the program.\source{M8, analytical models; K12 ch.~2
+Performance Principles, §4.1.1 Execution Time Modeling, §4.2.4
+Roofline Model, §4.2.6 Other GPGPU Performance Modeling Techniques;
+\cite{williams2009roofline,hong2009analytical,huang2014gpumech,karkhanis2004firstorder}.}
+An analytical model answers it with a formula.
+
+\begin{definition}[Analytical model]
+  \label{def:l08-analytical-model}
+  An \term{analytical model}[解析モデル] predicts performance from a
+  small number of parameters of the design and the program, by
+  equations rather than by executing the program.  A
+  \term{first-order model}[一次近似モデル] keeps only the effects that
+  dominate performance and ignores second-order interactions.
+\end{definition}
+
+Analytical models need no full execution, are simple enough to
+reason about, and give insight: they say \emph{why} a design is fast or
+slow and which parameter to change.  Their accuracy is lower than that
+of a simulator, so they are used to explore a design space before
+simulating its best points, and to explain simulation results.
+
+\subsection{A first-order GPU design}
+
+We size a GPU for one target: \num{e12} dot-product steps per second,
+each step being \lstinline[language=C++]!sum += x[i] * y[i]!.
+
+\begin{definition}[Fused multiply-add]
+  \label{def:l08-fma}
+  A \term{fused multiply-add (FMA)}[融合積和演算（FMA）] computes
+  $a \cdot b + c$ as one instruction with a single rounding.  It is
+  counted as two floating-point operations (FLOPs).
+\end{definition}
+
+\begin{description}
+  \item[Compute.]  Each step is one multiply and one add, so the target
+    is \SI{2}{\tera\flop\per\second}, or \num{e12} FMAs per second.  At
+    \SI{1}{\giga\hertz} this needs \num{1000} FMA units, at
+    \SI{2}{\giga\hertz} \num{500}.
+  \item[Memory.]  Each step reads one element of \texttt{x} and one of
+    \texttt{y}.  Counting one byte per element, as this design
+    exercise does, the GPU needs \SI{2}{\tera\byte\per\second} of
+    memory bandwidth.\caution{Lecture vs reality: the
+    \enquote{two bytes per step} assume one-byte elements.  With
+    FP32 elements a step reads \SI{8}{\byte} for 2 FLOPs, and the same
+    design needs \SI{8}{\tera\byte\per\second}, about 2.7 times the
+    \SI{3}{\tera\byte\per\second} of an H100 SXM5 (preliminary
+    figure, \cite{nvidia2022hopper}).}
+  \item[Warps.]  \num{500} FMA units correspond to about 16 warps of
+    width 32 ($16 \times 32 = 512$) issuing one FMA per lane per
+    cycle.  The GPU can be built as 16~SMs that each issue one warp
+    per cycle, or as 8~SMs that each issue two, both at
+    \SI{2}{\giga\hertz}.
+\end{description}
+
+\subsection{Width and depth of multithreading}
+
+How many warps an SM must hold follows from two parameters.
+
+\begin{definition}[$W_{\text{width}}$ and $W_{\text{depth}}$]
+  \label{def:l08-wwidth-wdepth}
+  $W_{\text{width}}$ is the number of threads that execute in one
+  cycle (for example 32, one warp).  $W_{\text{depth}}$ is the number of
+  warps that the SM can schedule while one warp stalls, so that the
+  stall is hidden.  An SM holds
+  $W_{\text{width}} \times W_{\text{depth}}$ resident threads.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-wdepth}
+  \caption{Hiding a memory stall.  Each warp issues a compute (C) and a
+    memory (M) instruction and can issue again only 8~cycles after its
+    compute instruction.  One warp keeps the issue slot busy 2 cycles
+    in 8, two warps 4 in 8, four warps all the time:
+    $W_{\text{depth}} = 4$.}
+  \label{fig:l08-wdepth}
+\end{figure}
+
+\Cref{fig:l08-wdepth} shows the idea for a program whose warps
+alternate one compute and one memory instruction.  With one warp, the
+SM issues two instructions and then idles until the memory instruction
+completes; with two warps, the second warp fills two of the idle
+slots; with four, the idle slots disappear.  In general the stall must
+be covered by the work of the other warps: if each warp issues $n$
+instructions and then cannot issue again until $L$ cycles after the
+first of them, about
+\begin{equation}
+  W_{\text{depth}} \approx \frac{L}{n}
+  \label{eq:l08-wdepth}
+\end{equation}
+warps are needed.\tip{Count the cycles a warp keeps the issue slot busy
+between two waits, and divide the wait by it.}  With a memory latency
+of \num{200}~cycles and one compute plus one memory instruction per
+warp, $W_{\text{depth}} = 200/(1+1) = 100$; with one memory instruction
+per four compute instructions, $200/(1+4) = 40$.  The more compute per
+memory access, the fewer warps are needed to hide the latency.
+
+Both parameters are set by hardware.  $W_{\text{width}}$ is bounded by
+the number of ALUs (and the width of the scheduler).
+$W_{\text{depth}}$ is bounded by the storage for the warps' state: a
+$W_{\text{depth}}$ of 20 needs $20 \times 32 \times r$ registers for $r$
+registers per thread, and at least 20 program counters, one per
+warp.\margin{Real limits: at most 64 resident warps per SM
+(compute capability 7.0, 8.0, 9.0) and \num{65536} 32-bit registers per
+SM, so 64 warps of 32 threads get at most 32 registers each (CPG
+Table~21 \cite{nvidia2024cudaguide}).}  Equation~\eqref{eq:l08-wdepth}
+with a latency of hundreds of cycles explains why GPUs keep dozens of
+warps per SM and why their register files are so large (Lesson~6).
+
+\subsection{How many SMs, and sub-cores}
+
+The two designs above, 16~SMs issuing one warp per cycle and 8~SMs
+issuing two, have the same execution bandwidth and, for the same chip
+area, the same total cache capacity.  They differ in how that capacity
+is split.  Fewer, larger SMs have larger caches with longer access
+times, but the thread blocks on one SM share more data, which can raise
+the hit rate; more, smaller SMs have smaller, faster caches.  Which is
+better depends on how much data the blocks share, a trade-off that a
+first-order model cannot settle; it needs a finer model or a
+simulation.
+
+\begin{definition}[Sub-core]
+  \label{def:l08-sub-core}
+  A \term{sub-core}[サブコア] is one of several partitions of an SM,
+  each with its own program counters, decoder, warp scheduler and
+  execution lanes, which share the SM's instruction cache and, through
+  a crossbar, its large caches and shared memory
+  (\cref{fig:l08-subcore}).
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-subcore}
+  \caption{An SM divided into four sub-cores.  Each has its own front
+    end and lanes; the instruction cache and the data caches are
+    shared.}
+  \label{fig:l08-subcore}
+\end{figure}
+
+Sub-cores are a middle way between the two designs: each schedules a
+small number of warps over its own lanes, while large structures stay
+shared.  For a model this adds resource management: two warps on
+different sub-cores compete for the shared caches and crossbar but not
+for an issue slot.\margin{Current NVIDIA SMs have 128 FP32 lanes
+split into four partitions \cite{nvidia2022hopper}, so each sub-core
+issues for 32 lanes.}
+
+\begin{keypoint}
+  A first-order design starts from the target throughput: FLOPs fix the
+  number of FMA units (at a given clock), bytes per FLOP fix the
+  memory bandwidth, and the latency to hide fixes $W_{\text{depth}}
+  \approx L/n$, hence the registers and program counters per SM.
+\end{keypoint}
+
+\subsection{The Roofline model}
+
+The first-order design asked how much compute and how much bandwidth a
+program needs.  The Roofline model asks the reverse question: given a
+machine, which of the two limits a program.
+
+\begin{definition}[Arithmetic intensity]
+  \label{def:l08-arithmetic-intensity}
+  The \term{arithmetic intensity}[演算強度] of a program or kernel is
+  the number of floating-point operations it performs per byte of
+  memory it accesses, in FLOP/B.
+\end{definition}
+
+\begin{definition}[Roofline model]
+  \label{def:l08-roofline}
+  The \term{Roofline model}[ルーフラインモデル] bounds the attainable
+  performance of a kernel with arithmetic intensity $I$ on a machine
+  with peak compute performance $P_{\text{peak}}$ and peak memory
+  bandwidth $B_{\text{peak}}$ by
+  \begin{equation}
+    P(I) = \min\bigl(P_{\text{peak}},\; B_{\text{peak}} \cdot I\bigr).
+    \label{eq:l08-roofline}
+  \end{equation}
+  On log-log axes the bound is a slanted line (slope one) followed by a
+  flat roof (\cref{fig:l08-roofline}).  A kernel left of the
+  \term{ridge point}[リッジポイント], the intensity
+  $I^{*} = P_{\text{peak}}/B_{\text{peak}}$ at which the two lines meet,
+  is \term{memory-bound}[メモリ律速]: its performance is limited by
+  bandwidth.  A kernel right of it is
+  \term{compute-bound}[演算律速]: limited by the peak FLOP rate.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-roofline}
+  \caption{The Roofline model of a machine with
+    \SI{16}{\tera\flop\per\second} and \SI{1}{\tera\byte\per\second}
+    (ridge point \SI{16}{\flop\per\byte}).  Kernel A
+    (\SI{0.5}{\flop\per\byte}) reaches at most \SI{0.5}{\tera\flop\per\second};
+    raising the intensity to \SI{2}{\flop\per\byte} (kernel B) quadruples the
+    bound.}
+  \label{fig:l08-roofline}
+\end{figure}
+
+Williams et al., who introduced the model, measure the intensity
+after the caches: their
+\term{operational intensity}[演算強度（DRAMバイト当たり）] counts the
+operations per byte of DRAM traffic, so a kernel whose data stay in the
+caches has a higher operational than arithmetic intensity
+\cite{williams2009roofline}.\caution{Lecture vs paper: this chapter,
+like the lecture, counts the bytes the program requests.  The paper
+uses \enquote{the term operational intensity to mean operations per byte
+of DRAM traffic} and states the bound as \enquote{Attainable GFlops/sec
+= Min(Peak Floating Point Performance, Peak Memory Bandwidth x
+Operational Intensity)} \cite{williams2009roofline}.}
+
+Two examples in the units of the first-order design, one byte per
+element, show how a kernel moves on the chart.  A vector sum
+\mbox{\lstinline[language=C++]!z[i] = x[i] + y[i]!}, counting only its two
+loads (one byte each), performs 1~FLOP per 2~bytes: its intensity is
+\SI{0.5}{\flop\per\byte}, and the kernel is memory-bound.  The variant
+\mbox{\lstinline[language=C++]!sum += x[i]*x[i]*y[i]*y[i]!} of the
+dot product reads the same
+2~bytes but performs 4~FLOPs (three multiplications and one addition),
+an intensity of \SI{2}{\flop\per\byte}: it moves right on the chart,
+toward the compute-bound region.  The model's
+practical use is to judge whether a kernel has room to improve: a
+kernel far below its roof is limited by something else (latency,
+divergence, bank conflicts), one on the roof can only be improved by
+raising its intensity or by moving to another machine.  The roofs are
+drawn once per machine, \enquote{not once per kernel}
+\cite{williams2009roofline}; each kernel is then a point on the
+intensity axis.\margin{Ridge points of real GPUs (FP16 tensor peak divided by
+HBM bandwidth): V100 \SI{138.9}{\flop\per\byte} \cite{nvidia2026gemmguide};
+A100 $312/1.555 \approx 201$; H100 SXM5
+$1000/3 \approx 333$ (preliminary figures \cite{nvidia2020ampere,nvidia2022hopper}).}
+
+\begin{example}
+  \label{ex:l08-roofline}
+  Our machine of \cref{fig:l08-roofline} has
+  $P_{\text{peak}} = \SI{16}{\tera\flop\per\second}$ and
+  $B_{\text{peak}} = \SI{1}{\tera\byte\per\second}$, so
+  $I^{*} = 16/1 = \SI{16}{\flop\per\byte}$.  An FP32 dot product reads
+  \SI{8}{\byte} per FMA (2~FLOPs), $I = 2/8 = \SI{0.25}{\flop\per\byte}$, and
+  attains at most $1 \times 0.25 = \SI{0.25}{\tera\flop\per\second}$,
+  about 1.6\,\% of the peak; the four-FLOP variant above reaches
+  \SI{0.5}{\flop\per\byte} in FP32.  A kernel with $I = \SI{32}{\flop\per\byte}$, such
+  as a large tiled matrix multiplication, attains
+  $\min(16, 32) = \SI{16}{\tera\flop\per\second}$, the full
+  peak.
+\end{example}
+
+\subsection{CPI models}
+
+A second family of analytical models starts from the time per
+instruction.
+
+\begin{definition}[CPI]
+  \label{def:l08-cpi}
+  The \term{cycles per instruction (CPI)}[命令当たりサイクル数（CPI）]
+  of a program on a processor is the number of cycles it takes divided
+  by the number of instructions it executes, the reciprocal of the IPC
+  of Lesson~1.
+\end{definition}
+
+The simplest CPI model adds to the CPI of an ideal pipeline the cost of
+every kind of disruptive event, weighted by how often it occurs:
+\begin{equation}
+  \mathrm{CPI} = \mathrm{CPI}_{\text{steady}} +
+    \sum_{i} f_i \cdot p_i ,
+  \label{eq:l08-cpi}
+\end{equation}
+where $f_i$ is the number of events of kind $i$ per instruction and
+$p_i$ the penalty of one such event in cycles.  The model assumes that
+penalties do not overlap: they are serialised.\caution{The serialised
+sum is pessimistic for out-of-order and multithreaded processors, which
+overlap penalties with each other and with useful work.}
+
+\begin{example}
+  \label{ex:l08-cpi}
+  A five-stage in-order pipeline has $\mathrm{CPI}_{\text{steady}} = 1$.
+  Branch mispredictions cost \num{3}~cycles and occur in 2\,\% of the
+  instructions, cache misses cost \num{5}~cycles and occur in 5\,\%:
+  \[
+    \mathrm{CPI} = 1 + 0.02 \cdot 3 + 0.05 \cdot 5 = 1 + 0.06 + 0.25
+    = 1.31 .
+  \]
+\end{example}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l08-cpi-stack}}
+  \caption{CPI stack of \cref{ex:l08-cpi}.}
+  \label{fig:l08-cpi-stack}
+\end{marginfigure}
+
+The terms of the sum are worth showing separately, because they say
+where the time goes.
+
+\begin{definition}[CPI stack]
+  \label{def:l08-cpi-stack}
+  A \term{CPI stack}[CPIスタック] is a stacked bar of the components of
+  the CPI: the base (steady-state) component and one component per
+  kind of event (\cref{fig:l08-cpi-stack}).
+\end{definition}
+
+In the example, cache misses account for $0.25/1.31 \approx 19\,\%$ of
+the time and mispredictions for under 5\,\%: a better cache helps more
+than a better predictor.\tip{IPC is the reciprocal of CPI: a CPI of
+1.31 is an IPC of $1/1.31 \approx 0.76$.}
+
+A multithreaded processor overlaps the stalls of one thread with the
+work of others.  Ideally, with $W_{\text{depth}}$ threads, the stalls
+are divided among them:
+\begin{equation}
+  \mathrm{CPI}_{\text{MT}} \approx
+    \frac{\mathrm{CPI}_{\text{single}}}{W_{\text{depth}}}
+    + \text{contention terms}.
+  \label{eq:l08-cpi-mt}
+\end{equation}
+The contention terms account for shared resources that run out when
+many threads are active: busy execution units, DRAM bandwidth, and the
+registers that track outstanding misses.
+
+\begin{definition}[MSHR]
+  \label{def:l08-mshr}
+  An \term{MSHR (miss status holding register)}[MSHR] is an entry
+  that records one outstanding cache miss (the missing block and the
+  requests waiting for it), so that the cache can keep serving other
+  accesses while the miss is serviced.  The number of MSHRs bounds the
+  number of misses in flight.
+\end{definition}
+\margin{The MSHRs therefore cap the memory-level parallelism of
+Lesson~4: with, for example, 32 MSHRs (an illustrative number), a 33rd outstanding miss stalls until one
+returns, however many warps are ready.}
+
+\begin{note}
+  \label{note:l08-cpi-mt}
+  Read \eqref{eq:l08-cpi-mt} as cycles per instruction of the whole
+  processor, counting the instructions of all threads.  The ideal term
+  cannot fall below the issue limit (1 for a pipeline that issues one
+  instruction per cycle): with the CPI of 1.31 of \cref{ex:l08-cpi},
+  two threads already reach that limit.  A GPU is a multithreaded
+  processor with many warps, so the CPI models apply to it, but the
+  contention terms, especially MSHRs and DRAM bandwidth, dominate.
+\end{note}
+
+\subsection{Interval analysis}
+
+The CPI model treats every penalty as a fixed number of cycles added to
+an otherwise perfect pipeline.  Interval analysis looks at the shape of
+the execution over time.
+
+\begin{definition}[Interval analysis]
+  \label{def:l08-interval}
+  The method of \term{interval analysis}[インターバル解析] divides an
+  execution into intervals.  Each interval consists of a steady state, in which
+  instructions are dispatched at the \emph{effective dispatch rate},
+  followed by one \term{miss event}[ミスイベント], a long-latency event
+  (a branch misprediction, a cache or TLB miss) during whose penalty
+  no instruction is dispatched (\cref{fig:l08-interval}).  The
+  execution time is the sum of the steady-state times and the
+  penalties.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-interval}
+  \caption{Interval analysis.  Each interval is a steady state at the
+    effective dispatch rate $D$ followed by one miss event.  Dashed: the
+    abrupt stop of the simple model.  Solid: the first-order model with
+    the pipeline drain before and the refill after the penalty.}
+  \label{fig:l08-interval}
+\end{figure}
+
+A pipeline does not stop and restart abruptly.  When a miss event
+occurs, instructions already in flight still drain out of the pipeline;
+after it is resolved, the pipeline needs time to fill again before
+dispatch reaches the steady rate.  Karkhanis and Smith's first-order
+superscalar model adds these \emph{drain} and \emph{refill} phases,
+whose shapes depend on the kind of event: a misprediction is detected
+only when the branch executes, while a long cache miss blocks the
+head of the reorder buffer and stalls dispatch once it fills
+\cite{karkhanis2004firstorder}.\margin{Eeckhout \cite{eeckhout2010perfeval} presents interval analysis and the
+first-order model in detail, including the penalties of each kind of
+miss event.}
+
+Applied to a GPU, the naive approach treats the GPU as one more
+multithreaded processor.  That misses the two effects that most
+distinguish GPUs:
+\begin{description}
+  \item[Branch divergence.]  Not every lane of a warp is active, and
+    the paths of a divergent branch are serialised (Lesson~6), so a
+    warp instruction does not represent a fixed amount of work.
+  \item[Memory divergence.]  The latency of a warp's memory
+    instruction depends on whether its accesses coalesce: an
+    uncoalesced access generates many transactions and waits for the
+    last of them (Lesson~4).
+\end{description}
+\margin{GPUMech applies interval analysis to GPUs, models the
+round-robin and greedy-then-oldest schedulers of Lesson~7 with 13.2\,\%
+and 14.0\,\% error at 97 times the speed of simulation, and produces
+CPI stacks \cite{huang2014gpumech}.}%
+More recent GPU interval models add sub-cores, sectored caches and the
+contention for other shared resources.
+
+\begin{note}[A GPU model of memory and computation parallelism]
+  \label{note:l08-mwp-cwp}
+  Hong and Kim's analytical model of a GPU, one of this unit's optional
+  readings, rests on two quantities \cite{hong2009analytical}.
+  \term{memory warp parallelism (MWP)}[メモリワープ並列度] is the
+  maximum number of warps per SM that can access memory at the same
+  time, during one warp's memory waiting period; it is limited by the
+  latency, the departure delay between consecutive requests, the
+  bandwidth and the number of active warps $N$:
+  $\mathrm{MWP} = \min(\mathrm{MWP}_{\text{without BW}},
+  \mathrm{MWP}_{\text{peak BW}}, N)$, where
+  $\mathrm{MWP}_{\text{without BW}} =
+  \textit{Mem\_L}/\textit{Departure\_delay}$ and
+  $\mathrm{MWP}_{\text{peak BW}}$ is the peak bandwidth divided by the
+  bandwidth one warp needs times the number of active SMs.
+  \term{computation warp parallelism (CWP)}[計算ワープ並列度] is the
+  number of warps that the SM can execute during one memory waiting
+  period, plus one:
+  $\mathrm{CWP} = \min\bigl((\textit{Mem\_cycles} +
+  \textit{Comp\_cycles})/\textit{Comp\_cycles},\; N\bigr)$.  If
+  $\mathrm{CWP} \geq \mathrm{MWP}$ the computation of the other warps
+  covers more than the memory system can overlap: the kernel is
+  memory-bound and its time grows with $N/\mathrm{MWP}$ memory
+  periods.  If $\mathrm{MWP} > \mathrm{CWP}$ the memory latency is
+  hidden and the time is about one memory latency plus
+  $N \times \textit{Comp\_cycles}$.
+\end{note}
+\margin{Hong and Kim report a geometric-mean error of 5.4\,\% on
+micro-benchmarks and 13.3\,\% on applications
+\cite{hong2009analytical}.}
+
+\begin{keypoint}
+  Analytical models trade accuracy for insight.  Roofline compares a
+  kernel's arithmetic intensity with the machine's ridge point to decide
+  whether it is compute-bound or memory-bound.  CPI models add
+  frequency-weighted penalties to a steady-state CPI, and a CPI stack
+  shows where the time goes; interval analysis refines this with drain
+  and refill, and GPU versions must add branch and memory divergence.
+\end{keypoint}
+
+\section{Accelerating GPU simulation}
+\label{sec:l08-accelerating}
+
+Detailed simulation is slow.\source{M8, accelerating simulation;
+Eeckhout \cite{eeckhout2010perfeval} (sampling); \cite{liu2023photon,sherwood2002simpoint}.}
+A cycle-level simulator that models every unit in every cycle runs at
+the order of a thousand simulated instructions per second (\num{1}
+KIPS).  At that speed the \num{e9} instructions that a processor
+executes in about a second take about 28~hours to simulate, and a
+machine-learning workload that runs for hours on real hardware would
+take on the order of a century.\caution{Lecture vs arithmetic:
+$\num{e9}/\num{e3} = \num{e6}$~s, about 11.6~days, not 28~hours; the
+28~hours correspond to 10~KIPS ($\num{e5}$~s).  At 1~KIPS one hour of
+native execution takes about $3600 \times 11.6~\text{days} \approx
+114$~years, which is the century.}  There are two ways out: make the
+simulator faster, or give it less to simulate.
+
+\subsection{Faster simulators}
+
+\paragraph{Parallel simulation.}  A simulator can run on several host
+threads, for example one thread per simulated core.\margin{Speeds of
+CPU simulators: gem5, Flexus and MARSS reach about 200~KIPS with
+detailed models; zsim simulates a detailed out-of-order core at
+20~MIPS and a 1024-core chip at up to 300~MIPS on a 16-core host
+\cite{sanchez2013zsim}.}  The cores are
+nearly independent, but the memory system and the network on chip are
+shared: the threads must communicate, or serialise their accesses to
+the shared model, at every interaction.  Most workloads are
+memory-bound, so these interactions are frequent and the memory model
+becomes the bottleneck of the parallel simulator.
+
+\paragraph{Event-driven simulation.}
+
+\begin{definition}[Event-driven simulation]
+  \label{def:l08-event-driven}
+  In \term{event-driven simulation}[イベント駆動シミュレーション]
+  the simulator keeps a queue of future events, each with a time stamp,
+  ordered by time.  It repeatedly removes the earliest event, advances
+  the simulated time directly to its time stamp, and processes it;
+  processing may insert new events (\cref{fig:l08-event-queue}).
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l08-event-queue}
+  \caption{Event-driven simulation.  The event queue is ordered by time
+    stamp; processing an event can insert a new one.  Simulated time
+    jumps from event to event and skips the cycles in between.}
+  \label{fig:l08-event-queue}
+\end{figure}
+
+The cycles between events cost nothing, so event-driven simulation
+pays off when events are sparse, as with long latencies: an I/O
+operation or a write to non-volatile memory that takes thousands of
+cycles is one event instead of thousands of ticks.\tip{Cycle-level
+simulation costs time per cycle, event-driven simulation per
+event.  A busy pipeline has events in nearly every cycle, so its core
+gains little; long-latency devices gain most.}
+
+\paragraph{Simpler models.}  Not every event matters equally.  A
+simulator can use average latencies or throughputs for non-critical
+events and keep detail only where the question requires it.  To study
+the memory hierarchy, the core can be reduced to issuing instructions
+at an IPC equal to its issue width, with only the caches and memory
+modeled; zsim, a fast simulator of many-core CPUs, offers such a
+simple core (one instruction per cycle) next to its detailed
+out-of-order model \cite{sanchez2013zsim}.  To study the core,
+the memory can be given a fixed latency.\caution{Every simplification
+removes an interaction.  A fixed memory latency, for example, hides the
+queueing delays that a bandwidth-hungry design creates, exactly the
+contention terms of \eqref{eq:l08-cpi-mt}.}
+
+The remaining two accelerations, sampling and statistical models, are
+the subject of the rest of this section.
+
+\subsection{Sampling}
+
+\begin{definition}[Sampled simulation]
+  \label{def:l08-sampled}
+  In \term{sampled simulation}[サンプリングシミュレーション] only
+  selected parts of a program's execution, the samples, are simulated
+  in detail, and the performance of the whole is estimated from them.
+  The samples may be chosen at random or by analysing the program.
+\end{definition}
+
+The parts between samples still have to be skipped somehow.  An
+execution-driven simulator fast-forwards through them by executing
+functionally, without timing, which is much faster, or starts each
+sample from a \term{checkpoint}[チェックポイント], a saved
+architectural state (registers and memory) from which the simulation
+can resume without executing what came before.  A trace-driven
+simulator simply collects traces of the samples only.
+
+A sample does not start from a realistic microarchitectural state:
+its caches and branch predictors are empty or hold the contents left
+by the previous sample.  The \term{warm-up}[ウォームアップ] of a sample
+is a stretch of execution simulated before it, whose timing is
+discarded, during which these structures are filled.  Alternatively
+the samples are made long enough for the cold start to be negligible.
+
+Random samples need many draws for an accurate estimate.  Programs,
+however, are not random: they repeat the same behaviour.
+
+\begin{definition}[Program phase and SimPoint]
+  \label{def:l08-phase}
+  A \term{program phase}[プログラムフェーズ] is a stretch of execution
+  with homogeneous behaviour (IPC, miss rates), which may recur many
+  times.  \term{SimPoint}[SimPoint] identifies the phases of a
+  program by clustering intervals of its execution by the code they
+  execute, and selects one representative interval per phase, weighted
+  by the fraction of execution the phase accounts for
+  (\cref{fig:l08-phases}) \cite{sherwood2002simpoint}.  Each interval
+  is described by a \emph{basic block vector}, how often each basic
+  block executed in it, and the vectors are grouped by $k$-means
+  clustering.
+\end{definition}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l08-phases}}
+  \caption{IPC over time of a program alternating a high-IPC phase A
+    and a low-IPC phase B.  Phase-based sampling simulates one
+    representative of each (outlined).}
+  \label{fig:l08-phases}
+\end{marginfigure}
+
+With a few phases recurring hundreds of times, simulating one interval
+of each phase and weighting it gives most of the accuracy of a full
+simulation at a small fraction of its cost.
+
+\subsection{Sampling on GPUs}
+
+A single GPU thread is too short to sample within, but a GPU program
+consists of very many threads executing the same code (SPMD, Lesson~1),
+which offers other granularities:
+\begin{description}
+  \item[Block level.]  Simulate about 100 thread blocks instead of the
+    thousands of the full grid.
+  \item[Kernel level.]  Simulate one or two kernels instead of tens.
+  \item[Warp level.]  Simulate fewer warps of a kernel in detail.
+\end{description}
+
+\begin{definition}[Kernel-level sampling]
+  \label{def:l08-kernel-sampling}
+  \term{kernel-level sampling}[カーネル単位サンプリング] simulates in
+  detail one launch of each distinct kernel, or of each group of
+  similar launches, and uses its time for the other launches.
+\end{definition}
+
+Kernel-level sampling is especially effective for machine-learning
+workloads, which launch the same kernels hundreds of times, once per
+layer and iteration.  Photon, one of this unit's assigned readings,
+combines sampling at three levels, kernels, warps and basic blocks, and
+finds the repetitive behaviour by a lightweight online analysis instead
+of profiling the workload beforehand \cite{liu2023photon}.\margin{Photon
+reduces the simulation of one ResNet-152 inference (batch size~1) from
+7.05~days to 1.7~hours with a sampling error of 10.7\,\%; it is built
+on MGPUSim \cite{liu2023photon}.}
+
+\subsection{Reducing the workload}
+
+The other way out is to simulate less work.
+\begin{itemize}
+  \item \emph{Fewer iterations}: one training iteration instead of a
+    thousand, since the iterations of a machine-learning training run
+    behave alike.
+  \item \emph{Smaller inputs}: a graph of \num{e6} nodes instead of
+    \num{e9}.
+  \item \emph{Only the hot code}: when one or two of hundreds of
+    functions take 90\,\% of the time, simulate only those.
+\end{itemize}
+\caution{A smaller input can change the behaviour, not only shorten
+it: a working set that fits in the L2 cache at reduced size may not fit
+at full size, so the reduced run can hide the memory-bound behaviour
+of the real one.}
+
+\begin{definition}[Microbenchmark and representative workload]
+  \label{def:l08-microbenchmark}
+  A \term{microbenchmark}[マイクロベンチマーク] is a small program
+  written to exercise one feature of a machine (a cache level, a
+  memory access pattern, an instruction's latency) in isolation.  A
+  \term{representative workload}[代表ワークロード] is a reduced program
+  or input built so that its behaviour matches that of the full
+  workload on the features under study.
+\end{definition}
+
+\subsection{Data-driven models}
+
+The last approach does not model the machine at all.
+
+\begin{definition}[Data-driven model]
+  \label{def:l08-data-driven}
+  A \term{data-driven model}[データ駆動モデル] predicts performance
+  from features of a program (instruction count, number of loads,
+  number of divergent branches, \dots) by a statistical or
+  machine-learning model fitted to data, without encoding how the
+  hardware works.
+\end{definition}
+
+\Needspace{20\baselineskip}
+The procedure has three steps: run a set of programs on the hardware
+(or a detailed simulator) and record their performance, for example
+their IPC; extract features from hardware performance counters or from
+the simulator; and fit a model.\margin{The hardware counters are the
+ones that Nsight Compute (Lesson~5) reads: instructions executed per
+type, memory transactions, branch divergence.}  A simple form of such a model is
+\begin{equation}
+  \textit{cycles} = C_1 N_{\text{inst}}^{e_1}
+    + C_2 N_{\text{FP}}^{e_2} + C_3 N_{\text{mem}}^{e_3},
+  \label{eq:l08-data-driven}
+\end{equation}
+where $N_{\text{inst}}$, $N_{\text{FP}}$ and $N_{\text{mem}}$ are the
+counts of all, floating-point and memory instructions and the
+coefficients $C_k$ and exponents $e_k$ are fitted to the
+data.\caution{An analytical model is built from an understanding of
+the machine; a data-driven model only from data.  It is accurate for
+programs like those it was fitted on and gives no guarantee, and
+little insight, outside them.}
+
+\begin{keypoint}[Lesson summary]
+  Cycle-level simulators advance a clock and model every unit every
+  cycle, driven by execution or by traces; the pipeline is a set of
+  FIFO queues with depths and widths plus a scheduler, and a GPU
+  simulator models warps, their masks or SIMT stack, coalescing and
+  sectored caches.  Analytical models give first-order answers: the FMA
+  units, bandwidth and $W_{\text{depth}} \approx L/n$ of a design, the
+  Roofline bound $\min(P_{\text{peak}}, B_{\text{peak}} \cdot I)$ with
+  its ridge point, CPI stacks and interval analysis with branch and
+  memory divergence.  Simulation at about 1~KIPS is too slow for real
+  workloads; parallel and event-driven simulation, simplified models,
+  sampling (phases, SimPoint, block-, kernel- and warp-level), reduced
+  workloads and data-driven models make it tractable.
+\end{keypoint}
+
+\end{document}

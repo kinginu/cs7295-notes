@@ -1,0 +1,20 @@
+% Program phases and phase-based sampling (Lesson 8): IPC over time for
+% a program that alternates between a high-IPC phase A and a low-IPC
+% phase B.  Phase-based sampling (SimPoint) simulates one representative
+% interval per phase (outlined) and weights it by the phase's share.
+% Redraws the outline figure m8l4_sample with our own phase lengths.
+% Usage: \resizebox{\linewidth}{!}{\input{figures/l08-phases}}
+% Width: margin (50 mm); the drawing is about 50 mm wide.
+\begin{tikzpicture}[x=1.15mm, y=1mm, font=\scriptsize\sffamily]
+  \foreach \a/\b/\p/\h/\c in {0/8/A/16/ln-tip!30,8/14/B/6/ln-source!25,
+      14/22/A/16/ln-tip!30,22/28/B/6/ln-source!25,28/36/A/16/ln-tip!30,
+      36/40/B/6/ln-source!25} {
+    \fill[\c] (\a,0) rectangle (\b,\h);
+    \node at ({(\a+\b)/2},-2.2) {\p};
+  }
+  \draw[very thick, ln-caution] (2,0) rectangle (5,16);
+  \draw[very thick, ln-caution] (9.5,0) rectangle (12.5,6);
+  \draw[->] (0,0) -- (41.5,0);
+  \draw[->] (0,0) -- (0,19) node[above right, inner sep=1pt] {IPC};
+  \node[anchor=north east] at (41.5,-3.8) {\iflangja{時間}{time}};
+\end{tikzpicture}

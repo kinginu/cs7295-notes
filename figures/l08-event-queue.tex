@@ -1,0 +1,44 @@
+% Event-driven simulation (Lesson 8).  Top: an event queue ordered by
+% time stamp; processing the event at cycle 100 inserts a new event at
+% cycle 250 in time order.  Bottom: simulated time jumps from one event
+% to the next, skipping the cycles in between.
+% Redraws the outline figure m8l4_esim with our own events and times.
+% Usage: \input{figures/l08-event-queue}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.5mm]},
+    ev/.style={draw, fill=ln-box, minimum width=24mm, minimum height=8mm,
+               align=center, inner sep=1pt}]
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,40)
+    {\iflangja{イベントキュー（時刻順）}{event queue (ordered by time)}};
+  \node[ev, fill=ln-accent!15] (e1) at (14,31)
+    {$t=100$\\\iflangja{DRAM 応答}{DRAM reply}};
+  \node[ev] (e2) at (42,31)
+    {$t=104$\\\iflangja{ワープ3 起床}{warp 3 wakes}};
+  \node[ev] (e3) at (98,31)
+    {$t=400$\\\iflangja{I/O 完了}{I/O done}};
+  \node[ev, fill=ln-tip!15] (e4) at (70,31)
+    {$t=250$\\\iflangja{L2 書き戻し}{L2 write-back}};
+  \draw[->] (e1) -- (e2);
+  \draw[->] (e2) -- (e4);
+  \draw[->] (e4) -- (e3);
+  \draw[->, ln-tip] (e1.south) to[bend right=18]
+    node[pos=0.55, below, text=ln-tip, inner sep=1.5pt]
+    {\iflangja{処理中に新しいイベントを挿入}{processing it inserts a new event}}
+    (e4.south);
+  % timeline
+  \draw[->] (0,6) -- (110,6);
+  \node[anchor=north east, inner sep=1pt] at (110,0.5)
+    {\iflangja{シミュレーション時刻（サイクル）}{simulated time (cycles)}};
+  \foreach \t/\x in {100/14,104/22,250/62,400/98} {
+    \fill (\x,6) circle (0.8);
+    \node[below, inner sep=2pt] at (\x,5) {\t};
+  }
+  \draw[->, ln-caution] (14,7.5) to[bend left=50] (22,7.5);
+  \draw[->, ln-caution] (22,7.5) to[bend left=30]
+    node[midway, above, text=ln-caution, inner sep=1pt]
+    {\iflangja{145サイクルをスキップ}{skip 145 cycles}} (62,7.5);
+  \draw[->, ln-caution] (62,7.5) to[bend left=30]
+    node[midway, above, text=ln-caution, inner sep=1pt]
+    {\iflangja{149サイクルをスキップ}{skip 149 cycles}} (98,7.5);
+\end{tikzpicture}
