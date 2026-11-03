@@ -1,0 +1,97 @@
+% GPU concurrency mechanisms (Lesson 9).  (a) One kernel: an SM with
+% its L1, the shared L2 and DRAM.  (b) Streams of one client: work of
+% streams A, B and C mixes on every SM, in the L2 and in DRAM; nothing is
+% partitioned.  (c) MPS: the clients' blocks are spread over the SMs,
+% drawn with a per-client SM share as in the lecture (MPS limits a
+% client's share but reserves no SMs); the L2 and DRAM are shared.
+% (d) MIG: SMs, L2 slices and DRAM (bandwidth and capacity) are split
+% physically between the clients (dashed line).
+% Redraws outline figure m9l2_gpucon.
+% Usage: \input{figures/l09-concurrency}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+  tile/.style={draw, minimum width=5.4mm, minimum height=4.2mm, inner sep=0pt},
+  inp/.style={draw, minimum height=4.5mm, minimum width=6mm, inner sep=1pt, align=center},
+  sch/.style={draw, fill=white, minimum width=24mm, minimum height=4mm, inner sep=0pt},
+  bar/.style={draw, fill=white, minimum width=24mm, minimum height=4mm, inner sep=0pt},
+  a/.style={-{Stealth[length=1.5mm]}, line width=0.5pt}]
+  \colorlet{cA}{ln-accent!35}\colorlet{cB}{ln-tip!40}\colorlet{cC}{ln-caution!30}
+  % \stripes{x}{y}{w}{h}: rectangle filled with stripes of the three colours
+  \newcommand{\stripes}[4]{%
+    \pgfmathtruncatemacro{\n}{floor((#3)/1.2)}%
+    \foreach \s in {0,...,\n} {%
+      \pgfmathsetmacro{\xx}{#1+\s*1.2}%
+      \pgfmathsetmacro{\ww}{min(1.2,#1+#3-\xx)}%
+      \pgfmathtruncatemacro{\c}{mod(\s,3)}%
+      \ifdim\ww pt>0pt
+        \ifnum\c=0 \fill[cA] (\xx,#2) rectangle ++(\ww,#4);\fi
+        \ifnum\c=1 \fill[cB] (\xx,#2) rectangle ++(\ww,#4);\fi
+        \ifnum\c=2 \fill[cC] (\xx,#2) rectangle ++(\ww,#4);\fi
+      \fi
+    }%
+    \draw (#1,#2) rectangle ++(#3,#4);}
+  % ------------------------------------------------ (a) one kernel
+  \node at (13,49) {\iflangja{(a) 単一カーネル}{(a) one kernel}};
+  \node[inp, fill=ln-box, minimum width=14mm] (k) at (13,42) {\iflangja{カーネル}{kernel}};
+  \node[draw, fill=ln-box, minimum width=18mm, minimum height=11mm] (sm) at (13,24.5) {};
+  \node[anchor=north] at (sm.north) {SM};
+  \node[draw, fill=white, minimum width=12mm, minimum height=3.5mm, inner sep=0pt] at (13,22.5) {L1};
+  \draw[a] (k) -- (sm);
+  \node[bar] at (13,14) {L2};
+  \node[bar] at (13,7) {DRAM};
+  \draw[a] (sm) -- (13,16);
+  % ------------------------------------------------ (b) streams
+  \begin{scope}[shift={(30,0)}]
+    \node at (13,49) {\iflangja{(b) ストリーム}{(b) streams}};
+    \node[inp, fill=cA] at (5,42) {A};
+    \node[inp, fill=cB] at (13,42) {B};
+    \node[inp, fill=cC] at (21,42) {C};
+    \node[sch] at (13,35) {\iflangja{スケジューラ}{scheduler}};
+    \foreach \x in {5,13,21} \draw[a] (\x,39.7) -- (\x,37);
+    \foreach \c in {0,...,3} \foreach \r in {0,1} {
+      \stripes{1.35+\c*6.0}{18.5+\r*5.5}{5.4}{4.2}
+    }
+    \draw[a] (13,33) -- (13,28.7);
+    \stripes{1}{12}{24}{4}\node[fill=white, inner sep=0.5pt] at (13,14) {L2};
+    \stripes{1}{5}{24}{4}\node[fill=white, inner sep=0.5pt] at (13,7) {DRAM};
+  \end{scope}
+  % ------------------------------------------------ (c) MPS
+  \begin{scope}[shift={(60,0)}]
+    \node at (13,49) {(c) MPS};
+    \node[inp, fill=cA] at (7,42) {1};
+    \node[inp, fill=cB] at (19,42) {2};
+    \node[sch] at (13,35) {\iflangja{スケジューラ}{scheduler}};
+    \foreach \x in {7,19} \draw[a] (\x,39.7) -- (\x,37);
+    \foreach \c/\r/\col in {0/1/cA,1/1/cA,2/1/cB,3/1/cA,0/0/cB,1/0/cB,2/0/cA,3/0/cB} {
+      \node[tile, fill=\col] at (4.05+\c*6.0, 20.6+\r*5.5) {};
+    }
+    \draw[a] (13,33) -- (13,28.7);
+    \node[bar] at (13,14) {\iflangja{L2（共有）}{L2 (shared)}};
+    \node[bar] at (13,7) {\iflangja{DRAM（共有）}{DRAM (shared)}};
+  \end{scope}
+  % ------------------------------------------------ (d) MIG
+  \begin{scope}[shift={(90,0)}]
+    \node at (13,49) {(d) MIG};
+    \node[inp, fill=cA] at (7,42) {1};
+    \node[inp, fill=cB] at (19,42) {2};
+    \node[sch] at (13,35) {\iflangja{スケジューラ}{scheduler}};
+    \foreach \x in {7,19} \draw[a] (\x,39.7) -- (\x,37);
+    \foreach \c in {0,1} \foreach \r in {0,1} {
+      \node[tile, fill=cA] at (4.05+\c*6.0, 20.6+\r*5.5) {};
+      \node[tile, fill=cB] at (16.05+\c*6.0, 20.6+\r*5.5) {};
+    }
+    \foreach \x in {7,19} \draw[a] (\x,33) -- (\x,28.7);
+    \fill[cA] (1,12) rectangle (13,16); \fill[cB] (13,12) rectangle (25,16);
+    \draw (1,12) rectangle (25,16); \node[fill=white, inner sep=0.5pt] at (13,14) {L2};
+    \fill[cA] (1,5) rectangle (13,9); \fill[cB] (13,5) rectangle (25,9);
+    \draw (1,5) rectangle (25,9); \node[fill=white, inner sep=0.5pt] at (13,7) {DRAM};
+    \draw[ln-caution, line width=1pt, dashed] (13,45.5) -- (13,37.3) (13,32.7) -- (13,16.3) (13,11.7) -- (13,9.3) (13,4.7) -- (13,3.5);
+  \end{scope}
+  % legend
+  \foreach \col/\lab/\x in {cA/{\iflangja{クライアント 1／ストリーム A}{client 1 / stream A}}/1,
+                            cB/{\iflangja{クライアント 2／ストリーム B}{client 2 / stream B}}/42,
+                            cC/{\iflangja{ストリーム C}{stream C}}/83} {
+    \fill[\col] (\x,-2) rectangle ++(3.5,3); \draw (\x,-2) rectangle ++(3.5,3);
+    \node[anchor=west] at (\x+3.5,-0.5) {\lab};
+  }
+\end{tikzpicture}

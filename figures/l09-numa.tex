@@ -1,0 +1,37 @@
+% A four-GPU NUMA system (Lesson 9).  Four GPUs, each with its own
+% memory on the outer side, fully connected by high-speed links (the six
+% links of a 2x2 all-to-all).  A thread block on GPU 0 reaches a page in
+% its own memory directly (near access) and a page in GPU 3's memory over
+% a link (far access).
+% Redraws outline figures m9l1_nvlink and m9l1_tb_s3 (simplified).
+% Usage: \input{figures/l09-numa}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+  gpu/.style={draw, fill=ln-accent!30, minimum width=20mm, minimum height=10mm, align=center, inner sep=1pt},
+  mem/.style={draw, fill=ln-muted!20, minimum width=7mm, minimum height=10mm, align=center, inner sep=1pt},
+  lnk/.style={line width=1.6pt, ln-source!70},
+  acc/.style={-{Stealth[length=2.2mm]}, line width=1pt}]
+  \node[gpu, label={[anchor=north, inner sep=1pt]north:GPU 0}] (g0) at (20,32) {};
+  \node[gpu] (g1) at (60,32) {GPU 1};
+  \node[gpu] (g2) at (20,8)  {GPU 2};
+  \node[gpu] (g3) at (60,8)  {GPU 3};
+  \node[mem] (m0) at (3,32) {\iflangja{メモリ}{Mem}\\0};
+  \node[mem] (m1) at (77,32) {\iflangja{メモリ}{Mem}\\1};
+  \node[mem] (m2) at (3,8) {\iflangja{メモリ}{Mem}\\2};
+  \node[mem] (m3) at (77,8) {\iflangja{メモリ}{Mem}\\3};
+  \foreach \g/\m in {g0/m0, g1/m1, g2/m2, g3/m3} \draw[line width=1.2pt] (\g) -- (\m);
+  \draw[lnk] (g0) -- (g1);
+  \draw[lnk] (g2) -- (g3);
+  \draw[lnk] (g0) -- (g2);
+  \draw[lnk] (g1) -- (g3);
+  \draw[lnk] (g0) -- (g3);
+  \draw[lnk] (g1) -- (g2);
+  % thread block on GPU 0 and its two accesses
+  \node[draw, fill=ln-tip!35, inner sep=1pt] (tb) at (25,29.5) {TB};
+  \draw[acc, ln-tip] (tb.west) -- node[above, pos=0.45] {\iflangja{近接}{near}} (m0.east|-tb);
+  \draw[acc, ln-caution, dashed] (tb.south east) -- (57,12.5) -- (m3.west|-0,12.5);
+  \node[ln-caution, anchor=south west, inner sep=1pt] at (61,13.5) {\iflangja{遠隔アクセス}{far access}};
+  % legend
+  \draw[lnk] (86,26) -- (92,26);
+  \node[anchor=west, align=left, text width=18mm] at (92,26) {\iflangja{高速リンク（例：NVLink）}{high-speed link (e.g.\ NVLink)}};
+\end{tikzpicture}

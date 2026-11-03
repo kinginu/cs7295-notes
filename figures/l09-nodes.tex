@@ -1,0 +1,49 @@
+% Two multi-GPU nodes (Lesson 9).  Inside each node, a CPU and a network
+% interface card (NIC) sit on a PCIe switch, and four GPUs with their
+% memories are joined all-to-all by NVLink: one shared, NUMA address
+% space.  Between the nodes, the GPU memories are separate (distributed
+% memory) and data moves by RDMA through the NICs and the network.
+% Redraws outline figure m9l1_mem_space (with the NIC made explicit).
+% Usage: \input{figures/l09-nodes}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+  gpu/.style={draw, fill=ln-accent!30, minimum width=9mm, minimum height=5mm, inner sep=1pt},
+  mem/.style={draw, fill=ln-muted!20, minimum width=4mm, minimum height=5mm, inner sep=0pt},
+  box/.style={draw, fill=ln-box, minimum width=9mm, minimum height=5mm, inner sep=1pt},
+  sw/.style={draw, fill=ln-muted!60, text=white, minimum height=4.5mm, inner sep=1pt},
+  nvl/.style={line width=1.2pt, ln-source!70},
+  pcie/.style={line width=0.6pt, ln-muted}]
+  \foreach \n/\ox/\lab in {0/0/A, 1/64/B} {
+    \begin{scope}[shift={(\ox,0)}]
+      \draw[ln-rule, rounded corners=2pt] (0,0) rectangle (54,40);
+      \node[anchor=north west] at (1,39.5) {\iflangja{ノード}{node} \lab};
+      \node[box] (cpu\n) at (14,33) {CPU};
+      \node[box] (nic\n) at (40,33) {NIC};
+      \node[sw, minimum width=36mm] (ps\n) at (27,25) {\iflangja{PCIe スイッチ}{PCIe switch}};
+      \draw[pcie] (cpu\n) -- (cpu\n|-ps\n.north);
+      \draw[pcie] (nic\n) -- (nic\n|-ps\n.north);
+      \node[gpu] (a\n) at (17,16) {GPU};
+      \node[gpu] (b\n) at (37,16) {GPU};
+      \node[gpu] (c\n) at (17,5)  {GPU};
+      \node[gpu] (d\n) at (37,5)  {GPU};
+      \node[mem] at (9,16) {}; \node[mem] at (45,16) {};
+      \node[mem] at (9,5) {};  \node[mem] at (45,5) {};
+      \draw[nvl] (a\n) -- (b\n); \draw[nvl] (c\n) -- (d\n);
+      \draw[nvl] (a\n) -- (c\n); \draw[nvl] (b\n) -- (d\n);
+      \draw[nvl] (a\n) -- (d\n); \draw[nvl] (b\n) -- (c\n);
+      \draw[pcie] (a\n.north) -- (a\n|-ps\n.south);
+      \draw[pcie] (b\n.north) -- (b\n|-ps\n.south);
+    \end{scope}
+  }
+  % network between the NICs
+  \draw[{Stealth[length=2mm]}-{Stealth[length=2mm]}, line width=1.2pt, ln-caution]
+     (nic0.north) -- ++(0,4) -| node[pos=0.25, above] {\iflangja{ネットワーク（RDMA）}{network (RDMA)}} (nic1.north);
+  % memory labels
+  \node[text=ln-muted, align=center] at (27,-4) {\iflangja{共有アドレス空間（NUMA）}{one shared address space (NUMA)}};
+  \node[text=ln-muted, align=center] at (91,-4) {\iflangja{共有アドレス空間（NUMA）}{one shared address space (NUMA)}};
+  \node[text=ln-caution, align=center] at (59,-9) {\iflangja{ノード間：分散メモリ}{between the nodes: distributed memory}};
+  % legend
+  \draw[nvl] (0,-12) -- (6,-12); \node[anchor=west] at (6,-12) {NVLink};
+  \draw[pcie] (20,-12) -- (26,-12); \node[anchor=west] at (26,-12) {PCIe};
+  \node[mem] at (92,-12) {}; \node[anchor=west] at (95,-12) {\iflangja{GPU メモリ}{GPU memory}};
+\end{tikzpicture}

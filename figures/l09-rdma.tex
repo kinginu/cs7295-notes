@@ -1,0 +1,50 @@
+% Three ways to move a buffer between two hosts (Lesson 9).  (a)
+% Traditional networking: the data passes through both CPUs and their
+% network stacks.  (b) RDMA: the RDMA engines of the two NICs move the
+% data memory to memory; the CPUs are not involved (host bypass).  (c)
+% GPUDirect RDMA: the NIC reads and writes GPU memory directly over PCIe,
+% so a GPU buffer reaches a remote GPU (or another device) without a copy
+% through host memory.
+% Redraws outline figures m9l1_rdma, m9l1_rdma1 and m9l1_rdma2.
+% Usage: \input{figures/l09-rdma}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+  b/.style={draw, fill=ln-box, minimum width=15mm, minimum height=5.5mm, inner sep=1pt, align=center},
+  idle/.style={draw=ln-rule, text=ln-muted, fill=white, minimum width=11mm, minimum height=5.5mm, inner sep=1pt, dashed},
+  eng/.style={draw, fill=ln-tip!35, minimum width=17mm, minimum height=5.5mm, inner sep=1pt, align=center},
+  gpu/.style={draw, fill=ln-accent!30, minimum width=15mm, minimum height=5.5mm, inner sep=1pt, align=center},
+  net/.style={draw, fill=ln-caution!20, minimum width=14mm, minimum height=5.5mm, inner sep=1pt},
+  a/.style={-{Stealth[length=1.8mm]}, line width=0.7pt},
+  host/.style={draw=ln-rule, rounded corners=2pt}]
+  % row (a)
+  \draw[host] (4,31) rectangle (49,41); \draw[host] (69,31) rectangle (114,41);
+  \node[b] (a1) at (13,36) {\iflangja{バッファ 1}{buffer 1}};
+  \node[b, fill=ln-muted!20] (a2) at (38,36) {CPU1};
+  \node[net] (a3) at (59,36) {\iflangja{ネットワーク}{network}};
+  \node[b, fill=ln-muted!20] (a4) at (80,36) {CPU2};
+  \node[b] (a5) at (105,36) {\iflangja{バッファ 2}{buffer 2}};
+  \draw[a] (a1) -- (a2); \draw[a] (a2) -- (a3); \draw[a] (a3) -- (a4); \draw[a] (a4) -- (a5);
+  \node at (0,36) {(a)};
+  % row (b)
+  \draw[host] (4,15) rectangle (49,28); \draw[host] (69,15) rectangle (114,28);
+  \node[b] (b1) at (13,19) {\iflangja{バッファ 1}{buffer 1}};
+  \node[idle] at (25,24.5) {CPU1};
+  \node[eng] (b2) at (38,19) {\iflangja{RDMA エンジン}{RDMA engine}};
+  \node[net] (b3) at (59,19) {\iflangja{ネットワーク}{network}};
+  \node[eng] (b4) at (80,19) {\iflangja{RDMA エンジン}{RDMA engine}};
+  \node[idle] at (93,24.5) {CPU2};
+  \node[b] (b5) at (105,19) {\iflangja{バッファ 2}{buffer 2}};
+  \draw[a] (b1) -- (b2); \draw[a] (b2) -- (b3); \draw[a] (b3) -- (b4); \draw[a] (b4) -- (b5);
+  \node at (0,21.5) {(b)};
+  % row (c)
+  \draw[host] (4,0) rectangle (49,13); \draw[host] (69,0) rectangle (114,13);
+  \node[gpu] (c1) at (13,4) {GPU1\\\iflangja{メモリ}{memory}};
+  \node[idle] at (25,9.5) {CPU1};
+  \node[eng] (c2) at (38,4) {NIC};
+  \node[net] (c3) at (59,4) {\iflangja{ネットワーク}{network}};
+  \node[eng] (c4) at (80,4) {NIC};
+  \node[idle] at (93,9.5) {CPU2};
+  \node[gpu] (c5) at (105,4) {GPU2\\\iflangja{メモリ}{memory}};
+  \draw[a] (c1) -- (c2); \draw[a] (c2) -- (c3); \draw[a] (c3) -- (c4); \draw[a] (c4) -- (c5);
+  \node at (0,6.5) {(c)};
+\end{tikzpicture}

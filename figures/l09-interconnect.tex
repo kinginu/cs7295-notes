@@ -1,0 +1,42 @@
+% GPU-to-GPU connections (Lesson 9).  (a) A CPU and two GPUs that talk
+% only through a PCIe switch; (b) the same with a direct NVLink between
+% the GPUs; (c) eight GPUs, each linked to every NVSwitch chip, so that
+% any pair of GPUs is two link hops apart at full link bandwidth.
+% Redraws outline figure m9l1_nvlink1.
+% Usage: \input{figures/l09-interconnect}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+  gpu/.style={draw, fill=ln-accent!30, minimum width=9mm, minimum height=5mm, inner sep=1pt},
+  cpu/.style={draw, fill=ln-box, minimum width=9mm, minimum height=5mm, inner sep=1pt},
+  sw/.style={draw, fill=ln-muted!60, text=white, minimum height=4.5mm, inner sep=1pt, align=center},
+  pcie/.style={{Stealth[length=1.6mm]}-{Stealth[length=1.6mm]}, line width=0.6pt, ln-muted},
+  nvl/.style={{Stealth[length=1.6mm]}-{Stealth[length=1.6mm]}, line width=1.4pt, ln-source!70}]
+  % ---- (a) PCIe only
+  \node[cpu] (c) at (14,30) {CPU};
+  \node[sw, minimum width=22mm] (s) at (14,20) {\iflangja{PCIe スイッチ}{PCIe switch}};
+  \node[gpu] (ga) at (6,8) {GPU};
+  \node[gpu] (gb) at (22,8) {GPU};
+  \draw[pcie] (c) -- (s); \draw[pcie] (ga) -- (ga|-s.south); \draw[pcie] (gb) -- (gb|-s.south);
+  \node at (14,0) {(a)};
+  % ---- (b) PCIe + NVLink
+  \node[cpu] (c2) at (46,30) {CPU};
+  \node[sw, minimum width=22mm] (s2) at (46,20) {\iflangja{PCIe スイッチ}{PCIe switch}};
+  \node[gpu] (gc) at (38,8) {GPU};
+  \node[gpu] (gd) at (54,8) {GPU};
+  \draw[pcie] (c2) -- (s2); \draw[pcie] (gc) -- (gc|-s2.south); \draw[pcie] (gd) -- (gd|-s2.south);
+  \draw[nvl] (gc) -- (gd);
+  \node at (46,0) {(b)};
+  % ---- (c) NVSwitch: links first, switches drawn on top of them
+  \foreach \k in {0,...,3} {
+    \node[gpu] (L\k) at (77,4+\k*8.6) {GPU};
+    \node[gpu] (R\k) at (115,4+\k*8.6) {GPU};
+    \draw[ln-source!70, line width=0.8pt] (L\k.east) -- (R\k.west);
+  }
+  \node[sw, minimum width=4.5mm, minimum height=30mm] (n1) at (91,17) {};
+  \node[sw, minimum width=4.5mm, minimum height=30mm] (n2) at (101,17) {};
+  \node[text=ln-muted] at (96,35) {NVSwitch};
+  \node at (96,0) {(c)};
+  % legend
+  \draw[pcie] (6,-5) -- (12,-5); \node[anchor=west] at (12,-5) {PCIe};
+  \draw[nvl] (30,-5) -- (36,-5); \node[anchor=west] at (36,-5) {NVLink};
+\end{tikzpicture}

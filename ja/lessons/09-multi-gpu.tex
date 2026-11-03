@@ -1,0 +1,756 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{マルチGPU}
+\lessoninfo{
+  video={M9，レッスン 1--2（Multi-GPU Hardware；Concurrency on GPUs）},
+  sources={Arunkumar ら \cite{arunkumar2017mcmgpu}（指定）；NVIDIA NVLink ページ \cite{nvidia2026nvlink}，GPUDirect RDMA ドキュメント \cite{nvidia2026gpudirectrdma}，MPS 概要 \cite{nvidia2026mps}，Yu ら \cite{yu2022multitenant}，Ye ら \cite{ye2024dlsched}（任意）；NVIDIA A100 \cite{nvidia2020ampere} および H100 \cite{nvidia2022hopper} ホワイトペーパー},
+  textbook={A18 \cite{aamodt2018gpu} ch.~5；PMPP \cite{hwu2022pmpp} ch.~20；CPG \cite{nvidia2024cudaguide} §3.2.8 Asynchronous Concurrent Execution，§3.2.9 Multi-Device System},
+  keywords={マルチGPU，モノリシックGPU，マルチチップモジュール，GPUモジュール，NUMA，近接メモリと遠隔メモリ，ファーストタッチ配置，ページマイグレーション，スレッドブロックスケジューリング，NVLink，NVSwitch，RDMA，GPUDirect RDMA，利用率，マルチテナンシ，MPS，MIG，カーネルの並行実行，CUDAグラフ},
+}
+
+これまでの章では1つの GPU を扱ってきた．そのプログラミングモデル
+（第3章と第5章），SM とメモリシステム（第4章と第6章），そして仮想メモリと
+ワープスケジューリング（第7章）である．多くのワークロード，とりわけ
+データセンタでの大規模モデルの学習は，1つのチップが提供するより多くの
+計算能力を必要とする．本章は GPU をどのように組み合わせるかを問う．
+前半では，1つのダイからパッケージ内の複数のダイへ，ノード内の複数の
+GPU へ，そしてネットワーク上の複数のノードへとハードウェアをたどる．
+メモリは不均一になり，スレッドブロックがどこで実行され，そのページが
+どこに置かれるかが問題になり始める．また，PCIe では運びきれない通信を
+新しいインターコネクト（NVLink，NVSwitch，RDMA）が担う．後半では
+逆の問いを立てる．1つの GPU が1つのジョブにとって大きすぎるとき，
+複数のジョブでそれをどう共有できるか．ストリーム，Multi-Process Service，
+Multi-Instance GPU は3つの答えであり，GPU のどこまでを分割するか，
+どれだけの分離を与えるかが異なる．第2章の分散メモリプログラミングは，
+最大の規模で再び現れる．
+
+\section{マルチGPU のハードウェア}
+\label{sec:l09-hardware}
+
+計算能力への需要は1つの GPU の成長より速く伸びており，GPU はチップの数を
+増やすことでそれに応えてきた．\source{M9，マルチGPU
+のハードウェア；A18 ch.~5；\cite{arunkumar2017mcmgpu}．}本節では
+このスケーリングの段階，それが生むメモリ構成，そこから生じる2つの配置の
+判断，そしてノード内とノード間で GPU を結ぶインターコネクトをたどる．
+
+\subsection{1つのチップを超えるスケーリング}
+
+より速い GPU への第1の道は，1つのダイにより多くのコアを載せることである．
+
+\begin{definition}[モノリシックGPU，マルチGPU]
+  \term[ものりしっくじーぴーゆー]{モノリシックGPU}[monolithic GPU]とは，
+  1つのダイとして作られた GPU である．すべての SM，キャッシュ，メモリ
+  コントローラが1枚のシリコン上にある．\margin{データセンタ向け GPU
+  当たりの SM 数：56（P100），80（V100），108（A100），132（H100 SXM5，
+  暫定値）．トランジスタ数は同じ4世代で153億から800億へ増えた（AWP
+  Table~4 \cite{nvidia2020ampere}；HWP Table~3 \cite{nvidia2022hopper}）．}
+  \term[まるちじーぴーゆー]{マルチGPU}[multi-GPU]システムは，1つの
+  パッケージ内，1枚のボード上，あるいは複数のボードにまたがる複数の
+  GPU チップを組み合わせ，1つのワークロードに取り組ませる．
+\end{definition}
+
+第1章の各 GPU 世代はモノリシックなダイに SM を追加してきた．
+\cref{fig:l09-scaling}は，その道がどこで終わるかを示す．ダイが大きいほど
+コストは上がり，その\emph{歩留まり}，すなわち製造されたダイのうち動作する
+ものの割合は下がる．どのダイも致命的な欠陥を含む可能性が高くなるからである．
+さらにリソグラフィがダイサイズの絶対的な上限を定める．\margin{データセンタ
+向けのダイはすでに大きい：\SI{815}{\milli\metre\squared}（V100），
+\SI{826}{\milli\metre\squared}（A100），\SI{814}{\milli\metre\squared}
+（H100）（AWP Table~4 \cite{nvidia2020ampere}；HWP Table~3
+\cite{nvidia2022hopper}）．Arunkumar らは，128 SM を超える GPU は
+1つのダイとしては作れないと仮定している \cite{arunkumar2017mcmgpu}．}
+そこで次の段階ではダイを小さく保ち，それらを複数つなぐ．複数のソケットに
+置いた別々の GPU チップとするか，1つのパッケージ内のシリコン
+インターポーザ（第4章）上に複数のダイを載せるかであり，いずれも高帯域の
+スイッチで結ぶ．最後の段階では，GPU ボード全体を PCIe でつなぐ．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-scaling}
+  \caption{GPU スケーリングの4段階．小規模な GPU；1つのダイにより多くの
+    コアを載せたモノリシック GPU；それぞれ独自のメモリを持ち，高帯域
+    スイッチで結ばれた複数の GPU チップ（マルチソケットまたはマルチ
+    チップ）；PCIe で結ばれた複数の GPU ボード．}
+  \label{fig:l09-scaling}
+\end{figure}
+
+\begin{definition}[マルチチップモジュール，GPUモジュール，チップレット]
+  \term[まるちちっぷもじゅーる]{マルチチップモジュール}[multi-chip module (MCM)]
+  （MCM）とは，パッケージ上の短いリンクで結ばれた複数のダイを収める
+  パッケージである．Arunkumar らの MCM-GPU では，各ダイは
+  \term[じーぴーゆーもじゅーる]{GPUモジュール}[GPU module (GPM)]（GPM），
+  すなわち独自の SM，L2 スライス，DRAM パーティションを持つより小さな
+  GPU であり，GPM のパッケージはソフトウェアからは1つのより大きな
+  論理 GPU に見える \cite{arunkumar2017mcmgpu}．このように他のダイと
+  組み合わせることを前提に設計されたダイを
+  \term[ちっぷれっと]{チップレット}[chiplet]という．
+\end{definition}
+
+論文はこれを\enquote{より大きな論理 GPU を構築するための，複数の
+GPU モジュールのパッケージレベルの統合}と呼び，各 GPM が良い歩留まりで
+製造できるほど小さく保たれるので，\enquote{ムーアの法則を超えた継続的な
+性能スケーリング}が可能になると論じている
+\cite{arunkumar2017mcmgpu}．\sidenote{論文で調べられた MCM-GPU は，
+64 SM の GPM を4つ（256 SM）持ち，DRAM 帯域幅は合計
+\SI{3}{\tera\byte\per\second}，ローカルパーティション当たり
+\SI{768}{\giga\byte\per\second} である．その最適化版は\enquote{実装可能な最大のモノリシック GPU より
+45.5\,\% 高速}と報告され，作ることのできない同じ
+規模のモノリシック GPU との差は 10\,\% 以内，同じ SM 数と DRAM 帯域幅を
+持つマルチ GPU システムより 26.8\,\% 高速である
+\cite{arunkumar2017mcmgpu}．}
+
+\subsection{不均一メモリを持つ1つの論理 GPU}
+
+プログラマから見ると，高速リンクで結ばれた複数の GPU のパッケージや
+ノード（\cref{fig:l09-numa}）も依然として多数の SM であり，すべての
+メモリにグローバルメモリとして，すなわち1つの共有アドレス空間として
+到達できる．各 GPU は独自の DRAM を持ち，それは通常，SM が要求する
+帯域幅のための HBM スタック（第1章）である．一方，システムの残りへの
+I/O 帯域幅はすべての GPU で共有される．変わるのはアクセスのコストである．
+
+\begin{definition}[NUMA，近接メモリと遠隔メモリ]
+  1つのアドレス空間が複数のメモリに分散しており，アクセスのレイテンシと
+  帯域幅が，そのアドレスを保持するメモリとアクセスを発行するプロセッサの
+  位置関係によって決まるとき，そのメモリシステムは
+  \term[ふきんいつめもりあくせす]{不均一メモリアクセス（NUMA）}[non-uniform memory access (NUMA)]
+  を持つという．
+  \index{NUMA|see{不均一メモリアクセス（NUMA）}}%
+  2つの場合をそれぞれ
+  \term[きんせつめもりえんかくめもり]{近接メモリ／遠隔メモリ}[near memory / far memory]
+  と呼ぶ．近接メモリはアクセスを発行する GPU に接続されたメモリ，遠隔
+  メモリは別の GPU に接続されたメモリであり，後者へのアクセスは GPU 間
+  リンクを渡らなければならない．
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-numa}
+  \caption{4つの GPU からなる NUMA システム．各 GPU は独自のメモリを持ち，
+    6本のリンクがすべての組を結ぶ．GPU~0 上のスレッドブロックは自身の
+    メモリには直接到達し（近接アクセス），GPU~3 のメモリにはリンクを
+    介して到達する（遠隔アクセス）．後者は帯域幅が低く，レイテンシが
+    高い．}
+  \label{fig:l09-numa}
+\end{figure}
+
+\begin{example}[近接と遠隔を数値で]
+  \label{ex:l09-near-far}
+  H100 上のカーネルが \SI{1}{\gibi\byte}（\SI{1.074}{\giga\byte}）の
+  バッファを1回読む．暫定値 \SI{3}{\tera\byte\per\second} の自身の
+  HBM3 からなら，転送には少なくとも \SI{0.36}{\milli\second} かかる．
+  バッファがピア GPU 上にあれば，NVLink~4 を介して1方向当たり
+  \SI{450}{\giga\byte\per\second}，すなわち合計
+  \SI{900}{\giga\byte\per\second} の半分で届き，少なくとも
+  \SI{2.4}{\milli\second} かかる．1方向当たり
+  \SI{64}{\giga\byte\per\second} の PCIe Gen~5 では少なくとも
+  \SI{16.8}{\milli\second} かかる \cite{nvidia2022hopper}．遠隔アクセスは，
+  レイテンシの差を数える前から，NVLink では近接アクセスの $6.7\times$，
+  PCIe では $47\times$ 遅い．
+\end{example}
+
+\margin{\cref{ex:l09-near-far}の数値はピーク帯域幅である．実際の転送は
+それより低い値にしか達せず，小さな遠隔アクセスが続くパターンではリンクの
+レイテンシも効いてくる．}%
+プログラムにとって NUMA が意味するのは絶対値ではなく比である．データは
+それを使う SM の近くにあるべきである．ここから2つの問いが生じ，本章では
+それをスレッドブロックとページについて問う．
+
+\subsection{ブロックをどこで実行し，ページをどこに置くか}
+
+\begin{definition}[スレッドブロックスケジューリング，ファーストタッチ配置]
+  カーネルの各スレッドブロックをどの GPU（または GPM）の，どの SM で
+  実行するかの決定を
+  \term[すれっどぶろっくすけじゅーりんぐ]{スレッドブロックスケジューリング}[thread block scheduling]
+  という．
+  \term[ふぁーすとたっちはいち]{ファーストタッチ配置}[first-touch page placement]
+  では，ページは，それに最初にアクセスしたスレッドブロックの GPU の
+  近くのメモリに割り当てられる．
+\end{definition}
+
+ファーストタッチはプログラムについての知識を必要としない．ページは最初に
+求められた場所に置かれる．各ページが同じ GPU 上のブロックによって
+使われる限りはうまく働くが，別の場所で実行される後のブロックが同じ
+ページを必要とすると破綻する．ブロックがラウンドロビンで GPU ごとに
+1つずつ配られ，各ブロックがファーストタッチによって自分のページを自分の
+GPU のメモリに持ち込むとする．後で GPU~0 にスケジュールされたブロックが
+GPU~3 上のブロックとページを共有していると，そのページはすでに GPU~3 の
+メモリに置かれており，それへのアクセスはすべて遠隔アクセスになる
+（\cref{fig:l09-numa}）．対策は2つある．データがある GPU にブロックを
+スケジュールするか，データを移すかである．
+
+\begin{definition}[ページマイグレーション]
+  プログラムの実行中にページをある GPU のメモリから別の GPU のメモリへ
+  移すことを
+  \term[ぺーじまいぐれーしょん]{ページマイグレーション}[page migration]
+  という．通常は，そのページがもう一方の GPU から，コピーのコストを
+  償うのに十分な数の遠隔アクセスを受けたときに行う．
+\end{definition}
+
+\margin{マイグレーションは第7章のページ移動のマルチ GPU 版である．
+第7章ではユニファイドメモリがページフォールトを契機にホストとデバイスの
+間でページを移す．Li らはそのようなマルチ GPU システムのアドレス変換を
+調べている \cite{li2021tlb}．}%
+マイグレーションはリンクを介したページ全体のコピーとページテーブルの更新
+からなる．そのため，最初の遠隔アクセスでマイグレーションするポリシは，
+2つの GPU が交互に同じページを使う場合，益より害をもたらしうる．
+
+\begin{example}[ラウンドロビンとグループ化したブロックスケジューリング]
+  \label{ex:l09-placement}
+  8つのスレッドブロック TB0--TB7 からなるカーネルが4つの GPU 上で，
+  GPU 当たり2ブロックずつ，2つのウェーブで実行される．ブロック TB$i$ は
+  ページ P$i$ を読み，次にページ P$(i{+}1)$ を読む．隣り合うブロックが
+  境界のページを共有する1次元ステンシルのようなものである．ページは
+  ファーストタッチで配置され，ウェーブ内ではブロックが番号順に自分の
+  ページに触れる．\cref{tab:l09-placement}は2つのスケジュールを
+  たどる．ラウンドロビンは TB$i$ を GPU $i \bmod 4$ に置くので，隣り合う
+  ブロックは常に異なる GPU 上にあり，16回のページアクセスのうち7回が
+  遠隔になる．連続するブロックをグループ化し，TB0 と TB1 を GPU~0，TB2 と
+  TB3 を GPU~1，というように置くと，共有ページが遠隔になるのは2つの
+  グループの境界だけであり，16回のうち3回になる．
+\end{example}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \caption{\cref{ex:l09-placement}のトレース．各項目はブロック，その
+    GPU，2回のページアクセスである．\enquote{遠隔}は，それより前の
+    ブロックがすでに別の GPU に置いたページを示す．}
+  \label{tab:l09-placement}
+  \begin{tabular}{@{}l l l l l l@{}}
+    \toprule
+    & \multicolumn{2}{l}{ラウンドロビン} & & \multicolumn{2}{l}{グループ化} \\
+    \cmidrule{2-3}\cmidrule{5-6}
+    ウェーブ & ブロック，GPU & ページ & & ブロック，GPU & ページ \\
+    \midrule
+    1 & TB0，G0 & P0 新規，P1 新規 & & TB0，G0 & P0 新規，P1 新規 \\
+      & TB1，G1 & P1 \textbf{遠隔}，P2 新規 & & TB2，G1 & P2 新規，P3 新規 \\
+      & TB2，G2 & P2 \textbf{遠隔}，P3 新規 & & TB4，G2 & P4 新規，P5 新規 \\
+      & TB3，G3 & P3 \textbf{遠隔}，P4 新規 & & TB6，G3 & P6 新規，P7 新規 \\
+    \addlinespace
+    2 & TB4，G0 & P4 \textbf{遠隔}，P5 新規 & & TB1，G0 & P1 近接，P2 \textbf{遠隔} \\
+      & TB5，G1 & P5 \textbf{遠隔}，P6 新規 & & TB3，G1 & P3 近接，P4 \textbf{遠隔} \\
+      & TB6，G2 & P6 \textbf{遠隔}，P7 新規 & & TB5，G2 & P5 近接，P6 \textbf{遠隔} \\
+      & TB7，G3 & P7 \textbf{遠隔}，P8 新規 & & TB7，G3 & P7 近接，P8 新規 \\
+    \midrule
+    \multicolumn{3}{@{}l}{遠隔アクセス：16回中7回} & & \multicolumn{2}{l}{16回中3回} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\caution{講義 vs 論文：本章は講義と同様に，問題をファーストタッチ配置と
+局所性を考慮したブロックスケジューリングに帰着させている．MCM-GPU の
+論文は3つの最適化を組み合わせて提案している．遠隔データだけを保持する
+GPM 側の\enquote{L1.5}キャッシュ，連続する CTA のグループを1つの GPM に
+送る\enquote{分散かつバッチ化した} CTA
+スケジューリング，そしてファーストタッチによるページ割り当てである．
+組み合わせると，基本の MCM-GPU に対して 22.8\,\% の高速化と GPM 間通信の
+$5\times$ の削減が得られる \cite{arunkumar2017mcmgpu}．}%
+\cref{ex:l09-placement}のグループ化したスケジュールは，論文の分散
+スケジューラの考え方である．連続するブロックはデータを共有しやすいので，
+同じ GPU を共有すべきである．これはカーネルの起動をまたいでも効く．
+ループの中で再び起動されたカーネルは同じブロック番号を同じ GPU に送り，
+それらの GPU のメモリにはファーストタッチで置かれたページがすでにある
+\cite{arunkumar2017mcmgpu}．
+
+\subsection{NVLink と NVSwitch}
+
+遠隔アクセスのコストは GPU 間のリンクで決まる．
+
+\begin{definition}[インターコネクト，NVLink，NVSwitch]
+  \term[いんたーこねくと]{インターコネクト}[interconnect]とは，
+  プロセッサとメモリがデータをやり取りするリンク（とスイッチ）の
+  ネットワークである．NVIDIA の
+  \term[えぬぶいりんく]{NVLink}[NVLink] は GPU 間の
+  ポイントツーポイントのインターコネクトとプロトコルであり，GPU 間の
+  通信において PCIe に代わるものである．\margin{世代ごとの GPU 当たりの
+  NVLink：\SI{900}{\giga\byte\per\second}，18リンク（第4世代，Hopper）；
+  \SI{1800}{\giga\byte\per\second}，18リンク（第5世代，Blackwell）；
+  \SI{3000}{\giga\byte\per\second}，36リンク（第6世代，Vera Rubin，
+  暫定値）．NVLink Switch のドメインは8 GPU，NVL72 ラックでは72 GPU に
+  及ぶ \cite{nvidia2026nvlink}．}
+  \term[えぬぶいすいっち]{NVSwitch}[NVSwitch] は多数の NVLink ポートを
+  持つスイッチチップである．GPU の間に NVSwitch を置くと，ノード内の
+  すべての GPU が他のすべての GPU にリンクの全帯域幅で到達できる．
+\end{definition}
+
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-interconnect}
+  \caption{(a) CPU と共有する PCIe スイッチを介してしか通信できない
+    2つの GPU．(b) 同じ GPU を直接の NVLink で結んだもの．(c) 8つの
+    GPU がそれぞれすべての NVSwitch チップにつながり，GPU のどの組も
+    スイッチを介して結ばれる．}
+  \label{fig:l09-interconnect}
+\end{figure}
+
+NVLink がなければ，2つの GPU の間のデータは CPU と共有する PCIe
+スイッチを渡る（\cref{fig:l09-interconnect}a）．直接の NVLink は
+これを迂回する（b）．H100 の第4世代 NVLink は18リンクで GPU 当たり
+\SI{900}{\giga\byte\per\second} を提供し，ホワイトペーパーはこれを
+PCIe Gen~5 の帯域幅の $7\times$ としている \cite{nvidia2022hopper}．
+H100 の HBM3 帯域幅 \SI{3}{\tera\byte\per\second} と比べると，NVLink は
+ローカルメモリ帯域幅の 30\,\% を提供する（両方向を数えた場合）．\caution{講義
+vs 実際：講義はこれを約4分の1としている．1方向当たりでは NVLink~4 は
+\SI{450}{\giga\byte\per\second}（\SI{25}{\giga\byte\per\second} の
+リンク18本）を運び，HBM の 15\,\% である \cite{nvidia2022hopper}．}
+しかしポイントツーポイントのリンクはスケールしない．GPU が持つリンクの
+数は決まっており，$n$ 個の GPU のすべての組を直接つなぐには
+$n(n-1)/2$ 本のリンクが要る．NVSwitch チップがこれを解決する
+（\cref{fig:l09-interconnect}c）．各 GPU は自分のリンクをスイッチに
+分散させ，スイッチは GPU のすべての組を，直接リンクの連鎖よりも高い
+帯域幅と低いレイテンシで結ぶ．
+
+\margin{第5章のユニファイド仮想アドレッシングにより，
+\texttt{cudaDeviceEnablePeerAccess} で PCIe または NVLink 上の
+ピアツーピアアクセスを有効にすれば，ある GPU 上のカーネルがピア GPU の
+メモリを指すポインタを参照外しできる（CPG §3.2.9.4 Peer-to-Peer Memory
+Access）．}%
+このように，ノード内の GPU は1つの NUMA マシンを成す．アドレス空間は
+1つで，近接メモリと遠隔メモリがある．
+
+\subsection{ボードをまたぐ：RDMA}
+
+異なるボードや異なるノード上の GPU は PCIe を介してそれぞれのホストに
+接続されており（\cref{fig:l09-nodes}），CPU を経由する PCIe には，
+それらの間でメモリを共有するのに十分な帯域幅がない．それらのメモリは
+別々の空間であり，システムは第2章と同じ分散メモリシステムである．
+データは明示的なメッセージ，ここでは RDMA によって移動する．\margin{プログラムが
+これらの転送を自ら発行することはまれである．NCCL（第5章）のような
+集団通信ライブラリが，GPU の組ごとに NVLink，NVSwitch，GPUDirect RDMA
+のいずれかを選ぶ．}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-nodes}
+  \caption{2つのマルチ GPU ノード．ノード内では NVLink が4つの GPU を
+    1つの NUMA アドレス空間にまとめる．CPU とネットワークインタフェース
+    カードは PCIe スイッチ上にある（GPU との接続は2本だけ描いた）．
+    ノード間ではメモリは別々であり，データは RDMA によってネットワークを
+    渡る．}
+  \label{fig:l09-nodes}
+\end{figure}
+
+従来のネットワーキングでは，バッファを TCP/IP のソフトウェアスタックを
+通して送る（\cref{fig:l09-rdma}a）．送信側の CPU はアプリケーションの
+バッファからオペレーティングシステムを経てネットワークへデータをコピーし，
+受信側の CPU はそれをさらに宛先のバッファへコピーする．両方の CPU が
+メッセージごとにサイクルを費やし，CPU が忙しければ転送は遅れる．
+
+\begin{definition}[RDMA，ホストバイパス，NIC]
+  \term[ねっとわーくいんたふぇーすかーど]{ネットワークインタフェースカード}[network interface card (NIC)]
+  とは，ホストをネットワークに接続するデバイスである．
+  \term[りもーとだいれくとめもりあくせす]{リモートダイレクトメモリアクセス（RDMA）}[remote direct memory access (RDMA)]
+  と呼ばれる技術は，第7章の DMA をネットワークをまたいで拡張する．
+  一方の NIC の RDMA エンジンが送信元のバッファをメモリから読み，もう
+  一方の NIC の RDMA エンジンがそれを宛先のメモリに書き込み，どちらの
+  CPU もデータをコピーしない（\cref{fig:l09-rdma}b）．このような転送は
+  \term[ほすとばいぱす]{ホストバイパス}[host bypass]の技術である．
+  ホストプロセッサとそのソフトウェアスタックはデータの経路から外される．
+  \index{RDMA|see{リモートダイレクトメモリアクセス（RDMA）}}%
+  \index{NIC|see{ネットワークインタフェースカード}}%
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-rdma}
+  \caption{(a) 従来のネットワーキング：データは両方の CPU を通る．
+    (b) RDMA：RDMA エンジンがデータをメモリからメモリへ移し，CPU
+    （破線）は経路に加わらない．(c) GPUDirect RDMA：NIC が GPU メモリを
+    直接読み書きするので，GPU のバッファはホストメモリを経由する
+    コピーなしにリモートの GPU に届く．}
+  \label{fig:l09-rdma}
+\end{figure}
+
+\begin{definition}[GPUDirect RDMA]
+  NVIDIA の技術である
+  \term[じーぴーゆーだいれくとあーるでぃーえむえー]{GPUDirect RDMA}[GPUDirect RDMA]
+  は，GPU メモリと，NIC やストレージアダプタのようなサードパーティの
+  PCIe デバイスとの間に，\enquote{PCI Express の標準機能を用いて}直接のデータ経路を提供する
+  \cite{nvidia2026gpudirectrdma}．これにより GPU のバッファは，
+  ホストメモリに中継されることなく，ネットワークを通してリモートの GPU
+  や別のデバイスへ送られる（\cref{fig:l09-rdma}c）．
+\end{definition}
+
+\caution{GPUDirect RDMA では，GPU とサードパーティのデバイスが
+\enquote{同じ上流の PCI Express ルートコンプレックスを共有する}
+必要がある．これは
+Kepler 世代の GPU と CUDA~5.0 で導入された
+\cite{nvidia2026gpudirectrdma}．}%
+2種類のリンクは協調して働く．ノード内では NVLink と NVSwitch が GPU 間の
+通信を運び，ノード間では GPUDirect RDMA がそれをネットワーク越しに移す．
+PCIe だけでは，これほど多くの GPU がデータを交換する需要を満たせない．
+
+\begin{keypoint}
+  1つのダイを超えるスケーリングは，マルチチップモジュール，マルチ GPU
+  ノード，クラスタへと進む．パッケージやノードの中ではメモリは1つの
+  NUMA 空間であり，ブロックスケジューリングとページ配置が遠隔アクセスの
+  数を決める．NVLink と NVSwitch は遠隔アクセスを安くする．ノード間では
+  メモリは分散しており，RDMA（GPU メモリには GPUDirect RDMA）が CPU を
+  介さずにデータを移す．
+\end{keypoint}
+
+\section{GPU 上の並行性}
+\label{sec:l09-concurrency}
+
+大きな GPU が常によく使われているとは限らない．\source{M9，GPU 上の並行性；
+CPG §3.2.8 Asynchronous Concurrent Execution，§3.2.9 Multi-Device
+System；\cite{nvidia2020ampere}；\cite{nvidia2026mps}．}本節では
+複数のジョブが1つの GPU をどう共有できるかを問い，それを可能にする
+3つの仕組みを比較し，プログラムが複数のストリームと複数の GPU をどう
+駆動するかを示す．
+
+\subsection{利用率とマルチテナンシ}
+
+\begin{definition}[利用率，データセンタ，マルチテナンシ]
+  GPU の\term[りようりつ]{利用率}[utilization]とは，その資源（SM，
+  メモリ帯域幅，時間）のうち有用な仕事をしている割合である．
+  \term[でーたせんた]{データセンタ}[datacenter]とは，多くの利用者が
+  共有する多数のサーバからなる施設であり，
+  \term[まるちてなんし]{マルチテナンシ}[multi-tenancy]とは，1台の
+  機械，ここでは1つの GPU を，複数の独立した利用者（テナント）の
+  ジョブで共有することである．
+\end{definition}
+
+すべてのジョブが大きな GPU の全体を使えるわけではない．小さなバッチの
+推論サービス，開発セッション，小規模な学習ジョブは，SM の一部しか
+忙しくしないことがある．専用の GPU では残りは無駄になり，これは GPU が
+高価な資源であるデータセンタで最も問題になる．従来のデータセンタは，
+この規模のジョブを持つ多数のテナントにサービスを提供する．一部の AI
+ワークロードは振る舞いが異なる．大規模言語モデルの学習は，1つの
+テナントのために GPU 全体を多数使い，そのようなジョブは最も遅い
+タスクと同じ速さでしか進まない．各ステップがそのすべての GPU を待つ
+からである．\margin{Ye らは GPU データセンタにおける深層学習ジョブの
+スケジューリングを概観し，\enquote{ビッグデータや HPC のワークロード向けに設計された
+従来の手法では，DL ワークロードが GPU 資源を使い切れるようにはできない}と
+述べている \cite{ye2024dlsched}．Yu らは
+マルチテナントの推論を概観している \cite{yu2022multitenant}．}
+どちらのパターンも，1つの GPU に複数の仕事の流れを載せる方法を必要と
+する．
+
+\subsection{3つの仕組み}
+
+\cref{fig:l09-concurrency}は3つの仕組みを，何を分割するかによって
+比較する．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-concurrency}
+  \caption{GPU の並行性の仕組み．(a) 1つのカーネルが SM，L2，DRAM を
+    使う．(b) 1つのクライアントのストリーム：それらの仕事はすべての SM と
+    L2，DRAM で混ざり合い，何も分割されない．(c) MPS：クライアントの
+    ブロックは SM 全体に分散する（ここではクライアントごとの SM の取り分
+    として描いた）．L2 と DRAM は共有される．(d) MIG：SM，L2，DRAM が
+    クライアントの間で物理的に分割される．}
+  \label{fig:l09-concurrency}
+\end{figure}
+
+\begin{description}
+  \item[ストリーム．]  1つのクライアント（1つのプロセス）が複数の CUDA
+    ストリーム（第5章）に仕事を発行する．並行に実行されるのは独立した
+    ストリームだけであり，それらのカーネルは SM，L2，DRAM のすべての
+    資源を共有する．
+  \item[MPS．]  別々のプロセスである複数のクライアントが，異なる SM 上で
+    同時に実行される．L2 キャッシュと DRAM 帯域幅は共有されたままである．
+  \item[MIG．]  GPU は物理的に分割される．各クライアントは独自の SM，
+    L2 スライス，DRAM 帯域幅を受け取る．
+\end{description}
+
+\subsection{Multi-Instance GPU}
+
+\begin{definition}[Multi-Instance GPU，GPU インスタンス，QoS]
+  \term[まるちいんすたんすじーぴーゆー]{マルチインスタンスGPU（MIG）}[Multi-Instance GPU (MIG)]
+  と呼ばれる技術は，1つの GPU を複数の分離されたパーティションに分割する．
+  それぞれが
+  \term[じーぴーゆーいんすたんす]{GPUインスタンス}[GPU instance]であり，
+  独自の SM，L2 キャッシュスライス，メモリコントローラ，DRAM を持つ
+  より小さな GPU として振る舞う \cite{nvidia2020ampere}．MIG はメモリ，
+  L2 キャッシュのポート，DRAM 帯域幅，オンチップのクロスバーのポートを
+  分割するので，各インスタンスには
+  \term[さーびすひんしつ]{サービス品質（QoS）}[quality of service (QoS)]
+  が保証される．すなわち，他のインスタンスが何をしていても予測可能な
+  スループットとレイテンシである．
+  \index{MIG|see{マルチインスタンスGPU（MIG）}}%
+  \index{QoS|see{サービス品質（QoS）}}%
+\end{definition}
+
+\begin{marginfigure}
+  \centering
+  \input{figures/l09-mig}
+  \caption{7つの MIG スライスの GPU 上の4つのアプリケーション
+    （GPU インスタンスは3，2，1，1スライス）．メモリは簡略化した．
+    A100 のメモリスライスは8つで，3スライスのインスタンスは4つを得る
+    \cite[§6.2]{nvidia2026mig}．}
+  \label{fig:l09-mig}
+\end{marginfigure}
+
+こうして MIG は1つの大きな GPU を，メモリとコアを複数の利用者の間で
+分離した，複数のジョブの効率的な受け皿にする．A100 は\enquote{最大7つの別々の GPU インスタンスに安全に分割できる}
+\cite{nvidia2020ampere}．これは，クラウド事業者が1つの GPU の一部を
+異なる顧客に貸し出すのに必要なことである（\cref{fig:l09-mig}）．
+分離の代償は硬直性である．インスタンスの大きさは固定されており，仕事が
+遊んでいる隣のインスタンスにあふれ出すことはできない．\margin{A100
+の GPU インスタンスは，14 SM の GPC 1つと L2 スライス10個の1グループ
+からなる\enquote{GPU スライス}で組み立てられ，GPU はこれを7つ持つ
+\cite{nvidia2020ampere}．プロファイルは A100 \SI{40}{\giga\byte} で
+1g.5gb から 7g.40gb まで \cite[§6.2]{nvidia2026mig}．H100 の第2世代
+MIG は7インスタンスを保ち，コンフィデンシャルコンピューティングを加えた
+\cite{nvidia2022hopper}．}% ja: anchored at the paragraph end for the crowded margin
+
+\subsection{Multi-Process Service}
+
+\begin{definition}[タイムスライシング，空間分割，MPS]
+  \term[たいむすらいしんぐ]{タイムスライシング}[time slicing]では，
+  GPU は一度に1つのプロセス（1つの CUDA コンテキスト）の仕事を実行し，
+  プロセスの間で切り替える．\caution{講義 vs ドキュメント：MPS は
+  各クライアントに専用の SM を与えない．プロビジョニングの上限は取り分を
+  制限するだけで何も予約せず，\enquote{異なる MPS クライアント
+  コンテキストから起動されたカーネルは同じ SM 上で実行されうる}．
+  クライアントが互いに素な SM に限られるのは，不均一な分割（たとえば
+  30\,\% と 70\,\%）か Ampere 以降の静的な SM パーティションの場合
+  だけである
+  \cite[§1.1.2.2.5, §1.1.2.2.11]{nvidia2026mps}．}
+  \term[くうかんぶんかつ]{空間分割}[spatial partitioning]では，複数の
+  プロセスの仕事が，異なる SM のような GPU の互いに素な部分で同時に実行
+  される．
+  \term[まるちぷろせすさーびす]{マルチプロセスサービス（MPS）}[Multi-Process Service (MPS)]
+  は，複数のプロセスの CUDA の仕事を1つの GPU 上で並行に実行させる
+  NVIDIA のランタイムサービスであり，クライアントごとに使用できる SM の
+  上限を任意に設けられる．
+  \index{MPS|see{マルチプロセスサービス（MPS）}}%
+\end{definition}
+
+異なる CUDA コンテキストのカーネルは，MPS なしでは並行に実行できない．
+\enquote{GPU は各コンテキストの進行を保証するためにタイムスライスを
+行うことがある}（CPG §3.2.8.2 Concurrent Kernel Execution）．V100 以降で
+空間分割をサポートする MPS を使うと，クライアントのカーネルは GPU を
+同時に共有するが，資源は厳密には分割されない．L2 と DRAM 帯域幅は
+共有されるので，あるクライアントの性能は他のクライアントの振る舞いに
+依存し，予測できないことがある．
+MPS は MPI プログラムを CUDA に移すことも容易にする．1つのノード上の
+MPI ランクは別々のプロセスであり，MPS を使えばそれらのカーネルが
+一緒になって1つの GPU を埋められる．QoS が重要でない場合，MPS は MIG
+より高い利用率を達成できる．クライアントの取り分がスライス単位に
+切り上げられず，遊んでいる SM を仕事のある誰にでも与えられるからである．\caution{Volta より前にも，MPS は
+クライアントの仕事を1つのコンテキストにまとめるサーバを通して，
+クライアントを並行に実行させていた．Volta はハードウェアサポートを加え，
+\enquote{MPS クライアントプロセスは完全に分離された GPU アドレス空間を
+持つ}ことと\enquote{実行資源の制限付きプロビジョニング}，すなわちクライアントごとの SM の取り分（環境変数
+\texttt{CUDA\_MPS\_\allowbreak ACTIVE\_\allowbreak THREAD\_\allowbreak PERCENTAGE}）
+を可能にした \cite{nvidia2026mps}．}% ja: anchored at the paragraph end for the crowded margin
+
+\begin{example}[3つのジョブを収める]
+  \label{ex:l09-fit}
+  3つの推論ジョブが GPU の SM のそれぞれ 30\,\%，25\,\%，10\,\% を
+  必要とする．7つの等しいスライスを持つ MIG では，1スライスは
+  $1/7 \approx 14.3\,\%$ なので，ジョブは3，2，1スライス（42.9\,\%，
+  28.6\,\%，14.3\,\%）を必要とする．有用な仕事をしている SM は 65\,\%
+  だけなのに7スライスのうち6つが占有され，20\,\% を必要とする4つ目の
+  ジョブはもう収まらない．MPS では各ジョブをその取り分に制限できる
+  （\texttt{CUDA\_MPS\_\allowbreak ACTIVE\_\allowbreak THREAD\_\allowbreak PERCENTAGE}
+  を 30，25，10 とし，サポートされるスレッド数に切り下げる）．何も予約
+  されないので，残りの能力は他のクライアントのために使える状態のまま
+  である．その代償として，L2 と DRAM 帯域幅に加えて SM も共有し，どの
+  ジョブにも性能は保証されない
+  \cite[§1.1.2.2.5]{nvidia2026mps}．
+\end{example}
+
+\caution{MPS の分離は第2の点でも限られる．Volta の MPS クライアントの
+1つで致命的な GPU フォールトが起きると，それが発生した GPU を共有する
+すべてのクライアントに\enquote{どのクライアントがエラーを起こしたかを示さずに}報告され，
+それらのクライアントは終了しなければならない \cite{nvidia2026mps}．
+MIG ではフォールトはそのインスタンスの中にとどまる \cite{nvidia2020ampere}．}
+
+\subsection{ストリームに基づくプログラミング}
+
+1つのプロセスの中では，ストリームが並行性の手段である．
+
+\begin{definition}[カーネルの並行実行]
+  1つの CUDA コンテキストの複数のカーネルを GPU 上で同時に実行することを
+  \term[かーねるのへいこうじっこう]{カーネルの並行実行}[concurrent kernel execution]
+  という．異なるストリームに発行されたカーネルは，資源が許せば並行に
+  実行されうる．同じストリーム内のカーネルは順に実行される（CPG
+  §3.2.8.2 Concurrent Kernel Execution）．
+\end{definition}
+
+\margin{V100，A100，H100 では最大128個のカーネルが同時に常駐できる
+（\enquote{maximum number of resident grids per device}，CPG
+Table~21 \cite{nvidia2024cudaguide}）．}%
+こうしてストリームは，カーネルの並行実行，ストリームをまたいだ通信と
+計算のオーバーラップ（第5章），そして各自のストリームを持つ複数の CPU
+スレッドによる仕事の投入を可能にする．次のループは，ジョブを
+ストリームの数より多いチャンクに分け，チャンクを順番にストリームに
+配る．各反復は1つのチャンクの入力コピー，カーネル，出力コピーを発行
+してから次のチャンクへ進む．これは\emph{深さ優先}の起動順序である．
+
+\begin{lstlisting}[language=C++, numbers=none]
+// h_x, h_y pinned; d_x, d_y device buffers of n floats
+const int nStreams = 4, nChunks = 16;
+size_t chunk = n / nChunks;
+size_t bytes = chunk * sizeof(float);
+cudaStream_t st[nStreams];
+for (int k = 0; k < nStreams; ++k)
+  cudaStreamCreate(&st[k]);
+for (int i = 0; i < nChunks; ++i) {    // depth-first
+  cudaStream_t s = st[i % nStreams];
+  size_t off = i * chunk;
+  cudaMemcpyAsync(d_x + off, h_x + off, bytes,
+                  cudaMemcpyHostToDevice, s);
+  square<<<(chunk + 255) / 256, 256, 0, s>>>(
+      d_x + off, d_y + off, chunk);
+  cudaMemcpyAsync(h_y + off, d_y + off, bytes,
+                  cudaMemcpyDeviceToHost, s);
+}
+cudaDeviceSynchronize();               // all streams
+\end{lstlisting}
+
+チャンク0，4，8，12はストリーム~0を共有するので順に実行され，4つの
+ストリームどうしはオーバーラップする．\tip{OpenMP プログラムはこの
+スタイルに自然に移植できる．反復が独立な並列ループは，各反復の仕事を
+それぞれのストリームに発行するループになり，各 OpenMP スレッドが自分の
+ストリームを駆動することもできる．}
+このスケジューリングにはコストがある．操作ごとにドライバが起動を準備し，
+ハードウェアは同じストリームの操作間の依存関係を追跡しなければならない．
+短いカーネルでは，このオーバーヘッドが実行時間のかなりの割合を占めうる．
+
+\begin{definition}[CUDAグラフ]
+  \term[くーだぐらふ]{CUDAグラフ}[CUDA Graph]とは，依存関係で結ばれた
+  操作（カーネル起動，コピーなど）の集合であり，その実行とは別に定義
+  される．グラフは一度構築され，事前に検証と準備が済んだ実行可能グラフに
+  インスタンス化され，その後は1回の呼び出しで必要なだけ何度でも起動
+  される（CPG §3.2.8.7 CUDA Graphs）．
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+cudaGraph_t g;  cudaGraphExec_t ge;
+cudaStreamBeginCapture(s, cudaStreamCaptureModeGlobal);
+for (int k = 0; k < 20; ++k)          // 20 short kernels
+  step<<<blocks, 256, 0, s>>>(d_u, n);
+cudaStreamEndCapture(s, &g);          // record, not run
+cudaGraphInstantiate(&ge, g, 0);      // set up once
+for (int it = 0; it < 1000; ++it)
+  cudaGraphLaunch(ge, s);             // one call each
+cudaStreamSynchronize(s);
+\end{lstlisting}
+ストリームキャプチャは既存のストリームのコードをグラフに変える．
+\texttt{cudaStream\allowbreak BeginCapture} と
+\texttt{cudaStream\allowbreak EndCapture} の間では，ストリームに発行された
+仕事は実行されずに記録される．最初の起動の前に依存関係の連鎖全体が
+わかっているので，準備のコストはカーネルごとではなく一度だけ払えばよく，
+ランタイムはワークフローを全体として最適化できる（CPG §3.2.8.7）．\caution{ストリーム
+キャプチャはレガシーのデフォルトストリームでは動作しない（CPG §3.2.8.7.3
+Creating a Graph Using Stream Capture）．\texttt{s} はレガシーの
+デフォルトストリームであってはならず，作成したストリームか
+\texttt{cudaStream\allowbreak PerThread} を使う．}
+
+\subsection{複数の GPU のプログラミング}
+
+ホストプログラムはカレントデバイスを切り替えることで複数の GPU を駆動する．
+\texttt{cudaSetDevice(d)} の呼び出しは，呼び出したホストスレッドに
+とって GPU~\texttt{d} をカレントにする．割り当てとカーネル起動は
+カレントデバイスに対して行われ，ストリームとイベントは，作成された
+ときにカレントだったデバイスに属する（CPG §3.2.9.2 Device Selection）．
+次のプログラムは配列をすべての GPU に分割する．これは第2章のデータ分割
+であり，GPU ごとに別々の割り当て，コピー，カーネル起動を行う．\margin{\texttt{h\_x}
+がページング可能なメモリなら，各 \texttt{cudaMemcpyAsync} はまず CPU 上の
+中継バッファにコピーし（第5章），GPU は1つずつ順に動き始める．
+ピン留めされたホストメモリならすべてのコピーがオーバーラップできる．}
+
+\begin{lstlisting}[language=C++, numbers=none]
+int nDev;
+cudaGetDeviceCount(&nDev);
+size_t part = n / nDev;               // n divisible
+size_t bytes = part * sizeof(float);
+float *d_x[16];                        // nDev <= 16
+for (int d = 0; d < nDev; ++d) {
+  cudaSetDevice(d);                    // select GPU d
+  cudaMalloc(&d_x[d], bytes);          // on GPU d
+  cudaMemcpyAsync(d_x[d], h_x + d * part, bytes,
+                  cudaMemcpyHostToDevice);
+  square<<<(part + 255) / 256, 256>>>(d_x[d], d_x[d],
+                                      part);
+}
+for (int d = 0; d < nDev; ++d) {       // wait for all
+  cudaSetDevice(d);
+  cudaDeviceSynchronize();
+}
+\end{lstlisting}
+
+\margin{DGX H100 ノードは，4つの NVSwitch で結ばれた8つの H100 GPU と，
+8つの \SI{400}{\giga\bit\per\second} ConnectX-7 ネットワークアダプタを
+持つ（HWP App.~A \cite{nvidia2022hopper}）．}%
+カーネル起動と非同期コピーはすぐに戻るので，最初のループはどの仕事も
+終わらないうちにすべての GPU で仕事を開始する．その後 GPU は，それぞれ
+自分の部分について並列に実行される．\caution{\texttt{cudaDeviceSynchronize}
+が待つのは\emph{カレント}デバイスだけである．起動ループの後に1回呼んでも
+最後の GPU しか待たない．ホストは上のように各デバイスを順に選択して
+同期しなければならない．}各デバイスは独自のデフォルトストリームを持ち
+（CPG §3.2.9.3 Stream and Event Behavior），ストリームは複数の GPU と
+組み合わせられる．各 GPU は，それがカレントである間に作成された自分の
+ストリームを受け取る．
+
+\subsection{比較}
+
+\cref{tab:l09-mechanisms}は3つの仕組みをまとめたものである．\caution{講義
+vs ドキュメント：MPS クライアント48は以前のドキュメントにあった Volta
+（CC~7.0）の上限であり，Volta より前は16だった
+\cite{nvidia2025mpscontrol}．現在の概要では，
+\texttt{CUDA\_\allowbreak DEVICE\_\allowbreak MAX\_\allowbreak CONNECTIONS}
+が既定値の2のとき，デバイスおよびサーバ当たり最大60まで許され，これを
+引き上げると少なくなる \cite[§1.1.2.2.6]{nvidia2026mps}．}これらは
+排他的ではない．1つの MIG インスタンス内のプロセスもストリームを使え，
+MPS は MIG インスタンスの中でも動作する．その場合クライアント数の上限は
+インスタンスの大きさに比例して下がる \cite[§7.2]{nvidia2026mig}．
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{ストリーム，MPS，MIG の比較．}
+  \label{tab:l09-mechanisms}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{38mm}
+                  >{\raggedright\arraybackslash}p{20mm}
+                  >{\raggedright\arraybackslash}p{27mm}
+                  >{\raggedright\arraybackslash}p{18mm}@{}}
+    \toprule
+    & ストリーム & MPS & MIG \\
+    \midrule
+    分割の種類 & なし & 論理的 & 物理的 \\
+    最大パーティション数 & 無制限 & 48（注意を参照） & 7 \\
+    SM の分離 & なし & 割合による（上限） & あり \\
+    メモリ帯域幅の分離 & なし & なし & あり \\
+    性能の QoS & なし & 部分的 & あり \\
+    再構成 & 動的 & プロセス起動時 & アイドル時 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\Needspace{16\baselineskip}% ja only: keep this paragraph with the summary
+ストリームは準備のコストがなく実行時に適応できるが，分離は与えない．
+MIG は最も強い分離を与えるが，パーティションを変更できるのは GPU が
+アイドルのときだけである．MPS はその中間にあり，SM の上限は通常
+クライアントプロセスの開始時に設定される（コンテキストごとの上限を後から
+設定することもできる \cite[§1.1.2.2.5]{nvidia2026mps}）．\tip{QoS が
+重要なら MIG，利用率が重要なら MPS，1つのプロセス内の並行性には
+ストリームを使う．}
+
+\begin{keypoint}[章のまとめ]
+  モノリシック GPU はダイサイズと歩留まりによって制限されるので，GPU は
+  GPU モジュールからなるマルチチップモジュール，マルチ GPU ノード，
+  クラスタとしてスケールする．パッケージやノードの中ではメモリは
+  近接メモリと遠隔メモリからなる1つの NUMA 空間であり，ファーストタッチ
+  配置，局所性を考慮したスレッドブロックスケジューリング，ページ
+  マイグレーションがアクセスを近接に保ち，NVLink と NVSwitch は遠隔
+  アクセスを PCIe より安くする．ノード間ではメモリは分散しており，RDMA
+  （GPU のバッファには GPUDirect RDMA）が CPU を介さずにデータを移す．
+  1つの GPU の利用率を上げるには，ストリームが1つのプロセスの独立な
+  仕事を分割なしに実行し，MPS が複数のプロセスを同時に実行して
+  クライアントごとの SM の上限を任意に設けられるが L2 と DRAM は共有し，
+  MIG が SM，L2，DRAM を QoS 付きの最大7つの分離されたインスタンスに
+  分割する．CUDA グラフはストリームの起動ごとのオーバーヘッドを取り除き，
+  \texttt{cudaSetDevice} は割り当て，コピー，起動のそれぞれについて GPU を
+  選択する．
+\end{keypoint}
+
+\end{document}

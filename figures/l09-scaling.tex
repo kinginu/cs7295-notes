@@ -1,0 +1,49 @@
+% How GPUs scale up (Lesson 9): from one chip to multi-GPU boards.
+% Four stages left to right: a small GPU (cores, cache, memory); a
+% monolithic GPU with four times the cores; four GPU chips with their own
+% memories joined by a high-bandwidth switch inside one package or
+% system; several GPU boards joined by PCIe.
+% Redraws outline figure m9l1_multigpu.
+% Usage: \input{figures/l09-scaling}
+% Width: body (120 mm); the drawing is about 117 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+  core/.style={draw, fill=ln-accent!30, minimum width=3mm, minimum height=2.4mm, inner sep=0pt},
+  bar/.style={draw, inner sep=0pt, align=center},
+  arr/.style={-{Stealth[length=2mm]}, line width=0.8pt, ln-tip},
+  stcap/.style={align=center, text width=27mm, anchor=north}]
+  % --- stage 1: small GPU (8 cores)
+  \foreach \i in {0,...,3} {
+    \node[core] at (1.5+\i*3.6, 23) {};
+    \node[core] at (1.5+\i*3.6, 16) {};
+  }
+  \node[bar, fill=ln-box, minimum width=14mm, minimum height=3mm] at (6.9,19.5) {\iflangja{キャッシュ}{cache}};
+  \node[bar, fill=ln-muted!20, minimum width=14mm, minimum height=3.5mm] at (6.9,9) {\iflangja{メモリ}{Mem}};
+  \node[stcap] at (6.9,5) {\iflangja{小規模 GPU}{small GPU}};
+  \draw[arr] (16,17) -- (21,17);
+  % --- stage 2: monolithic GPU (16 cores)
+  \foreach \i in {0,...,3} {
+    \foreach \r in {0,1} {
+      \node[core] at (23.5+\i*3.6, 26.5-\r*3.2) {};
+      \node[core] at (23.5+\i*3.6, 15.5-\r*3.2) {};
+    }
+  }
+  \node[bar, fill=ln-box, minimum width=14mm, minimum height=3mm] at (28.9,19.5) {\iflangja{キャッシュ}{cache}};
+  \node[bar, fill=ln-muted!20, minimum width=14mm, minimum height=3.5mm] at (28.9,7) {\iflangja{メモリ}{Mem}};
+  \node[stcap] at (28.9,4) {\iflangja{モノリシック GPU}{monolithic GPU}};
+  \draw[arr] (38,17) -- (43,17);
+  % --- stage 3: four GPU chips and a switch
+  \foreach \x in {0,1} {
+    \node[bar, fill=ln-muted!20, minimum width=11mm, minimum height=3mm] at (51+\x*14,29) {\iflangja{メモリ}{Mem}};
+    \node[bar, fill=ln-accent!30, minimum width=11mm, minimum height=5mm] at (51+\x*14,23.5) {GPU};
+    \node[bar, fill=ln-accent!30, minimum width=11mm, minimum height=5mm] at (51+\x*14,12) {GPU};
+    \node[bar, fill=ln-muted!20, minimum width=11mm, minimum height=3mm] at (51+\x*14,6.5) {\iflangja{メモリ}{Mem}};
+  }
+  \node[bar, fill=ln-caution!25, minimum width=25mm, minimum height=4mm, text width=25mm] at (58,17.75) {\iflangja{高帯域スイッチ}{high-bandwidth switch}};
+  \node[stcap] at (58,4) {\iflangja{マルチソケット／マルチチップ GPU}{multi-socket or multi-chip GPUs}};
+  \draw[arr] (73,17) -- (78,17);
+  % --- stage 4: boards on PCIe
+  \node[bar, fill=ln-box, minimum width=22mm, minimum height=6mm] at (91,25) {\iflangja{GPU ボード}{GPU board}};
+  \node[bar, fill=ln-caution!25, minimum width=22mm, minimum height=4mm] at (91,17.75) {PCIe};
+  \node[bar, fill=ln-box, minimum width=22mm, minimum height=6mm] at (91,10.5) {\iflangja{GPU ボード}{GPU board}};
+  \node[stcap] at (91,4) {\iflangja{マルチ GPU ボード}{multi-GPU boards}};
+\end{tikzpicture}

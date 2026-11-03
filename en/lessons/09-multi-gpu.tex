@@ -1,0 +1,741 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{Multi GPU}
+\lessoninfo{
+  video={M9, lessons 1--2 (Multi-GPU Hardware; Concurrency on GPUs)},
+  sources={Arunkumar et al.\ \cite{arunkumar2017mcmgpu} (required); NVIDIA NVLink page \cite{nvidia2026nvlink}, GPUDirect RDMA documentation \cite{nvidia2026gpudirectrdma}, MPS overview \cite{nvidia2026mps}, Yu et al.\ \cite{yu2022multitenant}, Ye et al.\ \cite{ye2024dlsched} (optional); NVIDIA A100 \cite{nvidia2020ampere} and H100 \cite{nvidia2022hopper} whitepapers},
+  textbook={A18 \cite{aamodt2018gpu} ch.~5; PMPP \cite{hwu2022pmpp} ch.~20; CPG \cite{nvidia2024cudaguide} §3.2.8 Asynchronous Concurrent Execution, §3.2.9 Multi-Device System},
+  keywords={multi-GPU, monolithic GPU, multi-chip module, GPU module, NUMA, near and far memory, first-touch page placement, page migration, thread block scheduling, NVLink, NVSwitch, RDMA, GPUDirect RDMA, utilization, multi-tenancy, MPS, MIG, concurrent kernel execution, CUDA Graph},
+}
+
+The lessons so far have treated one GPU: its programming model
+(Lessons 3 and~5), its SMs and memory system (Lessons 4 and~6), and its
+virtual memory and warp scheduling (Lesson~7).  Many workloads,
+datacenter training of large models above all, need more computing power
+than one chip provides, and this lesson asks how GPUs are combined.  The
+first part follows the hardware from one die to several dies in a
+package, several GPUs in a node and several nodes on a network: the
+memory becomes non-uniform, so where a thread block runs and where its
+pages live start to matter, and new interconnects (NVLink, NVSwitch,
+RDMA) carry the traffic that PCIe cannot.  The second part asks the
+opposite question: when one GPU is more than a job needs, how can
+several jobs share it?  Streams, the Multi-Process Service and the
+Multi-Instance GPU are three answers that differ in how much of the GPU
+they partition and how much isolation they give.  The distributed-memory
+programming of Lesson~2 returns at the largest scale.
+
+\section{Multi-GPU hardware}
+\label{sec:l09-hardware}
+
+The demand for computing power has grown faster than a single GPU,
+and GPUs have answered with more chips.\source{M9, multi-GPU
+hardware; A18 ch.~5; \cite{arunkumar2017mcmgpu}.}  This section follows
+the steps of that scaling, the memory organisation they produce, the
+two placement decisions it raises, and the interconnects that join GPUs
+inside a node and across nodes.
+
+\subsection{Scaling beyond one chip}
+
+The first way to a faster GPU is more cores on one die.
+
+\begin{definition}[Monolithic GPU, multi-GPU]
+  A \term{monolithic GPU}[モノリシックGPU] is a GPU built as a single
+  die: all SMs, caches and memory controllers on one piece of
+  silicon.\margin{SMs per data-centre GPU: 56 (P100), 80 (V100), 108
+  (A100), 132 (H100 SXM5, preliminary); transistors from 15.3 to 80
+  billion over the same four generations (AWP Table~4
+  \cite{nvidia2020ampere}; HWP Table~3 \cite{nvidia2022hopper}).}
+  A \term{multi-GPU}[マルチGPU] system combines several GPU chips, in one
+  package, on one board or across boards, to act on one workload.
+\end{definition}
+
+Every GPU generation of Lesson~1 added SMs to a monolithic die, and
+\cref{fig:l09-scaling} shows where that path ends.  A larger die costs
+more, and its \emph{yield}, the fraction of manufactured dies that
+work, falls, because every die is more likely to contain a fatal
+defect; and the lithography sets a hard maximum die size.\margin{Data-centre
+dies are already large: \SI{815}{\milli\metre\squared} (V100),
+\SI{826}{\milli\metre\squared} (A100) and \SI{814}{\milli\metre\squared}
+(H100) (AWP Table~4 \cite{nvidia2020ampere}; HWP Table~3
+\cite{nvidia2022hopper}).  Arunkumar et al.\ assume that a GPU of more than 128 SMs cannot be
+built as one die \cite{arunkumar2017mcmgpu}.}  The next step therefore keeps
+the dies small and connects several of them, either as separate GPU
+chips in several sockets or as several dies on a silicon interposer
+(Lesson~4) inside one package, joined by a high-bandwidth switch.  The
+last step connects whole GPU boards through PCIe.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-scaling}
+  \caption{Four steps of GPU scaling: a small GPU; a monolithic GPU with
+    more cores on one die; several GPU chips, each with its own memory,
+    joined by a high-bandwidth switch (multi-socket or multi-chip); and
+    several GPU boards joined by PCIe.}
+  \label{fig:l09-scaling}
+\end{figure}
+
+\begin{definition}[Multi-chip module, GPU module, chiplet]
+  A \term{multi-chip module (MCM)}[マルチチップモジュール] is a package
+  that holds several dies connected by short on-package links.  In the
+  MCM-GPU of Arunkumar et al.\ each die is a
+  \term{GPU module (GPM)}[GPUモジュール], a smaller GPU with its own SMs,
+  L2 slice and DRAM partition, and the package of GPMs appears to
+  software as one larger logical GPU \cite{arunkumar2017mcmgpu}.  A die
+  designed to be combined with others in this way is called a
+  \term{chiplet}[チップレット].
+\end{definition}
+
+The paper calls this \enquote{package-level integration of multiple GPU
+modules to build larger logical GPUs}, and argues that it allows
+\enquote{continuous performance scaling beyond Moore's law}, because
+each GPM stays small enough to be manufactured with good yield
+\cite{arunkumar2017mcmgpu}.\sidenote{The MCM-GPU studied in the paper
+has four GPMs of 64 SMs each (256 SMs), \SI{3}{\tera\byte\per\second}
+of DRAM bandwidth in total, \SI{768}{\giga\byte\per\second} per local
+partition.  Its optimised version is reported as \enquote{45.5\,\%
+faster than the largest implementable monolithic GPU}, within 10\,\% of
+an unbuildable monolithic GPU of the same size, and 26.8\,\% faster than
+a multi-GPU system with the same SMs and DRAM bandwidth
+\cite{arunkumar2017mcmgpu}.}
+
+\subsection{One logical GPU with non-uniform memory}
+
+To the programmer, a package or node of several GPUs joined by
+high-speed links (\cref{fig:l09-numa}) is still a large number of SMs,
+and all memories are reachable as global memory, one shared address
+space.  Each GPU keeps its own DRAM, typically HBM stacks (Lesson~1)
+for the bandwidth its SMs demand, while the I/O bandwidth to the rest of
+the system is shared by all of them.  What changes is the cost of an
+access.
+
+\begin{definition}[NUMA, near and far memory]
+  A memory system has
+  \term{non-uniform memory access (NUMA)}[不均一メモリアクセス（NUMA）]
+  when one address space is spread over several memories and the latency
+  and bandwidth of an access depend on which memory holds the address
+  relative to the processor that issues it.
+  \index{NUMA|see{non-uniform memory access (NUMA)}}%
+  The two cases are called
+  \term{near memory / far memory}[近接メモリ／遠隔メモリ]: near memory
+  is attached to the GPU that issues the access, far memory to another
+  GPU, so that the access must cross the inter-GPU link.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-numa}
+  \caption{A four-GPU NUMA system.  Each GPU has its own memory, and the
+    six links connect every pair.  A thread block on GPU~0 reaches its
+    own memory directly (near access) and the memory of GPU~3 over a link
+    (far access), at lower bandwidth and higher latency.}
+  \label{fig:l09-numa}
+\end{figure}
+
+\begin{example}[Near and far, in numbers]
+  \label{ex:l09-near-far}
+  A kernel on an H100 reads a \SI{1}{\gibi\byte} buffer
+  (\SI{1.074}{\giga\byte}) once.  From its own HBM3 at the preliminary
+  \SI{3}{\tera\byte\per\second} the transfer takes at least
+  \SI{0.36}{\milli\second}.  If the buffer lives on a peer GPU, it
+  arrives over NVLink~4 at \SI{450}{\giga\byte\per\second} per direction,
+  half of the \SI{900}{\giga\byte\per\second} total, in at least
+  \SI{2.4}{\milli\second}; over PCIe Gen~5 at
+  \SI{64}{\giga\byte\per\second} per direction it takes at least
+  \SI{16.8}{\milli\second} \cite{nvidia2022hopper}.  The far access is
+  $6.7\times$ slower than the near one over NVLink and $47\times$ slower
+  over PCIe, before any difference in latency is counted.
+\end{example}
+
+\margin{The figures in \cref{ex:l09-near-far} are peak bandwidths; a
+real transfer reaches less, and a pattern of small far accesses suffers
+the link latency as well.}%
+The ratio, not the absolute figure, is what NUMA means for a program:
+data should be near the SMs that use it.  Two questions follow, and in
+this chapter they are asked for thread blocks and pages.
+
+\subsection{Where to run a block and where to put a page}
+
+\begin{definition}[Thread block scheduling, first-touch page placement]
+  The decision on which GPU (or GPM), and on which of its SMs, each
+  thread block of a kernel runs is called
+  \term{thread block scheduling}[スレッドブロックスケジューリング].  Under
+  \term{first-touch page placement}[ファーストタッチ配置] a page is
+  allocated in the memory near the GPU whose thread block accesses it
+  first.
+\end{definition}
+
+First-touch needs no knowledge of the program: the page goes where it is
+first wanted.  It works well as long as each page is used by blocks on
+the same GPU; it fails when a later block that runs elsewhere needs the
+same page.  Suppose blocks are dealt out round-robin, one per GPU, and
+each brings its pages into its GPU's memory by first touch.  A block
+scheduled later on GPU~0 that shares a page with the block on GPU~3
+finds that page already placed in GPU~3's memory, and every access to it
+is a far access (\cref{fig:l09-numa}).  There are two remedies: schedule
+the block on the GPU where its data lives, or move the data.
+
+\begin{definition}[Page migration]
+  The move of a page from one GPU's memory to another's while the
+  program runs is called \term{page migration}[ページマイグレーション]; it is typically done when the
+  page has received enough far accesses from that other GPU to repay
+  the cost of the copy.
+\end{definition}
+
+\margin{Migration is the multi-GPU form of the page movement of
+Lesson~7, where unified memory moves pages between host and device on a
+page fault; Li et al.\ study the address translation of such
+multi-GPU systems \cite{li2021tlb}.}%
+A migration is a copy of a whole page over the link plus an update of the
+page tables, so a policy that migrates on the first far access can do
+more harm than good when two GPUs take turns at the same page.
+
+\begin{example}[Round-robin versus grouped block scheduling]
+  \label{ex:l09-placement}
+  A kernel of eight thread blocks TB0--TB7 runs on four GPUs, two blocks
+  per GPU in two waves.  Block TB$i$ reads page P$i$ and then page
+  P$(i{+}1)$, as in a one-dimensional stencil in which neighbouring
+  blocks share a boundary page; pages are placed by first touch, and
+  within a wave the blocks touch their pages in index order.
+  \Cref{tab:l09-placement} traces two schedules.  Round-robin puts TB$i$
+  on GPU $i \bmod 4$, so neighbours always sit on different GPUs: 7 of
+  the 16 page accesses are far.  Grouping contiguous blocks, TB0 and TB1
+  on GPU~0, TB2 and TB3 on GPU~1 and so on, leaves a shared page far only
+  at the boundary between two groups: 3 of 16.
+\end{example}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \caption{Trace of \cref{ex:l09-placement}.  Each entry is a block, its
+    GPU, and its two page accesses; \enquote{far} marks a page that an
+    earlier block has already placed on another GPU.}
+  \label{tab:l09-placement}
+  \begin{tabular}{@{}l l l l l l@{}}
+    \toprule
+    & \multicolumn{2}{l}{Round-robin} & & \multicolumn{2}{l}{Grouped} \\
+    \cmidrule{2-3}\cmidrule{5-6}
+    Wave & Block, GPU & Pages & & Block, GPU & Pages \\
+    \midrule
+    1 & TB0, G0 & P0 new, P1 new & & TB0, G0 & P0 new, P1 new \\
+      & TB1, G1 & P1 \textbf{far}, P2 new & & TB2, G1 & P2 new, P3 new \\
+      & TB2, G2 & P2 \textbf{far}, P3 new & & TB4, G2 & P4 new, P5 new \\
+      & TB3, G3 & P3 \textbf{far}, P4 new & & TB6, G3 & P6 new, P7 new \\
+    \addlinespace
+    2 & TB4, G0 & P4 \textbf{far}, P5 new & & TB1, G0 & P1 near, P2 \textbf{far} \\
+      & TB5, G1 & P5 \textbf{far}, P6 new & & TB3, G1 & P3 near, P4 \textbf{far} \\
+      & TB6, G2 & P6 \textbf{far}, P7 new & & TB5, G2 & P5 near, P6 \textbf{far} \\
+      & TB7, G3 & P7 \textbf{far}, P8 new & & TB7, G3 & P7 near, P8 new \\
+    \midrule
+    \multicolumn{3}{@{}l}{Far accesses: 7 of 16} & & \multicolumn{2}{l}{3 of 16} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\caution{Lecture vs paper: this chapter, like the lecture, reduces the
+problem to first-touch placement and locality-aware block scheduling.
+The MCM-GPU paper proposes three optimisations together: a GPM-side
+\enquote{L1.5} cache that holds only remote data, \enquote{distributed
+and batched} CTA scheduling that sends a group of contiguous CTAs to
+one GPM, and first-touch page allocation; combined they give a 22.8\,\%
+speed-up and a $5\times$ reduction of inter-GPM traffic over the basic
+MCM-GPU \cite{arunkumar2017mcmgpu}.}%
+The grouped schedule of \cref{ex:l09-placement} is the idea of the
+paper's distributed scheduler: contiguous blocks tend to share data, so
+they should share a GPU.  It also pays across kernel launches: a kernel
+launched again in a loop sends the same block indices to the same GPUs,
+whose memories already hold the pages that first touch put there
+\cite{arunkumar2017mcmgpu}.
+
+\subsection{NVLink and NVSwitch}
+
+The link between the GPUs decides how much a far access costs.
+
+\begin{definition}[Interconnect, NVLink, NVSwitch]
+  An \term{interconnect}[インターコネクト] is the network of links (and
+  switches) over which processors and memories exchange data.
+  NVIDIA's \term{NVLink}[NVLink] is a point-to-point GPU-to-GPU
+  interconnect and protocol, an alternative to PCIe for traffic between
+  GPUs.\margin{NVLink per GPU, by generation: \SI{900}{\giga\byte\per\second}
+  and 18 links (4th, Hopper); \SI{1800}{\giga\byte\per\second} and 18
+  links (5th, Blackwell); \SI{3000}{\giga\byte\per\second} and 36 links
+  (6th, Vera Rubin, preliminary).  An NVLink Switch domain spans 8 GPUs,
+  or 72 in an NVL72 rack \cite{nvidia2026nvlink}.}  An \term{NVSwitch}[NVSwitch] is a switch chip with many NVLink
+  ports; with NVSwitches between them, every GPU of a node reaches every
+  other at full link bandwidth.
+\end{definition}
+
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-interconnect}
+  \caption{(a) Two GPUs that communicate only through the PCIe switch
+    they share with the CPU.  (b) The same GPUs with a direct NVLink.
+    (c) Eight GPUs, each linked to every NVSwitch chip, so that every
+    pair of GPUs is connected through a switch.}
+  \label{fig:l09-interconnect}
+\end{figure}
+
+Without NVLink, data between two GPUs crosses the PCIe switch that they
+share with the CPU (\cref{fig:l09-interconnect}a); a direct NVLink
+bypasses it (b).  Fourth-generation NVLink, in the H100, provides
+\SI{900}{\giga\byte\per\second} per GPU over 18 links, which the
+whitepaper quotes as $7\times$ the bandwidth of PCIe Gen~5
+\cite{nvidia2022hopper}; against the H100's \SI{3}{\tera\byte\per\second}
+of HBM3 bandwidth, NVLink offers 30\,\% of the local memory bandwidth
+(both directions counted).\caution{Lecture vs reality: the lecture calls
+this about a quarter.  Per direction NVLink~4 carries
+\SI{450}{\giga\byte\per\second} (18 links of
+\SI{25}{\giga\byte\per\second}), 15\,\% of HBM \cite{nvidia2022hopper}.}  Point-to-point links do not scale, however: a
+GPU has a fixed number of links, and connecting every pair of $n$ GPUs
+directly needs $n(n-1)/2$ links.  NVSwitch chips solve this
+(\cref{fig:l09-interconnect}c): each GPU spreads its links over the
+switches, and the switches connect every pair of GPUs with higher
+bandwidth and lower latency than a chain of direct links could.
+
+\margin{Lesson~5's unified virtual addressing is what lets a kernel on
+one GPU dereference a pointer into a peer GPU's memory, once
+\texttt{cudaDeviceEnablePeerAccess} has enabled peer-to-peer access
+over PCIe or NVLink (CPG §3.2.9.4 Peer-to-Peer Memory Access).}%
+Within a node, then, the GPUs form one NUMA machine: one address space,
+with near and far memory.
+
+\subsection{Across boards: RDMA}
+
+GPUs on different boards or in different nodes are attached to their
+hosts through PCIe (\cref{fig:l09-nodes}), and PCIe through the CPU
+does not provide enough bandwidth to share memory between them.  Their
+memories are separate spaces, and the system is a distributed-memory
+system as in Lesson~2: data moves by explicit messages, here by RDMA.\margin{Programs rarely issue these transfers
+themselves: collective libraries such as NCCL (Lesson~5) choose NVLink,
+NVSwitch or GPUDirect RDMA for each pair of GPUs.}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-nodes}
+  \caption{Two multi-GPU nodes.  Inside a node, NVLink joins the four
+    GPUs into one NUMA address space; the CPU and the network interface
+    card sit on the PCIe switch (only two GPU connections drawn).  Between
+    nodes the memories are separate, and data crosses the network by
+    RDMA.}
+  \label{fig:l09-nodes}
+\end{figure}
+
+Traditional networking sends a buffer through the TCP/IP software stack
+(\cref{fig:l09-rdma}a): the sending CPU copies the data from the
+application buffer through the operating system to the network, and the
+receiving CPU copies it up again into the destination buffer.  Both
+CPUs spend cycles on every message, and a busy CPU delays the transfer.
+
+\begin{definition}[RDMA, host bypass, NIC]
+  A \term{network interface card (NIC)}[ネットワークインタフェースカード]
+  is the device that connects a host to the network.
+  The technique called
+  \term{remote direct memory access (RDMA)}[リモートダイレクトメモリアクセス（RDMA）]
+  extends the DMA of Lesson~7 across the network: the RDMA engine of
+  one NIC reads the source buffer from memory and the RDMA engine of the
+  other NIC writes it into the destination memory, without either CPU
+  copying the data (\cref{fig:l09-rdma}b).  Such a transfer is a
+  \term{host bypass}[ホストバイパス] technique: the host processors and
+  their software stacks are left out of the data path.
+  \index{RDMA|see{remote direct memory access (RDMA)}}%
+  \index{NIC|see{network interface card (NIC)}}%
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-rdma}
+  \caption{(a) Traditional networking: the data passes through both CPUs.
+    (b) RDMA: the RDMA engines move it memory to memory; the CPUs
+    (dashed) stay out of the path.  (c) GPUDirect RDMA: the NIC reads and
+    writes GPU memory directly, so a GPU buffer reaches a remote GPU
+    without a copy through host memory.}
+  \label{fig:l09-rdma}
+\end{figure}
+
+\begin{definition}[GPUDirect RDMA]
+  NVIDIA's technology
+  \term{GPUDirect RDMA}[GPUDirect RDMA] provides a direct data path
+  between GPU memory and a third-party PCIe device, such as a NIC or a
+  storage adapter, \enquote{using standard features of PCI Express}
+  \cite{nvidia2026gpudirectrdma}.  A GPU buffer can then
+  be sent through the network to a remote GPU, or to another device,
+  without being staged in host memory (\cref{fig:l09-rdma}c).
+\end{definition}
+
+\caution{GPUDirect RDMA needs the GPU and the third-party device to
+\enquote{share the same upstream PCI Express root complex}; it was
+introduced with Kepler-class GPUs and CUDA~5.0
+\cite{nvidia2026gpudirectrdma}.}%
+The two kinds of link work together: inside a node, NVLink and NVSwitch
+carry the GPU-to-GPU traffic; between nodes, GPUDirect RDMA moves it
+over the network.  PCIe alone cannot meet the demand of so many GPUs
+exchanging data.
+
+\begin{keypoint}
+  Scaling past one die leads to multi-chip modules, multi-GPU nodes and
+  clusters.  Within a package or node the memory is one NUMA space, so
+  block scheduling and page placement decide how many accesses are far;
+  NVLink and NVSwitch make far accesses cheaper.  Between nodes the
+  memory is distributed and RDMA, with GPUDirect RDMA for GPU memory,
+  moves the data without the CPUs.
+\end{keypoint}
+
+\section{Concurrency on GPUs}
+\label{sec:l09-concurrency}
+
+A large GPU is not always used well.\source{M9, concurrency on GPUs;
+CPG §3.2.8 Asynchronous Concurrent Execution, §3.2.9 Multi-Device
+System; \cite{nvidia2020ampere}; \cite{nvidia2026mps}.}  This section
+asks how several jobs can share one GPU, compares three mechanisms that
+let them, and shows how a program drives several streams and several
+GPUs.
+
+\subsection{Utilization and multi-tenancy}
+
+\begin{definition}[Utilization, datacenter, multi-tenancy]
+  The \term{utilization}[利用率] of a GPU is the fraction of its
+  resources (SMs, memory bandwidth, time) that does useful work.  A
+  \term{datacenter}[データセンタ] is a facility of many servers
+  shared by many users, and \term{multi-tenancy}[マルチテナンシ] is the
+  sharing of one machine, here one GPU, by the jobs of several
+  independent users (tenants).
+\end{definition}
+
+Not every job can use all of a large GPU: an inference service with
+small batches, a development session or a small training job may keep a
+fraction of the SMs busy.  On a dedicated GPU the rest is wasted, which
+matters most in datacenters, where GPUs are the expensive resource.
+Traditional datacenters serve many tenants with jobs of this size.  Some
+AI workloads behave differently: training a large language model takes
+whole GPUs, many of them, for a single tenant, and such a job advances
+only as fast as its slowest task, since every step waits for all of its
+GPUs.\margin{Ye et al.\ survey the scheduling of deep-learning jobs in
+GPU datacenters and note that \enquote{traditional approaches designed
+for big data or high performance computing workloads can not support DL
+workloads to fully utilize the GPU resources} \cite{ye2024dlsched}; Yu et
+al.\ survey multi-tenant inference \cite{yu2022multitenant}.}  Both
+patterns call for ways to place more than one stream of work on a GPU.
+
+\subsection{Three mechanisms}
+
+\Cref{fig:l09-concurrency} compares the three mechanisms by what they
+partition.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l09-concurrency}
+  \caption{GPU concurrency mechanisms.  (a) One kernel uses the SMs, the
+    L2 and DRAM.  (b) Streams of one client: their work mixes on every
+    SM and in the L2 and DRAM; nothing is partitioned.  (c) MPS: the
+    clients' blocks are spread over the SMs (drawn here with a per-client
+    SM share); the L2 and DRAM are shared.  (d)
+    MIG: SMs, L2 and DRAM are split physically between the clients.}
+  \label{fig:l09-concurrency}
+\end{figure}
+
+\begin{description}
+  \item[Streams.]  One client (one process) issues work to several CUDA
+    streams (Lesson~5).  Only independent streams run concurrently, and
+    their kernels share all resources: SMs, L2 and DRAM.
+  \item[MPS.]  Several clients, separate processes, run at the same time
+    on different SMs, while the L2 cache and DRAM bandwidth remain
+    shared.
+  \item[MIG.]  The GPU is divided physically: each client receives its
+    own SMs, L2 slices and DRAM bandwidth.
+\end{description}
+
+\subsection{Multi-Instance GPU}
+
+\begin{definition}[Multi-Instance GPU, GPU instance, QoS]
+  The technology called
+  \term{Multi-Instance GPU (MIG)}[マルチインスタンスGPU（MIG）] divides one
+  GPU into several isolated partitions, each a
+  \term{GPU instance}[GPUインスタンス] that behaves like a smaller GPU
+  with its own SMs, L2 cache slices, memory controllers and DRAM
+  \cite{nvidia2020ampere}.  MIG partitions memory, the L2 cache ports,
+  DRAM bandwidth and the on-chip crossbar ports, so that each instance
+  has a guaranteed
+  \term{quality of service (QoS)}[サービス品質（QoS）]: predictable
+  throughput and latency whatever the other instances do.
+  \index{MIG|see{Multi-Instance GPU (MIG)}}%
+  \index{QoS|see{quality of service (QoS)}}%
+\end{definition}
+
+\begin{marginfigure}
+  \centering
+  \input{figures/l09-mig}
+  \caption{Four applications on a GPU of seven MIG slices, with GPU
+    instances of 3, 2, 1 and 1 slices.  Memory simplified: the A100 has
+    eight memory slices, and a 3-slice instance gets four
+    \cite[§6.2]{nvidia2026mig}.}
+  \label{fig:l09-mig}
+\end{marginfigure}
+
+MIG thus makes one large GPU an efficient host for several jobs, with
+memory and core isolation for several users.  The A100 \enquote{can be
+securely partitioned into as many as seven separate GPU Instances}
+\cite{nvidia2020ampere}, which is what a cloud provider needs to rent
+parts of one GPU to different customers (\cref{fig:l09-mig}).\margin{An
+A100 GPU instance is built from \enquote{GPU slices} of one GPC with 14
+SMs and one group of ten L2 slices; the GPU has seven
+\cite{nvidia2020ampere}.  Profiles run from 1g.5gb to 7g.40gb on an
+A100 \SI{40}{\giga\byte} \cite[§6.2]{nvidia2026mig}.  The H100's second-generation MIG keeps seven
+instances and adds confidential computing \cite{nvidia2022hopper}.}  The
+price of isolation is rigidity: an instance has a fixed size, and work
+cannot spill into an idle neighbour.
+
+\subsection{Multi-Process Service}
+
+\begin{definition}[Time slicing, spatial partitioning, MPS]
+  Under \term{time slicing}[タイムスライシング] the GPU runs the work of
+  one process (one CUDA context) at a time and switches between
+  processes;\caution{Lecture vs document: MPS does not give each client
+  its own SMs.  A provisioning limit caps a client's share and reserves
+  nothing; \enquote{kernels launched from different MPS client contexts
+  may execute on the same SM}.  Only a non-uniform split (say 30\,\% and
+  70\,\%), or the static SM partitions of Ampere and later, confine the
+  clients to disjoint SMs \cite[§1.1.2.2.5, §1.1.2.2.11]{nvidia2026mps}.} under \term{spatial partitioning}[空間分割] the work of
+  several processes runs at the same time on disjoint parts of the GPU,
+  such as different SMs.  The
+  \term{Multi-Process Service (MPS)}[マルチプロセスサービス（MPS）] is
+  NVIDIA's runtime service that lets the CUDA work of several processes
+  run concurrently on one GPU, optionally with a per-client limit on the
+  SMs it may use.
+  \index{MPS|see{Multi-Process Service (MPS)}}%
+\end{definition}
+
+Kernels of different CUDA contexts cannot run concurrently without MPS:
+\enquote{The GPU may time slice to provide forward progress to each
+context} (CPG §3.2.8.2 Concurrent Kernel Execution).  With MPS, which
+supports spatial partitioning from the V100 on, the clients' kernels
+share the GPU at once, but the resources are not strictly partitioned:
+the L2 and the DRAM bandwidth are shared, so a client's performance
+depends on what the others do and can be unpredictable.\caution{Before
+Volta, MPS already let clients run concurrently, through a server that
+merged their work into one context; Volta added hardware support so that
+\enquote{MPS client processes have fully isolated GPU address spaces}
+and \enquote{limited execution resource provisioning}, the per-client
+SM share (environment variable
+\texttt{CUDA\_MPS\_\allowbreak ACTIVE\_\allowbreak THREAD\_\allowbreak PERCENTAGE}) \cite{nvidia2026mps}.}
+MPS also makes it easy to bring MPI programs to CUDA: the MPI ranks on
+one node are separate processes, and with MPS their kernels can fill one
+GPU together.  When QoS is not critical, MPS can achieve better
+utilization than MIG, because a client's share is not rounded to whole
+slices and idle SMs can be given to whoever has work.
+
+\begin{example}[Fitting three jobs]
+  \label{ex:l09-fit}
+  Three inference jobs need 30\,\%, 25\,\% and 10\,\% of a GPU's SMs.
+  Under MIG with seven equal slices, a slice is $1/7 \approx 14.3\,\%$,
+  so the jobs need 3, 2 and 1 slices (42.9\,\%, 28.6\,\% and 14.3\,\%):
+  six of the seven slices are taken although only 65\,\% of the SMs do
+  useful work, and a fourth job that needs 20\,\% no longer fits.  Under
+  MPS each job can be limited to its share
+  (\texttt{CUDA\_MPS\_\allowbreak ACTIVE\_\allowbreak THREAD\_\allowbreak PERCENTAGE}
+  of 30, 25 and 10, rounded down to a supported thread count).  Nothing
+  is reserved, so the remaining capacity stays available to further
+  clients, at the cost of sharing SMs as well as the L2 and the DRAM
+  bandwidth, and no job is guaranteed its performance
+  \cite[§1.1.2.2.5]{nvidia2026mps}.
+\end{example}
+
+\caution{MPS isolation is limited in a second way.  A fatal GPU fault of
+one Volta MPS client is reported to all clients that share the GPUs on
+which it occurred, \enquote{without indicating which client generated
+the error}, and those clients must exit \cite{nvidia2026mps}.  Under MIG
+a fault stays inside its instance \cite{nvidia2020ampere}.}
+
+\subsection{Stream-based programming}
+
+Inside one process, streams are the means of concurrency.
+
+\begin{definition}[Concurrent kernel execution]
+  The execution of several kernels of one CUDA context on the GPU at
+  the same time is called
+  \term{concurrent kernel execution}[カーネルの並行実行].  Kernels issued to different streams may run concurrently
+  when resources allow; kernels in the same stream run in order (CPG
+  §3.2.8.2 Concurrent Kernel Execution).
+\end{definition}
+
+\margin{Up to 128 kernels can be resident at once on V100, A100 and
+H100 (\enquote{maximum number of resident grids per device}, CPG
+Table~21 \cite{nvidia2024cudaguide}).}%
+Streams thus allow concurrent kernels, the overlap of communication and
+computation across streams (Lesson~5), and the submission of work by
+several CPU threads, each with its own streams.  The loop below splits a
+job into more chunks than there are streams and deals the chunks out to
+the streams in turn; each iteration issues one chunk's copy-in, kernel
+and copy-out before moving to the next chunk, a \emph{depth-first}
+launch order.
+
+\begin{lstlisting}[language=C++, numbers=none]
+// h_x, h_y pinned; d_x, d_y device buffers of n floats
+const int nStreams = 4, nChunks = 16;
+size_t chunk = n / nChunks;
+size_t bytes = chunk * sizeof(float);
+cudaStream_t st[nStreams];
+for (int k = 0; k < nStreams; ++k)
+  cudaStreamCreate(&st[k]);
+for (int i = 0; i < nChunks; ++i) {    // depth-first
+  cudaStream_t s = st[i % nStreams];
+  size_t off = i * chunk;
+  cudaMemcpyAsync(d_x + off, h_x + off, bytes,
+                  cudaMemcpyHostToDevice, s);
+  square<<<(chunk + 255) / 256, 256, 0, s>>>(
+      d_x + off, d_y + off, chunk);
+  cudaMemcpyAsync(h_y + off, d_y + off, bytes,
+                  cudaMemcpyDeviceToHost, s);
+}
+cudaDeviceSynchronize();               // all streams
+\end{lstlisting}
+
+Chunks 0, 4, 8 and 12 share stream~0 and therefore run one after the
+other, while the four streams overlap.\tip{An OpenMP program ports
+naturally to this style: a parallel loop whose iterations are
+independent becomes a loop that issues each iteration's work to its own
+stream, and each OpenMP thread can also drive a stream of its own.}
+The scheduling has a cost: for every operation the driver prepares the
+launch and the hardware must track the dependencies between operations
+of the same stream.  For short kernels this overhead can be a
+significant fraction of the run time.
+
+\begin{definition}[CUDA Graph]
+  A \term{CUDA Graph}[CUDAグラフ] is a set of operations (kernel
+  launches, copies and others) connected by dependencies, defined
+  separately from its execution: the graph is built once, instantiated
+  into an executable graph that is validated and set up in advance, and
+  then launched as often as needed with one call (CPG §3.2.8.7 CUDA
+  Graphs).
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+cudaGraph_t g;  cudaGraphExec_t ge;
+cudaStreamBeginCapture(s, cudaStreamCaptureModeGlobal);
+for (int k = 0; k < 20; ++k)          // 20 short kernels
+  step<<<blocks, 256, 0, s>>>(d_u, n);
+cudaStreamEndCapture(s, &g);          // record, not run
+cudaGraphInstantiate(&ge, g, 0);      // set up once
+for (int it = 0; it < 1000; ++it)
+  cudaGraphLaunch(ge, s);             // one call each
+cudaStreamSynchronize(s);
+\end{lstlisting}
+Stream capture turns existing stream code into a graph: between
+\texttt{cudaStream\allowbreak BeginCapture} and
+\texttt{cudaStream\allowbreak EndCapture} the
+work issued to the stream is recorded instead of executed.  Because the
+whole dependency chain is known before the first launch, the setup is
+paid once rather than for every kernel, and the runtime can optimise the
+workflow as a whole (CPG §3.2.8.7).\caution{Stream capture does not
+work on the legacy default stream (CPG §3.2.8.7.3 Creating a Graph
+Using Stream Capture); \texttt{s} must not be the legacy default
+stream: a created stream or \texttt{cudaStream\allowbreak PerThread}
+will do.}
+
+\subsection{Programming several GPUs}
+
+The host program drives several GPUs by switching the current device:
+the call \texttt{cudaSetDevice(d)} makes GPU~\texttt{d} current for the calling
+host thread: allocations and kernel launches go to the current device,
+and streams and events belong to the device that was current when they
+were created (CPG §3.2.9.2 Device Selection).  The program below divides
+an array among all GPUs, the data decomposition of Lesson~2, with a
+separate allocation, copy and kernel launch per GPU.\margin{With a pageable \texttt{h\_x}, each
+\texttt{cudaMemcpyAsync} first copies into a staging buffer on the CPU
+(Lesson~5), and the GPUs start one after the other; pinned host memory
+lets all copies overlap.}
+
+\begin{lstlisting}[language=C++, numbers=none]
+int nDev;
+cudaGetDeviceCount(&nDev);
+size_t part = n / nDev;               // n divisible
+size_t bytes = part * sizeof(float);
+float *d_x[16];                        // nDev <= 16
+for (int d = 0; d < nDev; ++d) {
+  cudaSetDevice(d);                    // select GPU d
+  cudaMalloc(&d_x[d], bytes);          // on GPU d
+  cudaMemcpyAsync(d_x[d], h_x + d * part, bytes,
+                  cudaMemcpyHostToDevice);
+  square<<<(part + 255) / 256, 256>>>(d_x[d], d_x[d],
+                                      part);
+}
+for (int d = 0; d < nDev; ++d) {       // wait for all
+  cudaSetDevice(d);
+  cudaDeviceSynchronize();
+}
+\end{lstlisting}
+
+\margin{A DGX H100 node holds eight H100 GPUs joined through four
+NVSwitches, and eight \SI{400}{\giga\bit\per\second} ConnectX-7 network
+adapters (HWP App.~A \cite{nvidia2022hopper}).}%
+Kernel launches and asynchronous copies return at once, so the first
+loop starts the work on every GPU before any of it has finished; the GPUs
+then run in parallel, each on its own part.\caution{\texttt{cudaDeviceSynchronize}
+waits only for the \emph{current} device.  One call after the launch
+loop waits for the last GPU alone; the host must select each device in
+turn and synchronise it, as above.}  Each device has its own default
+stream (CPG §3.2.9.3 Stream and Event Behavior), and streams can be
+combined with several GPUs: each GPU receives its own streams, created
+while it is current.
+
+\subsection{Comparison}
+
+\Cref{tab:l09-mechanisms} summarises the three mechanisms.\caution{Lecture
+vs document: 48 MPS clients is the Volta (CC~7.0) limit of earlier
+documentation, 16 before Volta \cite{nvidia2025mpscontrol}.  The current
+overview allows up to 60 per device and server with the default
+\texttt{CUDA\_\allowbreak DEVICE\_\allowbreak MAX\_\allowbreak CONNECTIONS}
+of 2, fewer if it is raised \cite[§1.1.2.2.6]{nvidia2026mps}.}  They are
+not exclusive: a process inside one MIG instance can still use streams,
+and MPS can run inside a MIG instance, with the client limit lowered in
+proportion to the instance size \cite[§7.2]{nvidia2026mig}.
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{Streams, MPS and MIG compared.}
+  \label{tab:l09-mechanisms}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{38mm}
+                  >{\raggedright\arraybackslash}p{20mm}
+                  >{\raggedright\arraybackslash}p{27mm}
+                  >{\raggedright\arraybackslash}p{18mm}@{}}
+    \toprule
+    & Streams & MPS & MIG \\
+    \midrule
+    Partition type & none & logical & physical \\
+    Maximum partitions & unlimited & 48 (see caution) & 7 \\
+    SM isolation & no & by percentage (a cap) & yes \\
+    Memory bandwidth isolation & no & no & yes \\
+    Performance QoS & no & partial & yes \\
+    Reconfiguration & dynamic & at process launch & when idle \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Streams cost nothing to set up and adapt at run time but give no
+isolation; MIG gives the strongest isolation but changes its partition
+only when the GPU is idle; MPS lies in between, with SM limits normally
+set when a client process starts (per-context limits can also be set
+later \cite[§1.1.2.2.5]{nvidia2026mps}).\tip{Use MIG when QoS matters,
+MPS when utilization matters, and streams for concurrency inside one
+process.}
+
+\begin{keypoint}[Lesson summary]
+  A monolithic GPU is limited by die size and yield, so GPUs scale as
+  multi-chip modules of GPU modules, multi-GPU nodes and clusters.
+  Within a package or node the memory is one NUMA space of near and far
+  memory: first-touch placement, locality-aware thread block scheduling
+  and page migration keep accesses near, and NVLink and NVSwitch make
+  far accesses cheaper than PCIe.  Across nodes the memory is
+  distributed and RDMA, with GPUDirect RDMA for GPU buffers, moves data
+  without the CPUs.  To raise the utilization of one GPU, streams run
+  independent work of one process without partitioning; MPS runs several
+  processes at once, with optional per-client SM limits, but shares the
+  L2 and DRAM; MIG splits SMs,
+  L2 and DRAM into up to seven isolated instances with QoS.  CUDA Graphs
+  remove the per-launch overhead of streams, and \texttt{cudaSetDevice}
+  selects the GPU for each allocation, copy and launch.
+\end{keypoint}
+
+\end{document}
