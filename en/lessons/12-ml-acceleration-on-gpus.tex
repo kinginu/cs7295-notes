@@ -60,8 +60,8 @@ Four properties of GPUs match the needs of ML training and inference.
     threads, does not change what the model learns (floating-point
     addition is not associative, so a reordering changes only the last
     bits: BPG §7.3.2 Floating Point Math Is Not Associative).  This fits the GPU's
-    weak memory consistency and its lack of precise exceptions
-    (Lesson~1), both of which would cost hardware to
+    weak memory consistency and its lack of precise exceptions,
+    both of which would cost hardware to
     provide.\margin{Lesson~1 contrasts the precise exceptions of a CPU
     with the GPU, which does not guarantee them.}
 \end{description}

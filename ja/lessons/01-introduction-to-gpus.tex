@@ -3,7 +3,7 @@
 
 \chapter{GPU入門}
 \lessoninfo{
-  video={モジュール 1，レッスン 1--5},
+  video={M1，レッスン 1--5（Instructor and Course Introduction；Modern Processor Paradigms；How to Write Parallel Programs；Introduction to GPU Architecture；History Trend of GPU Architectures）},
   sources={NVIDIA A100 \cite{nvidia2020ampere} および H100 \cite{nvidia2022hopper} ホワイトペーパー（世代ごとの数値）},
   textbook={K12 \cite{kim2012gpgpu} ch.~1；A18 \cite{aamodt2018gpu} ch.~1；CPG \cite{nvidia2024cudaguide} §1 Introduction，§2 Programming Model，§4 Hardware Implementation；PMPP \cite{hwu2022pmpp} ch.~1；PPP \cite{mattson2004patterns} ch.~2（任意）；BPG \cite{nvidia2026cudabestpractices} §4.1.3 Understanding Scaling},
   keywords={スループット，レイテンシ，仮想ISA，SIMD，SPMD，SIMT，マルチスレッディング，アムダールの法則，リダクション，フリンの分類，ストリーミング・マルチプロセッサ，ワープ，統合型シェーダ，テンソルコア},
@@ -377,7 +377,7 @@ SIMT Architecture は境界を次のように引く．SIMD はベクトル幅を
 ソフトウェアに露出するが，SIMT はしない．SIMT のスレッドは通常の
 スカラスレッドとして書かれる．Volta 以降はハードウェアもスレッド
 ごとにプログラムカウンタを保持する（Independent Thread Scheduling）
-\cite{nvidia2024cudaguide}．第6章で再び扱う．}
+\cite{nvidia2024cudaguide}．第5章で再び扱う．}
 
 \subsection{SIMT ハードウェア上の SPMD}
 

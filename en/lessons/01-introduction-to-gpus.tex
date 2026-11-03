@@ -3,7 +3,7 @@
 
 \chapter{Introduction of GPU}
 \lessoninfo{
-  video={Module 1, lessons 1--5},
+  video={M1, lessons 1--5 (Instructor and Course Introduction; Modern Processor Paradigms; How to Write Parallel Programs; Introduction to GPU Architecture; History Trend of GPU Architectures)},
   sources={NVIDIA A100 \cite{nvidia2020ampere} and H100 \cite{nvidia2022hopper} whitepapers (generation figures)},
   textbook={K12 \cite{kim2012gpgpu} ch.~1; A18 \cite{aamodt2018gpu} ch.~1; CPG \cite{nvidia2024cudaguide} §1 Introduction, §2 Programming Model, §4 Hardware Implementation; PMPP \cite{hwu2022pmpp} ch.~1; PPP \cite{mattson2004patterns} ch.~2 (optional); BPG \cite{nvidia2026cudabestpractices} §4.1.3 Understanding Scaling},
   keywords={throughput, latency, virtual ISA, SIMD, SPMD, SIMT, multithreading, Amdahl's law, reduction, Flynn's taxonomy, streaming multiprocessor, warp, unified shader, tensor core},
@@ -384,7 +384,7 @@ Lesson~4.\caution{CPG §4.1 SIMT Architecture draws the line as: SIMD
 exposes the vector width to software, SIMT does not; a SIMT thread is
 written as an ordinary scalar thread.  Since Volta the hardware also
 keeps a program counter per thread (Independent Thread Scheduling)
-\cite{nvidia2024cudaguide}; Lesson~6 returns to it.}
+\cite{nvidia2024cudaguide}; Lesson~5 returns to it.}
 
 \subsection{SPMD on SIMT hardware}
 
