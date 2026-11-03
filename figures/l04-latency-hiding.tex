@@ -10,10 +10,11 @@
 % Width: body (120 mm); the drawing is about 118 mm wide.
 \begin{tikzpicture}[x=2.9mm, y=2.9mm, font=\scriptsize\sffamily]
   % \row{x}{y}{fill}{label}{stages}: one instruction; "-" is a stall cell
+  \def\idle{-}%
   \newcommand{\row}[5]{%
     \node[anchor=east, inner sep=1pt] at (#1-0.3,#2-0.5) {#4};
     \foreach \s [count=\i from 0] in {#5} {
-      \ifx\s-
+      \ifx\s\idle
         \draw[fill=ln-rule!40, draw=ln-rule] (#1+\i,#2) rectangle ++(1,-1);
       \else
         \draw[fill=#3] (#1+\i,#2) rectangle ++(1,-1) node[midway] {\s};

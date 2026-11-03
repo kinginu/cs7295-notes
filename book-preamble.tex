@@ -18,3 +18,9 @@
 % Floating-point operations as a siunitx unit (Lessons 4, 8, 12):
 % \SI{1}{\tera\flop\per\second} prints 1 TFLOP/s.
 \DeclareSIUnit{\flop}{FLOP}
+
+% Units: \per prints as a slash (GB/s, TFLOP/s), not as a negative power.
+% Japanese edition: a range prints as "20--50 µs" instead of the English
+% word "to" (the same setting as the cs6290 and cs6200 books, there per call).
+\sisetup{per-mode=symbol}
+\iflangja{\sisetup{range-phrase={--}, range-units=single}}{}

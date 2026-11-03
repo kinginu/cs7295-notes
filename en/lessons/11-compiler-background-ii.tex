@@ -832,8 +832,8 @@ __global__ void k(const int *mem, int *out, int n) {
 \end{lstlisting}
 
 \Cref{fig:l11-divergence} draws the def-use edges.  The condition
-\texttt{q > 3} depends on \texttt{threadIdx.x} through \texttt{tid} and
-\texttt{q}: indirect dependence is still dependence.  The two loads
+\texttt{q > 3} depends, through \texttt{tid} and \texttt{q}, on
+\texttt{threadIdx.x}: indirect dependence is still dependence.  The two loads
 differ in their addresses.  A value loaded from memory is thread
 dependent if its address is, because different threads then read
 different words; \texttt{mem[base]} is read at one address by all

@@ -870,8 +870,11 @@ GPU に適用するとき，素朴な方法は GPU をもう1つのマルチス�
   アクセスできるワープの最大数である．それはレイテンシ，連続する要求の
   間の発行間隔（departure delay），帯域，アクティブなワープ数 $N$ で
   制限される．
-  $\mathrm{MWP} = \min(\mathrm{MWP}_{\text{without BW}},
-  \mathrm{MWP}_{\text{peak BW}}, N)$ であり，ここで
+  \[
+    \mathrm{MWP} = \min(\mathrm{MWP}_{\text{without BW}},
+    \mathrm{MWP}_{\text{peak BW}}, N)
+  \]
+  であり，ここで
   $\mathrm{MWP}_{\text{without BW}} =
   \textit{Mem\_L}/\textit{Departure\_delay}$，
   $\mathrm{MWP}_{\text{peak BW}}$ はピーク帯域を，1ワープが必要とする

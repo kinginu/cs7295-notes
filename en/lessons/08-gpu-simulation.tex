@@ -888,8 +888,11 @@ contention for other shared resources.
   time, during one warp's memory waiting period; it is limited by the
   latency, the departure delay between consecutive requests, the
   bandwidth and the number of active warps $N$:
-  $\mathrm{MWP} = \min(\mathrm{MWP}_{\text{without BW}},
-  \mathrm{MWP}_{\text{peak BW}}, N)$, where
+  \[
+    \mathrm{MWP} = \min(\mathrm{MWP}_{\text{without BW}},
+    \mathrm{MWP}_{\text{peak BW}}, N),
+  \]
+  where
   $\mathrm{MWP}_{\text{without BW}} =
   \textit{Mem\_L}/\textit{Departure\_delay}$ and
   $\mathrm{MWP}_{\text{peak BW}}$ is the peak bandwidth divided by the
