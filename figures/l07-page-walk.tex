@@ -1,0 +1,42 @@
+% Four-level page table walk (Lesson 7), x86-64 layout: a 48-bit
+% virtual address holds four 9-bit indices and a 12-bit page offset.
+% CR3 points to the level-4 table; each index selects an entry that
+% holds the base of the next table; the level-1 entry is the PTE whose
+% PFN, joined with the offset, forms the physical address.
+% Redraws the outline figure m7l1_fourleveltlb (bit widths re-derived
+% for x86-64, slide erratum of outline Appendix C).
+% Usage: \input{figures/l07-page-walk}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=0.95mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % virtual address fields
+  \node[anchor=east] at (-1,47) {VA};
+  \foreach \i/\lab/\bits in {0/L4/47--39, 1/L3/38--30, 2/L2/29--21, 3/L1/20--12} {
+    \draw[fill=ln-accent!20] (\i*22,44) rectangle ++(22,6)
+      node[midway] {\lab\ \iflangja{インデックス}{index}};
+    \node[anchor=south, text=ln-muted] at (\i*22+11,50) {\bits};
+  }
+  \draw[fill=ln-box] (88,44) rectangle (112,50)
+    node[midway] {\iflangja{オフセット}{offset}};
+  \node[anchor=south, text=ln-muted] at (100,50) {11--0};
+  % tables: three rows each, the middle one selected
+  \foreach \i/\lab/\entry in {0/L4/{L3 base}, 1/L3/{L2 base}, 2/L2/{L1 base}, 3/L1/{PTE: PFN}} {
+    \draw[fill=white] (\i*22+3,32) rectangle ++(16,-4) node[midway] {$\cdots$};
+    \draw[fill=ln-tip!25] (\i*22+3,28) rectangle ++(16,-5) node[midway] {\entry};
+    \draw[fill=white] (\i*22+3,23) rectangle ++(16,-4) node[midway] {$\cdots$};
+    \node[text=ln-muted] at (\i*22+11,16.5) {\lab\ \iflangja{テーブル}{table}};
+    \draw[->] (\i*22+11,44) -- (\i*22+11,32);
+  }
+  % next-table pointers
+  \foreach \i in {0,1,2} {
+    \draw[->, ln-accent, thick] (\i*22+19,25.5) -- ++(2,0) |- (\i*22+25,31);
+  }
+  % CR3
+  \draw[->, ln-accent, thick] (-2,30) node[left, text=black] {CR3} -- (3,30);
+  % physical address
+  \node[anchor=east] at (61,6) {PA};
+  \draw[fill=ln-tip!25] (62,3) rectangle (88,9) node[midway] {PFN};
+  \draw[fill=ln-box] (88,3) rectangle (112,9) node[midway] {\iflangja{オフセット}{offset}};
+  \draw[->, ln-accent, thick] (85,25.5) -- (87,25.5) -- (87,9);
+  \draw[->] (100,44) -- (100,9);
+\end{tikzpicture}

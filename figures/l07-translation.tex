@@ -1,0 +1,26 @@
+% Address translation (Lesson 7): a virtual address splits into a
+% virtual page number and a page offset; translation replaces the VPN
+% by a physical frame number and keeps the offset unchanged.  Field
+% widths are those of 4 KiB pages with a 48-bit virtual address.
+% Redraws the outline figure m7l1_translation.
+% Usage: \input{figures/l07-translation}  (in a marginfigure)
+% Width: margin (50 mm); the drawing is about 46 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % virtual address
+  \node[anchor=east] at (-0.5,23) {VA};
+  \draw[fill=ln-accent!20] (0,20) rectangle (28,26) node[midway] {VPN};
+  \draw[fill=ln-box] (28,20) rectangle (44,26) node[midway] {\iflangja{オフセット}{offset}};
+  \node[anchor=south, text=ln-muted] at (0.8,26) {47};
+  \node[anchor=south, text=ln-muted] at (28,26) {12\,11};
+  \node[anchor=south, text=ln-muted] at (43.2,26) {0};
+  % translation
+  \draw[->] (14,20) -- (14,13) node[midway, right, align=left, text=ln-muted]
+    {TLB /\\\iflangja{ページテーブル}{page table}};
+  \draw[->] (36,20) -- (36,13) node[midway, right, text=ln-muted]
+    {\iflangja{不変}{copied}};
+  % physical address
+  \node[anchor=east] at (-0.5,10) {PA};
+  \draw[fill=ln-tip!25] (0,7) rectangle (28,13) node[midway] {PFN};
+  \draw[fill=ln-box] (28,7) rectangle (44,13) node[midway] {\iflangja{オフセット}{offset}};
+\end{tikzpicture}

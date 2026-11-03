@@ -1,0 +1,42 @@
+% Address translation in the GPU pipeline (Lesson 7).  Top: the
+% pipeline stages of Lesson 4.  Bottom: the memory stage expanded; the
+% coalescer merges the warp's requests, the L1 data cache is accessed
+% with virtual addresses while the TLB translates, a TLB miss goes to
+% the page table walker (or a software miss handler), and the L2 cache
+% is accessed with physical addresses.
+% Redraws the outline figure m7l1_gpu_vm.
+% Usage: \input{figures/l07-gpu-mmu}
+% Width: body (120 mm); the drawing is about 114 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    st/.style={draw, fill=ln-box, minimum width=15mm, minimum height=8mm,
+               align=center, inner sep=1pt},
+    un/.style={draw, minimum width=24mm, minimum height=8mm,
+               align=center, inner sep=1pt}]
+  % pipeline
+  \foreach \lab [count=\i from 0] in
+      {\iflangja{フェッチ}{fetch}, \iflangja{デコード}{decode}, RF,
+       \iflangja{スケジュール}{schedule}, \iflangja{実行\\アドレス生成}{execute\\addr.\ gen.},
+       \iflangja{メモリ}{memory}, \iflangja{ライトバック}{write-back}} {
+    \node[st] (s\i) at (\i*16.5+7.5,44) {\lab};
+  }
+  \node[st, fill=ln-accent!25] at (s5) {\iflangja{メモリ}{memory}};
+  \foreach \i [evaluate=\i as \j using int(\i+1)] in {0,...,5} {
+    \draw[->] (s\i) -- (s\j);
+  }
+  % memory stage expanded
+  \draw[dashed, ln-muted] (0,36) rectangle (114,0);
+  \draw[dashed, ln-muted] (s5.south west) -- (0,36);
+  \draw[dashed, ln-muted] (s5.south east) -- (114,36);
+  \node[un, fill=ln-accent!20] (co) at (14,18) {\iflangja{アドレス\\コアレッサ}{address\\coalescer}};
+  \node[un, fill=ln-tip!20] (l1) at (48,27) {\iflangja{L1 D キャッシュ\\（仮想アドレス）}{L1 D-cache\\(virtual address)}};
+  \node[un, fill=ln-source!20] (tlb) at (48,9) {L1 TLB};
+  \node[un, fill=ln-caution!15] (ptw) at (95,9) {\iflangja{PTW または\\TLB ミスハンドラ}{PTW or\\TLB miss handler}};
+  \node[un, fill=ln-tip!20] (l2) at (95,27) {\iflangja{L2 キャッシュ\\（物理アドレス）}{L2 cache\\(physical address)}};
+  \draw[->] (co.east) -- ++(4,0) |- (l1.west);
+  \draw[->] (co.east) -- ++(4,0) |- (tlb.west);
+  \draw[->] (l1) -- node[above, text=ln-muted] {\iflangja{ミス}{miss}} (l2);
+  \draw[->] (tlb) -- node[above, text=ln-muted] {\iflangja{ミス}{miss}} (ptw);
+  \draw[->] (tlb.north east) -- node[pos=0.45, above left=-1pt, text=ln-muted] {PA} (l2.south west);
+  \draw[->] (ptw) -- node[right, text=ln-muted] {\iflangja{メモリ上の PTE}{PTEs in memory}} (l2);
+\end{tikzpicture}

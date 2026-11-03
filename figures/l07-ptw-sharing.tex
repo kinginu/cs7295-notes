@@ -1,0 +1,41 @@
+% Private versus shared page table walkers (Lesson 7).  (a) Every SM
+% has an L1 TLB and its own PTW; an L2 TLB is shared.  (b) SMs keep
+% only an L1 TLB; one high-bandwidth PTW (with a page walk cache) sits
+% beside the shared L2 TLB: the lecture's organisation.  The design of
+% Power et al. (2014) has the shared PTW and PWC but no L2 TLB.
+% Redraws the outline figures m7l1_challenges and m7l1_solutions.
+% Usage: \input{figures/l07-ptw-sharing}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    sm/.style={draw, fill=ln-box, minimum width=16mm, minimum height=12mm,
+               align=center, inner sep=1pt},
+    bx/.style={draw, minimum height=6mm, align=center, inner sep=1pt}]
+  \foreach \ox/\title/\priv in {0/{\iflangja{(a) SM ごとの PTW}{(a) private PTW}}/1,
+                                62/{\iflangja{(b) 共有 PTW}{(b) shared PTW}}/0} {
+    \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (\ox,38) {\title};
+    \foreach \k in {0,1,2} {
+      \node[sm] (sm\ox\k) at (\ox+9+\k*19,27) {};
+      \node[anchor=north, inner sep=1pt] at (sm\ox\k.north) {SM\,\k};
+      \ifnum\priv=1
+        \node[bx, fill=ln-source!20, minimum width=7mm] at (\ox+5.2+\k*19,24.5) {\iflangja{TLB}{TLB}};
+        \node[bx, fill=ln-caution!15, minimum width=7mm] at (\ox+12.8+\k*19,24.5) {PTW};
+      \else
+        \node[bx, fill=ln-source!20, minimum width=12mm] at (\ox+9+\k*19,24.5) {L1 TLB};
+      \fi
+      \draw[->] (sm\ox\k.south) -- (\ox+9+\k*19,15);
+    }
+    \node[bx, fill=ln-source!20, minimum width=54mm] (l2\ox) at (\ox+28,12) {\iflangja{共有 L2 TLB}{shared L2 TLB}};
+    \ifnum\priv=1
+      \node[bx, fill=white, minimum width=54mm] (mem\ox) at (\ox+28,0) {\iflangja{L2 キャッシュ／メモリ（ページテーブル）}{L2 cache / memory (page tables)}};
+      \draw[->] (l2\ox.south) -- (l2\ox.south |- mem\ox.north);
+    \else
+      \node[bx, fill=white, minimum width=30mm, minimum height=8mm] (mem\ox) at (\ox+15,-1)
+        {\iflangja{L2 キャッシュ／メモリ\\（ページテーブル）}{L2 cache / memory\\(page tables)}};
+      \node[bx, fill=ln-caution!15, minimum width=17mm, minimum height=8mm] (pw) at (\ox+46.5,-1)
+        {\iflangja{共有 PTW\\＋PWC}{shared PTW\\+ PWC}};
+      \draw[->] (pw.north |- l2\ox.south) -- node[right, text=ln-muted] {\iflangja{ミス}{miss}} (pw.north);
+      \draw[<->] (pw.west) -- (mem\ox.east);
+    \fi
+  }
+\end{tikzpicture}

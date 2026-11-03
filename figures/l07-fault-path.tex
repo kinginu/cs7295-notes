@@ -1,0 +1,47 @@
+% Far-fault handling with on-demand paging on a discrete GPU
+% (Lesson 7).  (1) A TLB miss goes to the GMMU, whose walk finds no
+% valid PTE: a far fault, recorded in the far-fault MSHRs.  (2) The
+% fault is sent over PCIe to the host.  (3) The GPU driver and the OS
+% allocate a page and migrate the data.  (4) The new mapping returns,
+% the PTE is validated and the access is replayed.
+% Redraws the outline figures m7l2_page_fault_handling and
+% m7l2_challenge_ondemand.
+% Usage: \input{figures/l07-fault-path}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bx/.style={draw, minimum height=6mm, align=center, inner sep=1pt},
+    stp/.style={circle, draw, fill=white, inner sep=0.6pt, font=\scriptsize\sffamily\bfseries}]
+  % GPU
+  \draw[fill=ln-box] (0,0) rectangle (56,40);
+  \node[anchor=north west, font=\scriptsize\sffamily\bfseries] at (0.5,39.5) {GPU};
+  \foreach \k in {0,1,2} {
+    \node[bx, fill=ln-accent!20, minimum width=14mm] at (8+\k*17,31) {SM\,\k\ +\,TLB};
+  }
+  \node[bx, fill=ln-caution!15, minimum width=50mm, minimum height=13mm] (gmmu) at (28,17)
+    {};
+  \node[anchor=north, inner sep=1pt] at (gmmu.north) {GMMU};
+  \node[bx, fill=white, minimum width=14mm] at (11,15) {L2 TLB};
+  \node[bx, fill=white, minimum width=14mm] at (28,15) {\iflangja{ウォーク}{walk}};
+  \node[bx, fill=white, minimum width=14mm] at (45,15) {\iflangja{フォールト\\MSHR}{fault\\MSHRs}};
+  \node[bx, fill=ln-tip!25, minimum width=50mm] (dmem) at (28,4.5) {\iflangja{デバイスメモリ（ページテーブル）}{device memory (page table)}};
+  \foreach \k in {0,1,2} { \draw[->] (8+\k*17,28) -- (8+\k*17,23.5); }
+  % PCIe
+  \draw[fill=ln-muted!15] (60,14) rectangle (72,26);
+  \node[rotate=90] at (66,20) {PCIe};
+  % CPU
+  \draw[fill=ln-box] (76,0) rectangle (116,40);
+  \node[anchor=north west, font=\scriptsize\sffamily\bfseries] at (76.5,39.5) {CPU};
+  \node[bx, fill=ln-accent!20, minimum width=34mm] (drv) at (96,26) {\iflangja{OS ＋ GPU ドライバ／\\ランタイム}{OS + GPU driver\\and runtime}};
+  \node[bx, fill=ln-tip!25, minimum width=34mm] (hmem) at (96,7) {\iflangja{ホストメモリ}{host memory}};
+  \draw[<->] (drv) -- (hmem);
+  % fault and reply
+  \draw[->, thick, ln-caution] (53,24) -- (80,29);
+  \node[stp] at (49,25) {1};
+  \node[stp] at (66,30) {2};
+  \node[anchor=south, text=ln-caution, align=center] at (66,31.8) {\iflangja{ページフォールト}{page fault}};
+  \node[stp] at (106,17) {3};
+  \draw[->, thick, ln-tip] (80,22) -- (53,11);
+  \node[stp] at (66,10) {4};
+  \node[anchor=north, text=ln-tip, align=center] at (66,8.5) {\iflangja{新しいマッピング\\とデータ}{new mapping\\and data}};
+\end{tikzpicture}

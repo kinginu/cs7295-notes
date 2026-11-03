@@ -1,0 +1,51 @@
+% Tree-based neighbourhood prefetching (Lesson 7): a 2 MiB region of a
+% managed allocation as a full binary tree whose 32 leaves are 64 KiB
+% basic blocks (16 pages of 4 KiB).  Shaded leaves show the end state
+% of the worked example in the text: far faults in leaves 0, 1, 2 and
+% 4 (red) and the leaves prefetched by the >50 % rule (green).
+% Redraws the outline figure m7l2_treebase, with the intermediate
+% levels of Ganguly et al. (2019) drawn in.
+% Usage: \input{figures/l07-tbnp-tree}
+% Width: body (120 mm); the drawing is about 117 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  \def\w{3.3}
+  % level labels
+  \foreach \h/\lab in {0/64\,KiB, 1/128\,KiB, 2/256\,KiB, 3/512\,KiB, 4/1\,MiB, 5/2\,MiB} {
+    \node[anchor=east, text=ln-muted] at (11,\h*6+2) {\lab};
+  }
+  % internal nodes and edges
+  \foreach \h in {1,...,5} {
+    \pgfmathtruncatemacro{\n}{2^(5-\h)-1}
+    \pgfmathsetmacro{\span}{2^\h*\w}
+    \foreach \j in {0,...,\n} {
+      \pgfmathsetmacro{\x}{12+\j*\span+\span/2}
+      \pgfmathsetmacro{\xl}{12+\j*\span+\span/4}
+      \pgfmathsetmacro{\xr}{12+\j*\span+3*\span/4}
+      \ifnum\h=1
+        \draw[ln-rule] (\x,\h*6+2) -- (\xl,4.5);
+        \draw[ln-rule] (\x,\h*6+2) -- (\xr,4.5);
+      \else
+        \draw[ln-rule] (\x,\h*6+2) -- (\xl,\h*6-4);
+        \draw[ln-rule] (\x,\h*6+2) -- (\xr,\h*6-4);
+      \fi
+      \fill[ln-accent] (\x,\h*6+2) circle (0.7);
+    }
+  }
+  % leaves
+  \foreach \i in {0,...,31} {
+    \def\col{white}
+    \ifnum\i<3 \def\col{ln-caution!35}\fi
+    \ifnum\i=4 \def\col{ln-caution!35}\fi
+    \ifnum\i=3 \def\col{ln-tip!40}\fi
+    \ifnum\i>4 \ifnum\i<8 \def\col{ln-tip!40}\fi\fi
+    \draw[fill=\col] (12+\i*\w,-0.5) rectangle ++(\w,5);
+  }
+  \foreach \i in {0,4,8,12,16,20,24,28} {
+    \node[anchor=north, text=ln-muted] at (12+\i*\w+\w/2,-0.6) {\i};
+  }
+  % legend
+  \draw[fill=ln-caution!35] (80,30) rectangle ++(3,3);
+  \node[anchor=west] at (83.5,31.5) {\iflangja{ファーフォールト}{far fault}};
+  \draw[fill=ln-tip!40] (98,30) rectangle ++(3,3);
+  \node[anchor=west] at (101.5,31.5) {\iflangja{プリフェッチ}{prefetched}};
+\end{tikzpicture}

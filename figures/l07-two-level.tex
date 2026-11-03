@@ -1,0 +1,23 @@
+% Two-level warp scheduling (Lesson 7): the scheduler searches only the
+% small active set; a warp that meets a long-latency operation moves to
+% the pending set, and a pending warp whose operands are ready refills
+% the active set.
+% Redraws the outline figure m7l3_two_lvl (right half).
+% Usage: \input{figures/l07-two-level}  (in a marginfigure)
+% Width: margin (50 mm); the drawing is about 46 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    wp/.style={draw, minimum width=8mm, minimum height=4.5mm, inner sep=1pt}]
+  \node[anchor=south, text=ln-muted] at (8,38) {\iflangja{待機集合}{pending}};
+  \foreach \w [count=\k from 0] in {4,5,6,7,8} {
+    \node[wp, fill=ln-box] at (8,35-\k*5.5) {W\w};
+  }
+  \node[anchor=south, text=ln-muted] at (34,38) {\iflangja{アクティブ集合}{active}};
+  \foreach \w [count=\k from 0] in {1,2,3} {
+    \node[wp, fill=ln-accent!20] at (34,35-\k*5.5) {W\w};
+  }
+  \draw[->, ln-caution] (29.5,30) to[bend right=20] node[above, text=ln-caution, align=center] {\iflangja{長レイテンシ}{long}\\[-2pt]\iflangja{}{latency}} (12.5,30);
+  \draw[->, ln-tip] (12.5,19) to[bend right=20] node[below, text=ln-tip] {\iflangja{準備完了}{ready}} (29.5,19);
+  \node[draw, fill=ln-tip!25, minimum width=16mm, minimum height=5mm] (s) at (34,6) {\iflangja{スケジューラ}{scheduler}};
+  \draw[->] (34,21.7) -- (s);
+\end{tikzpicture}

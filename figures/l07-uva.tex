@@ -1,0 +1,37 @@
+% Separate memory spaces versus a unified virtual address space
+% (Lesson 7).  (a) The CPU writes and reads a buffer in CPU memory, the
+% GPU one in GPU memory, and explicit copies move data between them.
+% (b) One logical buffer in a unified space is read and written by
+% both processors; no copy appears in the program.
+% Redraws the outline figure m7l2_uva.
+% Usage: \input{figures/l07-uva}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    pr/.style={draw, fill=ln-accent!20, minimum width=12mm, minimum height=6mm},
+    buf/.style={draw, fill=ln-tip!25, minimum width=14mm, minimum height=6mm}]
+  % (a) separate
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (0,33)
+    {\iflangja{(a) 分離したメモリ空間}{(a) separate memory spaces}};
+  \node[pr] (c1) at (9,24) {CPU};
+  \node[pr] (g1) at (45,24) {GPU};
+  \draw[fill=ln-box] (0,15) rectangle (20,3);
+  \node[anchor=north, text=ln-muted] at (10,15) {\iflangja{CPU メモリ}{CPU memory}};
+  \node[buf] (b1) at (10,7) {\iflangja{バッファ}{buffer}};
+  \draw[fill=ln-box] (34,15) rectangle (54,3);
+  \node[anchor=north, text=ln-muted] at (44,15) {\iflangja{GPU メモリ}{GPU memory}};
+  \node[buf] (b2) at (44,7) {\iflangja{バッファ}{buffer}};
+  \draw[<->] (c1) -- (c1 |- 0,15);
+  \draw[<->] (g1) -- (g1 |- 0,15);
+  \draw[->, thick, ln-caution] (b1.east) -- node[above, text=ln-caution] {\iflangja{コピー}{copy}} (b2.west);
+  % (b) unified
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (62,33)
+    {\iflangja{(b) 統合仮想アドレス空間}{(b) unified virtual address space}};
+  \node[pr] (c2) at (71,24) {CPU};
+  \node[pr] (g2) at (103,24) {GPU};
+  \draw[fill=ln-box] (62,15) rectangle (112,3);
+  \node[anchor=north, text=ln-muted] at (87,2.5) {\iflangja{統合メモリ空間}{unified memory space}};
+  \node[buf] (b3) at (87,7) {\iflangja{バッファ}{buffer}};
+  \draw[<->] (c2) -- (b3);
+  \draw[<->] (g2) -- (b3);
+\end{tikzpicture}

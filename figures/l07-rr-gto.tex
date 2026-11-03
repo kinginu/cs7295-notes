@@ -1,0 +1,40 @@
+% Round-robin versus greedy-then-oldest issue (Lesson 7), the worked
+% example of the text: four warps each run c1 c2 m3 c4 c5 c6, where m3
+% is a load that misses (latency 10 cycles) and c4 needs its value.
+% One instruction issues per cycle; the number in a cell is the warp,
+% M marks the load, grey cells are stall cycles, and the bars below a
+% row show each load's latency.
+% Redraws the outline figure m7l3_rr_gto with the text's own program.
+% Usage: \input{figures/l07-rr-gto}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=3.5mm, y=1mm, font=\scriptsize\sffamily]
+  \colorlet{l07d1}{ln-accent}\colorlet{l07d2}{ln-caution}%
+  \colorlet{l07d3}{ln-tip}\colorlet{l07d4}{ln-source}%
+  % \lsevenissue{y}{list of w/m entries; 0 = stall}
+  \newcommand{\lsevenissue}[2]{%
+    \foreach \w/\m [count=\c from 0] in {#2} {
+      \ifnum\w=0
+        \draw[fill=ln-rule!40, draw=ln-rule] (\c+3,#1) rectangle ++(1,5);
+      \else
+        \draw[fill=l07d\w!22] (\c+3,#1) rectangle ++(1,5)
+          node[midway] {\ifnum\m=1 M\else\w\fi};
+      \fi
+    }}
+  % \lsevenlat{y}{issue cycle}{warp}
+  \newcommand{\lsevenlat}[3]{%
+    \draw[|-|, thick, draw=l07d#3] (#2+3.5,#1) -- (#2+13.5,#1);}
+  % round-robin
+  \iflangja{\node[anchor=east, align=right, inner sep=0.3pt] at (2.8,30.5) {ラウンド\\ロビン};}%
+    {\node[anchor=east, align=right] at (2.8,30.5) {round-\\robin};}
+  \lsevenissue{28}{1/0,2/0,3/0,4/0,1/0,2/0,3/0,4/0,1/1,2/1,3/1,4/1,0/0,0/0,0/0,0/0,0/0,0/0,1/0,2/0,3/0,4/0,1/0,2/0,3/0,4/0,1/0,2/0,3/0,4/0}
+  \lsevenlat{26}{8}{1}\lsevenlat{24.5}{9}{2}\lsevenlat{23}{10}{3}\lsevenlat{21.5}{11}{4}
+  % GTO
+  \node[anchor=east, align=right] at (2.8,11.5) {GTO};
+  \lsevenissue{9}{1/0,1/0,1/1,2/0,2/0,2/1,3/0,3/0,3/1,4/0,4/0,4/1,1/0,1/0,1/0,2/0,2/0,2/0,3/0,3/0,3/0,4/0,4/0,4/0}
+  \lsevenlat{7}{2}{1}\lsevenlat{5.5}{5}{2}\lsevenlat{4}{8}{3}\lsevenlat{2.5}{11}{4}
+  % cycle axis
+  \foreach \c in {0,5,10,15,20,25,30} {
+    \draw[ln-muted] (\c+3,0) -- ++(0,-1) node[below, inner sep=1pt] {\c};
+  }
+  \draw[->, ln-muted] (3,0) -- (34,0) node[above left, inner sep=1pt] {\iflangja{サイクル}{cycle}};
+\end{tikzpicture}

@@ -1,0 +1,18 @@
+% Segment mapping (Lesson 7): three programs, each with the virtual
+% space 0x0000--0xFFFF, occupy three contiguous 64 KiB segments of
+% physical memory; translation adds the segment base.
+% Redraws the outline figure m7l1_solutions (left half).
+% Usage: \input{figures/l07-segments}  (in a marginfigure)
+% Width: margin (50 mm); the drawing is about 48 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  \node[anchor=south, text=ln-muted] at (8,30) {\iflangja{物理アドレス}{physical}};
+  \foreach \k/\col/\lo/\hi/\prog in {0/ln-caution!20/000000/00FFFF/3,
+                                     1/ln-accent!20/010000/01FFFF/2,
+                                     2/ln-tip!25/020000/02FFFF/1} {
+    \draw[fill=\col] (0,30-\k*10) rectangle ++(16,-10);
+    \node[anchor=north west, inner sep=1pt, font=\scriptsize\ttfamily] at (0.3,30-\k*10) {\lo};
+    \node[anchor=south west, inner sep=1pt, font=\scriptsize\ttfamily] at (0.3,20-\k*10) {\hi};
+    \node[anchor=west, align=left] at (18,25-\k*10)
+      {\iflangja{プログラム}{program}~\prog\\[-1pt]VA {\ttfamily 0000}--{\ttfamily FFFF}};
+  }
+\end{tikzpicture}

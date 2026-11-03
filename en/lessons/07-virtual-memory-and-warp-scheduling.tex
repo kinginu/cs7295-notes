@@ -1,0 +1,980 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPU Architecture Optimizations - II}
+\lessoninfo{
+  video={M7, lessons 1--3 (GPU Virtual Memory; GPU Virtual Memory - UVA; GPU Warp Scheduling)},
+  sources={Power et al.\ \cite{power2014x86} (GPU MMU); Ausavarungnirun et al.\ \cite{ausavarungnirun2017mosaic} (multiple page sizes); Li et al.\ \cite{li2021tlb} (multi-GPU TLBs); Ganguly et al.\ \cite{ganguly2019interplay} (prefetching and eviction in unified memory); Kim et al.\ \cite{kim2020batch} (batched fault handling); Rogers et al.\ \cite{rogers2012ccws} (cache-conscious wavefront scheduling); Narasiman et al.\ \cite{narasiman2011twolevel} and Gebhart et al.\ \cite{gebhart2011energy} (two-level scheduling); Jog et al.\ \cite{jog2013orchestrated} (prefetch-aware scheduling), \cite{jog2013owl} (OWL)},
+  textbook={A18 \cite{aamodt2018gpu} ch.~3, ch.~4; K12 \cite{kim2012gpgpu} §1.4.1 GPU Pipeline; CPG \cite{nvidia2024cudaguide} §4.2 Hardware Multithreading, §19 Unified Memory Programming; BPG \cite{nvidia2026cudabestpractices} §10.1.4 Unified Virtual Addressing},
+  keywords={virtual memory, address translation, TLB, multi-level page table, page table walker, large page, segment mapping, copy-then-execute, shared virtual memory, on-demand paging, far fault, tree-based neighborhood prefetching, oversubscription, warp scheduler, round-robin, greedy-then-oldest, two-level scheduling, working set, cache-conscious wavefront scheduling},
+}
+
+Lesson~6 changed the inside of the SM: how a warp survives a divergent
+branch and how its registers are stored.  This lesson continues with two
+further parts of the SM's machinery.  The first two sections concern
+memory addresses.  A GPU that shares data structures with the CPU needs
+virtual memory, and translating the addresses of a whole warp at once
+strains the translation hardware in a way a CPU core never does; when
+CPU and GPU share one address space, pages also have to be allocated
+and moved on demand, across PCIe, while the kernel runs.  The third
+section returns to the scheduler stage of the pipeline of Lesson~4 and
+asks which warp should issue when several are ready, a choice that
+decides how well memory latency is hidden and how much of the L1 cache
+each warp can keep.  Like Lesson~6, the lesson is organised around
+research papers; each section names the ones it draws on.
+
+\section{GPU virtual memory}
+\label{sec:l07-vm}
+
+Virtual memory has two sides: the translation of every address the
+program issues, and the allocation of the physical pages behind
+them.\source{M7, GPU virtual memory; A18 ch.~4; \cite{power2014x86};
+CPG §19.2.2.1 Memory Paging and Page Sizes.}  On a CPU the operating
+system allocates pages.  On a GPU the allocation was originally done by
+the CPU together with the GPU driver, through \texttt{cudaMalloc},
+\texttt{cudaMallocManaged} and \texttt{cudaMemcpy}; \cref{sec:l07-uva}
+returns to it.  This section reviews address translation, shows what
+is different when a warp rather than a thread issues the addresses, and
+presents three ways to make translation cheaper.
+
+\subsection{Address translation}
+
+\begin{definition}[Virtual memory]
+  \label{def:l07-vm}
+  With \term{virtual memory}[仮想メモリ] a program issues
+  \term{virtual address}[仮想アドレス]es in a private address space,
+  and the hardware maps each one, at every access, to a
+  \term{physical address}[物理アドレス] in the memory.  The mapping is
+  called \term{address translation}[アドレス変換].  It is kept at the
+  granularity of a \term{page}[ページ], a fixed-size, aligned block of
+  the address space, typically \SI{4}{\kibi\byte} or
+  \SI{2}{\mebi\byte}.
+\end{definition}
+
+A virtual address splits into two fields (\cref{fig:l07-translation}).
+The upper bits are the
+\term{virtual page number (VPN)}[仮想ページ番号], the lower bits the
+\term{page offset}[ページオフセット], the position inside the page.
+Translation replaces the VPN by a
+\term{physical frame number (PFN)}[物理フレーム番号], also called the
+physical page number (PPN), and keeps the offset unchanged; a page of
+$2^k$ bytes has a $k$-bit offset.\index{PFN|see{physical frame number (PFN)}}\index{VPN|see{virtual page number (VPN)}}\index{PPN|see{physical frame number (PFN)}}
+
+\begin{marginfigure}
+  \input{figures/l07-translation}
+  \caption{Translation keeps the page offset and replaces the VPN by a
+    PFN (bit positions for \SI{4}{\kibi\byte} pages and a 48-bit
+    virtual address).}
+  \label{fig:l07-translation}
+\end{marginfigure}
+
+\begin{definition}[Page table, TLB and page fault]
+  \label{def:l07-tlb}
+  The \term{page table}[ページテーブル] is the data structure, kept in
+  memory, that holds the mapping; each
+  \term{page table entry (PTE)}[ページテーブルエントリ] maps one VPN to
+  a PFN and carries metadata such as valid and permission bits.  A
+  \term{TLB (translation lookaside buffer)}[TLB] is a small cache of
+  recently used translations.  A \term{TLB miss}[TLBミス] occurs when
+  the TLB does not hold the translation, so the page table must be read;
+  a \term{page fault}[ページフォールト] occurs when the page table holds
+  no valid mapping because no physical page has been allocated yet, so
+  that the operating system must allocate one.
+\end{definition}
+
+\caution{A TLB miss and a page fault are different events.  A TLB miss
+is resolved by hardware (or a short handler) reading the page table; a
+page fault needs the operating system and, for a GPU, the host
+(\cref{sec:l07-uva}).}%
+The TLB exists because the PTE itself is in memory: without it, every
+load would first need one or more memory accesses to find its
+translation.
+
+\subsection{Multi-level page tables}
+
+A single table indexed by the VPN would need $2^{v}$ entries for a
+$v$-bit VPN, whether or not the program uses the pages.
+
+\begin{definition}[Multi-level page table and page table walk]
+  \label{def:l07-multilevel}
+  A \term{multi-level page table}[多段ページテーブル] splits the VPN
+  into several indices, one per level.  The index of the top level
+  selects an entry of the top-level table that holds the base address
+  of a next-level table, whose entry is selected by the next index, and
+  so on; the entry of the last level is the PTE.  Following this chain
+  is a \term{page table walk}[ページテーブルウォーク].  It is performed
+  either by a \term{page table walker (PTW)}[ページテーブルウォーカ], a
+  hardware state machine, or by a software miss handler.  Tables that
+  no used address reaches are never allocated.\index{PTW|see{page table walker (PTW)}}
+\end{definition}
+
+\Cref{fig:l07-page-walk} shows the four-level form used by x86-64,
+ARM and GPUs.\margin{x86-64 with four levels: 48-bit virtual
+addresses, four 9-bit indices and a 12-bit offset; each table has 512
+entries of \SI{8}{\byte}, exactly one \SI{4}{\kibi\byte} page; the
+root register is CR3.}  The
+walk starts at a root register, uses the level-4
+index to read the level-3 table base, and so on down to the level-1
+entry, the PTE; PFN and offset together form the physical address.
+The price of the saved space is time: one translation that misses in
+the TLB costs at least four dependent memory accesses.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l07-page-walk}
+  \caption{A four-level page table walk with the x86-64 layout.  Each
+    index selects an entry holding the base of the next table; the
+    level-1 entry is the PTE, whose PFN joined with the offset is the
+    physical address.}
+  \label{fig:l07-page-walk}
+\end{figure}
+
+\begin{example}
+  \label{ex:l07-table-size}
+  Take the x86-64 layout: a 36-bit VPN and \SI{8}{\byte} entries.
+  \begin{itemize}
+    \item \emph{One level}: $2^{36} \approx \num{6.9e10}$ entries,
+      \SI{512}{\gibi\byte} of page table per process, nearly all of it
+      for pages that are never used.
+    \item \emph{Four levels, best case}: a program whose pages all lie
+      under one level-1 table needs one table per level,
+      $2^9+2^9+2^9+2^9 = \num{2048}$ entries in
+      \SI{16}{\kibi\byte}, and maps up to 512 pages
+      (\SI{2}{\mebi\byte}).
+    \item \emph{A sparse program}: two arrays far apart in the address
+      space need two chains below the level-4 table, $1+2\cdot3 = 7$
+      tables, still only \SI{28}{\kibi\byte}.
+  \end{itemize}
+  Thousands of entries replace tens of billions.\caution{The size of a
+single-level table is $2^{\text{VPN bits}}$, not
+$2^{\text{address bits}}$: the offset bits do not index the table.}
+\end{example}
+
+\subsection{Address translation on a GPU}
+
+Early GPUs had no virtual memory, or only a fixed one-to-one mapping.
+Virtual memory became necessary as GPUs became programmable and began
+to share data with the CPU, most visibly with the unified virtual
+addressing of Lesson~5.\margin{Power et al.\ point out that an AMD
+A10 APU with 400 lanes \enquote{can require up to 400 unique
+translations in a single cycle} \cite{power2014x86}.}  Translation works
+as on a CPU, with one difference: it happens after
+\emph{address coalescing}.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l07-gpu-mmu}
+  \caption{The memory stage of the GPU pipeline with address
+    translation.  The coalescer merges the warp's requests; the L1
+    data cache is accessed with virtual addresses while the TLB
+    translates; a TLB miss goes to the PTW or a miss handler; the L2
+    cache is accessed with physical addresses.}
+  \label{fig:l07-gpu-mmu}
+\end{figure}
+
+In the pipeline of Lesson~4 the memory stage now contains the steps of
+\cref{fig:l07-gpu-mmu}.  The coalescer merges the requests of the
+warp's threads (Lesson~4); each resulting request needs a translation,
+looked up in the TLB; a miss is resolved by the PTW or by a TLB miss
+handler.  In this organisation the L1 data cache is accessed with
+virtual addresses and the L2 cache, shared by all SMs, with physical
+addresses.\margin{Both placements exist: the proof-of-concept MMU of
+Power et al.\ translates after the coalescer and \emph{before} the L1,
+so its L1 is physically addressed \cite{power2014x86}.}
+
+Coalescing decides how many translations a warp instruction needs.
+Two pages that hold requests of the same instruction need two TLB
+lookups, however close the requests are; two requests in one page need
+one.
+
+\begin{example}
+  \label{ex:l07-tlb-coalescing}
+  Take a warp of eight threads, \SI{64}{\byte} memory requests and a
+  toy page size of \SI{256}{\byte}, so that the VPN is the address
+  shifted right by 8 bits.\margin{The toy page of \SI{256}{\byte}
+keeps the numbers small; with \SI{4}{\kibi\byte} pages the same effect
+appears with strides of kilobytes, such as the column of a row-major
+matrix with \SI{4}{\kibi\byte} rows.}  A load through \texttt{R1} reads
+  the consecutive words 64, 68, \ldots, 92: one request, one page, one
+  TLB lookup.  A load through \texttt{R2} reads with a stride of
+  \SI{160}{\byte}:
+  \begin{center}
+    \small
+    \begin{tabular}{@{}lcccccccc@{}}
+      \toprule
+      thread & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7 \\
+      \midrule
+      address & 0 & 160 & 320 & 480 & 640 & 800 & 960 & 1120 \\
+      hex & \texttt{000} & \texttt{0A0} & \texttt{140} & \texttt{1E0} & \texttt{280} & \texttt{320} & \texttt{3C0} & \texttt{460} \\
+      VPN & 0 & 0 & 1 & 1 & 2 & 3 & 3 & 4 \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  No two addresses fall into one \SI{64}{\byte} request, so the load
+  issues eight requests; they touch five distinct pages, so after
+  merging requests to the same page it needs five TLB lookups for a
+  single instruction.  With a stride of \SI{256}{\byte} or more every
+  thread would touch its own page.
+\end{example}
+
+In the worst case an uncoalesced load needs as many translations as
+the warp has threads.\tip{TLB lookups per warp instruction: the
+number of distinct pages its addresses touch, at most the number of
+threads in the warp; a coalesced access needs one or two.}  Uncoalesced accesses
+therefore cost twice: once in memory bandwidth (Lesson~4) and once in
+translation bandwidth.
+
+\subsection{Scalability of translation}
+
+The challenge of GPU address translation is scalability.  One warp
+instruction can produce many TLB misses at once, and dozens of warps
+per SM and dozens of SMs issue them concurrently; the page table walker
+must therefore sustain a high bandwidth of walks.\margin{Measured on
+the Rodinia benchmarks and a database sort: coalescing and the scratchpad cut the translation
+rate by 6.8$\times$, TLB misses come in bursts of 60 concurrent misses
+on average, and post-coalescer TLBs miss 29\,\% of the time
+\cite{power2014x86}.}  \Cref{fig:l07-ptw-sharing} shows two
+organisations.  With a private PTW per SM each SM walks its own
+misses, but every SM pays for a walker that idles most of the time.
+With a shared PTW the SMs keep only their L1 TLBs and send their misses
+to one high-bandwidth walker next to a shared L2 TLB.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l07-ptw-sharing}
+  \caption{(a) A private PTW in every SM, with a shared L2 TLB.
+    (b) SMs with L1 TLBs only and one shared, high-bandwidth PTW with
+    a page walk cache (PWC) next to the shared L2 TLB.  The design of
+    Power et al.\ is (b) without the L2 TLB.}
+  \label{fig:l07-ptw-sharing}
+\end{figure}
+
+Power, Hill and Wood build the shared organisation from known CPU
+parts \cite{power2014x86}: per-compute-unit TLBs placed after the
+coalescer, a highly threaded PTW that keeps the state of many
+outstanding walks in a set of buffers, and a
+\term{page walk cache}[ページウォークキャッシュ], a small cache in the
+MMU that holds entries of the upper (non-leaf) levels of the page
+table, so that most walks need fewer than four memory
+accesses.\margin{The page walk cache cuts the average walk latency by
+over 95\,\%; the walker needs it because the GPU's L2, where the PTEs
+are cached, takes nearly 300 cycles.  The complete design comes within
+2\,\% of an ideal MMU on average, with \SI{4}{\kibi\byte} pages and
+unmodified x86-64 page tables \cite{power2014x86}.}  Their design has
+no L2 TLB: the per-CU TLBs feed the shared walker and its page walk
+cache directly.  A shared L2 TLB in place of the page walk cache was
+more than 2$\times$ slower on average, and one added beside it changed
+performance by about 0.1\,\% \cite[§6]{power2014x86}.
+
+\subsection{Reducing the cost of translation}
+
+Three techniques reduce the number or the cost of
+translations.
+\begin{marginfigure}
+  \input{figures/l07-segments}
+  \caption{Segment mapping: three programs with the same virtual range
+    in three \SI{64}{\kibi\byte} physical segments.}
+  \label{fig:l07-segments}
+\end{marginfigure}
+\begin{description}
+  \item[Segment mapping.]  In \term{segment mapping}[セグメントマッピング]
+    each program's virtual space maps onto one contiguous region of
+    physical memory, so translation is the addition of a base
+    (\cref{fig:l07-segments}): in the figure, virtual address
+    \texttt{0x1234} of program~2 is physical address
+    \texttt{0x011234}.  No table and no walk are needed, but each
+    program's space must be contiguous in physical memory.
+  \item[Large pages.]  Fewer, larger pages need fewer translations
+    (below).
+  \item[Multi-level TLBs.]  A small L1 TLB per SM backed by a larger,
+    shared L2 TLB, as in \cref{fig:l07-ptw-sharing}, can serve an L1
+    miss with a translation that another SM already brought in, before
+    a walk starts (with a page walk cache present, Power et al.\ saw no
+    gain from it, above).
+\end{description}
+
+\begin{definition}[Large page]
+  \label{def:l07-large-page}
+  A \term{large page}[ラージページ] is a page much larger than the
+  base page, typically \SI{2}{\mebi\byte} instead of
+  \SI{4}{\kibi\byte}.  Its offset is 21 bits instead of 12, so the VPN
+  is 9 bits shorter, and on x86-64 the walk ends one level early.  One
+  TLB entry then covers $\SI{2}{\mebi\byte}/\SI{4}{\kibi\byte} = 512$
+  times as much memory.
+\end{definition}
+
+The amount of memory a TLB can map at once, entries times page size,
+is its \emph{reach}.\margin{CPG §19.2.2.1 Memory Paging and Page
+Sizes: x86-64 CPUs use \SI{4}{\kibi\byte} physical pages, while
+\enquote{NVIDIA GPUs support multiple physical page sizes, but prefer
+2MiB physical pages or larger}; TLB misses \enquote{are generally
+significantly more expensive on the GPU compared to the CPU}
+\cite{nvidia2024cudaguide}.}  The cost of a large page is
+\term{internal fragmentation}[内部断片化]: memory allocated in whole
+pages but not used, lost inside the last page of an allocation.
+
+\begin{example}
+  \label{ex:l07-large-pages}
+  An L1 TLB of 32 entries reaches $32 \times \SI{4}{\kibi\byte} =
+  \SI{128}{\kibi\byte}$ with base pages and $32 \times
+  \SI{2}{\mebi\byte} = \SI{64}{\mebi\byte}$ with large pages.  An
+  allocation of \SI{10}{\kibi\byte} occupies three \SI{4}{\kibi\byte}
+  pages and wastes \SI{2}{\kibi\byte}, but one \SI{2}{\mebi\byte} page
+  wastes \SI{2038}{\kibi\byte}, over 99\,\% of the page (our numbers,
+  chosen for the arithmetic).
+\end{example}
+
+Large and small pages can also be mixed, so that each region of
+memory gets the page size that suits it.\sidenote{Research has continued along these lines.
+Mosaic \cite{ausavarungnirun2017mosaic} supports several page sizes at
+once without application changes and reports 55.5\,\% (homogeneous)
+and 29.7\,\% (heterogeneous) average gains for multi-application
+workloads, within 6.8\,\% and 15.4\,\% of an ideal TLB.  For several
+GPUs, Li et al.\ \cite{li2021tlb} share translations among peer GPUs
+and spill TLB entries to the IOMMU's TLB, gaining 23.5\,\% and
+16.3\,\% on average for single- and multi-application workloads.}
+
+\begin{keypoint}
+  A GPU translates the addresses of whole warps: coalescing decides how
+  many translations an instruction needs, an uncoalesced access can
+  need one per thread, and the walker must handle many misses at once.
+  Shared high-bandwidth walkers with page walk caches, multi-level
+  TLBs, segments and large pages reduce the cost; large pages trade
+  TLB reach against internal fragmentation.
+\end{keypoint}
+
+\section{Unified virtual address space and on-demand paging}
+\label{sec:l07-uva}
+
+The second side of virtual memory is page allocation, and here the GPU
+differs from the CPU most.\source{M7, UVA and on-demand paging;
+CPG §19 Unified Memory Programming; BPG §10.1.4 Unified Virtual
+Addressing; \cite{ganguly2019interplay,kim2020batch}.}  This section
+compares explicit copying with a shared address space, follows a GPU
+page fault to the host and back, and presents the prefetching and
+eviction policies that make on-demand paging affordable.
+
+\subsection{Copy-then-execute versus a shared address space}
+
+\begin{definition}[Copy-then-execute model]
+  \label{def:l07-copy-then-execute}
+  In the \term{copy-then-execute model}[コピー後実行モデル] the host
+  allocates device memory (\texttt{cudaMalloc}) and copies the input
+  into it (\texttt{cudaMemcpy}) before it launches the kernel, and
+  copies the results back afterwards.  All data a kernel touches is in
+  device memory before the kernel starts.
+\end{definition}
+
+The data transfer is explicit and happens in the preparation before
+the kernel launch.  It has one strength: bulk transfers that the
+programmer can schedule use the PCIe bandwidth fully, as the pinned
+buffers and streams of Lesson~5 showed.  Its weakness is that the
+programmer manages every buffer and every copy by hand, and that data
+structures with pointers cannot be shared at all.
+
+\caution{\enquote{SVM} is the term of OpenCL 2.0.  CUDA does not use
+it: it calls the shared address space unified virtual addressing and
+the migrating variant unified (managed) memory.}%
+\begin{definition}[Shared virtual memory]
+  \label{def:l07-svm}
+  With \term{shared virtual memory (SVM)}[共有仮想メモリ], the name
+  used in the OpenCL/CUDA programming model, the CPU and the GPU use
+  one virtual address space, so that one pointer means the same datum
+  on both (\cref{fig:l07-uva}).\index{SVM|see{shared virtual memory (SVM)}}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l07-uva}
+  \caption{(a) Separate memory spaces: each processor reads and writes
+    its own buffer and explicit copies move the data.  (b) A unified
+    virtual address space: one logical buffer that both processors read
+    and write.}
+  \label{fig:l07-uva}
+\end{figure}
+
+The \term*{unified virtual addressing (UVA)} of Lesson~5 is one address
+space over separate memories; a shared address space raises
+programmability further when the pages also move by
+themselves.\margin{Lesson~3 introduced the programming side of
+\texttt{cudaMallocManaged}; Lesson~5 separated UVA (one address space)
+from unified memory (automatic page migration).}  Most GPUs in
+high-performance computing are discrete: they have their own physical
+memory, so a shared address space still requires copies between host
+and device memory, now performed on demand.  That needs
+\emph{dynamic page allocation}: the decision where a page lives is taken
+while the kernel runs.
+
+\begin{definition}[On-demand paging]
+  \label{def:l07-on-demand}
+  Under \term{on-demand paging}[オンデマンドページング] memory
+  allocated with \texttt{cudaMallocManaged} is not placed in device
+  memory in advance; the first GPU access to a page that is not
+  resident faults, and the page is then allocated in device memory and
+  its data migrated from the host.
+\end{definition}
+
+The two models side by side, for a kernel \texttt{scale} that
+multiplies $n$ floats in place:
+
+\begin{lstlisting}[language=C++, numbers=none]
+// copy-then-execute
+float *d;
+cudaMalloc(&d, n * sizeof(float));
+cudaMemcpy(d, h, n * sizeof(float),
+           cudaMemcpyHostToDevice);
+scale<<<(n + 255) / 256, 256>>>(d, n);
+cudaMemcpy(h, d, n * sizeof(float),
+           cudaMemcpyDeviceToHost);
+
+// on-demand paging
+float *m;
+cudaMallocManaged(&m, n * sizeof(float));
+for (int i = 0; i < n; ++i) m[i] = i;  // CPU touches
+scale<<<(n + 255) / 256, 256>>>(m, n);  // GPU faults
+cudaDeviceSynchronize();      // m is valid on the CPU
+\end{lstlisting}
+
+\margin{CPG §19.3.2.1 Data Migration and Coherency: before compute
+capability 6.x, all managed memory was moved to the GPU at every kernel
+launch; compute capability 6.x (Pascal) introduced GPU page faulting,
+which migrates pages on demand \cite{nvidia2024cudaguide}.}%
+The second version has no copy in the program, but the copies still
+happen: each page crosses PCIe when the kernel first touches it.
+
+\subsection{The page-fault path}
+
+\begin{definition}[Far fault and GMMU]
+  \label{def:l07-far-fault}
+  In a GPU with unified memory, the
+  \term{GPU memory management unit (GMMU)}[GPUメモリ管理ユニット]
+  receives the TLB misses of the SMs and walks the GPU page table.  A
+  \term{far fault}[ファーフォールト] is a GPU page fault on a page that
+  is not present in device memory, which the host driver must resolve
+  by allocating a page and migrating its data, in contrast to a
+  \emph{near fault}, an L2 miss that device memory serves.\index{GMMU|see{GPU memory management unit (GMMU)}}
+\end{definition}
+
+\Cref{fig:l07-fault-path} follows a far fault.
+\begin{enumerate}
+  \item The GMMU's walk finds no valid PTE; the fault is recorded in
+    the GPU's page-fault MSHRs (miss status holding registers), and
+    the faulting warp waits.
+  \item The fault is sent over PCIe to the CPU.
+  \item The operating system and the GPU driver handle it: they
+    allocate a page in device memory and migrate the data.
+  \item The new mapping is sent back; the PTE is validated, and the
+    access is replayed.
+\end{enumerate}
+The round trip takes several tens of
+microseconds.\caution{Lecture vs paper: one passage of the source puts
+this latency at \enquote{tens of milliseconds}; it is tens of
+microseconds.  Prior work reports \SIrange{20}{50}{\micro\second} per fault, and Kim et al.\
+measure \SIrange{223}{553}{\micro\second} for a whole batch of faults (median \SI{313}{\micro\second})
+\cite{kim2020batch}.}
+
+\begin{figure}[b]
+  \centering
+  \input{figures/l07-fault-path}
+  \caption{A far fault on a discrete GPU: (1) the GMMU finds no valid
+    PTE and records the fault; (2) the fault crosses PCIe; (3) the OS
+    and the GPU driver allocate and migrate the page; (4) the mapping
+    returns and the access is replayed.}
+  \label{fig:l07-fault-path}
+\end{figure}
+
+Both processors reach memory through a translation unit for devices.
+
+\begin{definition}[IOMMU and DMA]
+  \label{def:l07-iommu}
+  \term{DMA (direct memory access)}[DMA] is the transfer of data
+  between a device and memory without the CPU executing the copy.  An
+  \term{IOMMU}[IOMMU] (input--output memory management unit) translates
+  the addresses that devices use for DMA, so that devices can work
+  with virtual instead of physical addresses (I/O
+  virtualisation).\index{direct memory access|see{DMA (direct memory access)}}
+\end{definition}
+
+\margin{Ganguly et al.\ give a far-fault handling latency of typically
+\SI{45}{\micro\second} on Pascal GPUs, before the PCIe transfer of the
+data \cite{ganguly2019interplay}.}%
+GPU memory was once managed only through the IOMMU, as the memory of a
+peripheral device.  With a shared address space the CPU takes part in
+every mapping change, and this is the cost of on-demand GPU memory:
+page management is performed by the host, and fetching a mapping from
+the CPU costs a PCIe round trip plus the CPU's interrupt service
+routine, often several tens of microseconds.\sidenote{The driver does not handle one fault at a time: it collects
+faults in a buffer and processes them in batches, and faults raised
+while a batch is processed wait for the next one.  Kim et al.\
+\cite{kim2020batch} show that this serialisation hurts throughput and
+propose larger batches (by switching thread-block contexts so that more
+faults are raised together) and eviction overlapped with migration: 2$\times$ average speed-up over
+state-of-the-art prefetching, batches 2.27$\times$ larger and 51\,\%
+fewer, batch processing time 27\,\% shorter.}  Three remedies follow.
+\begin{itemize}
+  \item \emph{Prefetch pages}: predict the pages that will be needed
+    and migrate them before they fault.
+  \item \emph{Move page-mapping management to the GPU side}, so that
+    a fault does not need the host.
+  \item \emph{Let CPU and GPU cooperate}: the CPU manages large chunks
+    of memory, the GPU the small pages inside a chunk it has been
+    given.
+\end{itemize}
+
+Prefetching is the remedy that NVIDIA's driver implements
+\cite{ganguly2019interplay}.
+
+\subsection{Page prefetching}
+
+\begin{definition}[Prefetching]
+  \label{def:l07-prefetching}
+  Fetching data before it is requested, on the strength of a
+  prediction of future addresses, is called
+  \term{prefetching}[プリフェッチ].
+  Applied to the pages of a unified address space it is
+  \term{page prefetching}[ページプリフェッチ]: migrating pages to device
+  memory before the GPU faults on them.
+\end{definition}
+
+A sequential predictor that sees the addresses \texttt{0x40},
+\texttt{0x80}, \texttt{0xC0} predicts \texttt{0x100} and
+\texttt{0x140} next.  A vector addition that reads \texttt{a[idx]} and
+\texttt{b[idx]} with consecutive indices produces exactly such a
+sequence, and page addresses of such an array are as predictable: a
+sequential page predictor fetches page $p+1$ when page $p$ faults.
+
+\begin{marginfigure}
+  \input{figures/l07-block-pages}
+  \caption{Nine pages read by three thread blocks that run in the
+    order 2, 0, 1: the faults arrive as 6, 7, 8, 0, 1, \ldots}
+  \label{fig:l07-block-pages}
+\end{marginfigure}
+
+On a GPU the prediction breaks down, because thread blocks do not run
+in order (Lesson~3).  In \cref{fig:l07-block-pages} each block reads
+three consecutive pages, but the blocks run in the order 2, 0, 1, and
+the faults arrive as 6, 7, 8, 0, 1, 2, 3, 4, 5: after page 8 a
+\enquote{next page} predictor fetches page 9, which no block reads, and
+the jump back to page 0 is a fault it could not foresee.  Spatial locality is there, in the neighbourhood of a
+fault, but not in the order of the faults.
+
+\begin{definition}[Tree-based neighborhood prefetching]
+  \label{def:l07-tbnp}
+  The policy of NVIDIA's unified-memory driver, called
+  \term{tree-based neighborhood prefetching}[ツリーベース近傍プリフェッチ]
+  (TBNp), divides each
+  \SI{2}{\mebi\byte} region of a managed allocation into two
+  \SI{1}{\mebi\byte} halves and those into \SI{64}{\kibi\byte} nodes.
+  A \SI{4}{\kibi\byte} fault migrates the whole \SI{64}{\kibi\byte}
+  node, 16 pages; when several nodes under one parent have faulted, the
+  parent node, up to \SI{1}{\mebi\byte}, is fetched.\index{TBNp|see{tree-based neighborhood prefetching}}
+\end{definition}
+
+The tree captures spatial locality around each fault, whatever the
+order of the faults, and bounds the size of a single prefetch.\caution{Lecture vs paper: Ganguly et al.\ \cite{ganguly2019interplay}
+measured the exact rule on a GTX 1080 Ti.  The tree is a full binary
+tree with \SI{64}{\kibi\byte} leaves, so it has the levels 128, 256 and
+\SI{512}{\kibi\byte} in between; a node is filled up when its
+\enquote{to-be valid size} is \enquote{strictly greater than 50\,\%}
+of its capacity, so a prefetch ranges from \SI{64}{\kibi\byte} to
+\SI{1}{\mebi\byte}.}
+
+\begin{example}
+  \label{ex:l07-tbnp}
+  Apply the rule of Ganguly et al.\ to far faults in the leaves 0, 1,
+  2 and 4 of a \SI{2}{\mebi\byte} region, in this order
+  (\cref{fig:l07-tbnp-tree}).  After each fault the GMMU adds up the
+  valid size of every ancestor; a node more than half valid has its
+  emptier child filled up to the size of the fuller one.
+  \begin{center}
+    \small
+    \begin{tabular}{@{}c>{\raggedright\arraybackslash}p{58mm}c@{}}
+      \toprule
+      fault & ancestors above 50\,\% & migrated \\
+      \midrule
+      leaf 0 & none (128-KiB node: 64 of 128) & \SI{64}{\kibi\byte} \\
+      leaf 1 & 128-KiB node full, nothing to fill (256-KiB node: 128 of 256) & \SI{64}{\kibi\byte} \\
+      leaf 2 & 256-KiB node: 192 of 256; fill leaf 3 & \SI{128}{\kibi\byte} \\
+      leaf 4 & 512-KiB node: 320 of 512; fill leaves 5--7 & \SI{256}{\kibi\byte} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  Four faults bring in \SI{512}{\kibi\byte}, eight leaves, instead of
+  the \SI{16}{\kibi\byte} that four on-demand \SI{4}{\kibi\byte}
+  migrations would.  Leaf 0 alone did not trigger a prefetch beyond
+  its own node: at exactly 50\,\% a node is not filled.
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l07-tbnp-tree}
+  \caption{The prefetch tree of a \SI{2}{\mebi\byte} region: 32 leaves
+    of \SI{64}{\kibi\byte} (16 pages each) under binary levels up to
+    the root.  Shaded: the end state of \cref{ex:l07-tbnp}, with far
+    faults in leaves 0, 1, 2 and 4 and the leaves prefetched.}
+  \label{fig:l07-tbnp-tree}
+\end{figure}
+
+\subsection{Oversubscription and eviction}
+
+\begin{definition}[Oversubscription and eviction]
+  \label{def:l07-oversubscription}
+  The allocation of more managed memory than the GPU's physical memory
+  holds is called
+  \term{memory oversubscription}[メモリのオーバーサブスクリプション].
+  Pages must then leave device memory to make room, which is
+  \term{page eviction}[ページ追い出し]; the policy decides which pages
+  go.
+\end{definition}
+
+\margin{CPG §19.1.2.7 GPU Memory Oversubscription: unified memory
+lets applications \enquote{allocate and share arrays larger than the
+memory capacity of any individual processor in the system}
+\cite{nvidia2024cudaguide}.}%
+Prefetching and eviction interact.  Aggressive prefetching evicts
+pages that are still needed, and an eviction policy that ignores the
+prefetcher evicts scattered \SI{4}{\kibi\byte} pages, which breaks the
+contiguous regions the prefetcher relies on.  The problem grows with
+the memory demand of kernels.  One answer is
+\term{pre-eviction}[事前追い出し]: together with the page that the
+LRU list selects for eviction, the contiguous pages around it are
+evicted in multiples of the \SI{64}{\kibi\byte} blocks in which the
+prefetcher brought them in, so that free space appears in units the
+prefetcher can use again.\margin{Ganguly et al.: a
+tree-based pre-eviction combined with the hardware prefetcher gives
+93\,\% and 18.5\,\% average speed-ups over LRU replacement of
+\SI{4}{\kibi\byte} and \SI{2}{\mebi\byte} pages
+\cite{ganguly2019interplay}.}
+
+\begin{keypoint}
+  A shared address space removes the explicit copies, not the data
+  movement: on a discrete GPU every first touch of a page is a far
+  fault that crosses PCIe to the host and back, tens of microseconds.
+  Prefetching around each fault (the tree-based scheme) amortises the
+  round trips despite the out-of-order execution of thread blocks;
+  under oversubscription the eviction policy must respect the units
+  the prefetcher works in.
+\end{keypoint}
+
+\section{Warp scheduling}
+\label{sec:l07-scheduling}
+
+The pipeline walk-through of Lesson~4 assumed one ready warp at a
+time.\source{M7, GTO vs round-robin; A18 ch.~3; K12 §1.4.1 GPU
+Pipeline; CPG §4.2 Hardware Multithreading; \cite{rogers2012ccws,
+narasiman2011twolevel,gebhart2011energy}.}  Usually several warps have
+all their operands ready in the scoreboard at once, and one of them
+must be chosen.  This section defines the basic policies, shows how the
+choice affects latency hiding and the L1 cache, and presents research
+schedulers built on these observations.
+
+\begin{definition}[Warp scheduler]
+  \label{def:l07-warp-scheduler}
+  The \term{warp scheduler}[ワープスケジューラ] is the pipeline stage
+  that, every cycle, selects one warp among those whose next
+  instruction is ready and issues that instruction.
+\end{definition}
+
+\margin{CPG §16.6.1 (Compute Capability 7.x, Architecture): an SM has
+4 warp schedulers; it distributes its warps statically among them, and
+each issues one instruction per cycle for one of its ready warps
+\cite{nvidia2024cudaguide}.  With the 64 resident warps of CC 7.0
+(CPG Table 21; 32 on CC 7.5) that is up to 16 warps per scheduler (our
+arithmetic).}%
+\subsection{From instruction scheduling to warp scheduling}
+
+An out-of-order CPU has a similar unit.  Its instruction scheduler
+selects among the ready instructions of a scheduling queue.  The
+default policy is \term{oldest-first}[最古優先]: among the ready
+instructions, the one that entered the queue first issues.
+Alternatives give priority to \emph{critical} instructions: loads
+first, so that memory requests start as soon as their addresses are
+known, or instructions with many dependants first, so that more
+instructions become ready sooner.
+
+The GPU warp scheduler is in order within each warp: a warp's
+instructions issue in program order.  Across warps it may pick any
+ready warp, so the instruction stream of the SM as a whole looks out of
+order.  Four warps that each run the instructions I1, I2, I3 may, for
+example, issue as
+\begin{center}
+  \small
+  I1\,w1, I1\,w2, I2\,w1, I1\,w3, I2\,w2, I3\,w1, I1\,w4, I2\,w3,
+  I2\,w4, I3\,w2, I3\,w4, I3\,w3,
+\end{center}
+which keeps the order I1, I2, I3 inside every warp.\margin{K12 §1.4.1:
+the scheduler is in order but \enquote{can select any warps that are
+ready}, so the SM's execution \enquote{might look like an out-of-order
+execution} \cite{kim2012gpgpu}.}  Which ready warp goes first is the
+policy.
+
+\subsection{Round-robin and greedy-then-oldest}
+
+\begin{definition}[Round-robin and GTO]
+  \label{def:l07-rr-gto}
+  A \term{round-robin (RR)}[ラウンドロビン] scheduler gives the warps
+  turns in a fixed cyclic order, one instruction each.  In the
+  \term{loose round-robin (LRR)}[ルーズラウンドロビン] form, a warp
+  that cannot issue in its turn is skipped and the next one in order
+  gets the chance.  A
+  \term{greedy-then-oldest (GTO)}[GTOスケジューリング] scheduler keeps
+  issuing from one warp until it stalls on a long-latency event (a
+  cache miss, a branch, a long tensor-core operation), then switches to
+  the oldest ready warp, the age of a warp being the time it was
+  assigned to the SM.\index{RR|see{round-robin (RR)}}\index{LRR|see{loose round-robin (LRR)}}\index{GTO|see{greedy-then-oldest (GTO)}}
+\end{definition}
+
+\margin{Rogers et al.\ define both baselines: GTO \enquote{runs a
+single wavefront until it stalls then picks the oldest ready
+wavefront}, the age being \enquote{the time it is assigned to the
+core} \cite{rogers2012ccws}.}%
+The two policies differ in when the warps reach their memory
+instructions.  Under round-robin all warps advance together and reach
+their loads at nearly the same time; under GTO one warp runs ahead and
+starts its load early, and the others follow one by one.
+
+\begin{example}
+  \label{ex:l07-rr-gto}
+  Four warps run the same program: two arithmetic instructions
+  \texttt{c1}, \texttt{c2}, a load \texttt{m3} that misses in the
+  cache and returns after 10 cycles, and three arithmetic instructions
+  \texttt{c4}--\texttt{c6}, of which \texttt{c4} uses the loaded
+  value.\margin{Notation: one instruction issues per cycle; a miss
+issued in cycle $t$ lets the dependent instruction issue in cycle
+$t+10$.  Our numbers.}  \Cref{fig:l07-rr-gto} shows the issue slots.
+  \begin{itemize}
+    \item \emph{Round-robin}: cycles 0--7 issue \texttt{c1} and
+      \texttt{c2} of all warps, cycles 8--11 the four loads.  Every
+      warp now waits for its load; the first returns in cycle 18, so
+      cycles 12--17 are stalls.  The 12 remaining instructions take
+      cycles 18--29: 30 cycles, 6 of them stalls.
+    \item \emph{GTO}: warp 1 issues \texttt{c1}, \texttt{c2},
+      \texttt{m3} in cycles 0--2 and stalls; warp 2 follows in cycles
+      3--5, warp 3 in 6--8, warp 4 in 9--11.  Warp 1's load returns
+      in cycle 12, one cycle after warp 4's load issues, and each warp then
+      finishes its three instructions as its data arrives: 24 cycles,
+      no stall.
+  \end{itemize}
+  The loads under GTO are spread out, and the other warps' arithmetic
+  hides each one.
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l07-rr-gto}
+  \caption{Issue slots of \cref{ex:l07-rr-gto}: the number is the warp,
+    M its load, grey a stall cycle; the bars below each row are the
+    10-cycle load latencies.  Round-robin issues the four loads back
+    to back and stalls; GTO staggers them.}
+  \label{fig:l07-rr-gto}
+\end{figure}
+
+GTO is not always better: the gain depends on the program.  In the
+example it comes from the arithmetic after the load.  A program whose
+warps all stall at the same barrier right after their loads gains
+nothing; with a load latency longer than the arithmetic of all other
+warps together GTO stalls too; and when warps share data, issuing them
+together under round-robin may let one warp's miss serve the others.
+
+\subsection{Two-level scheduling}
+
+A scheduler that searches all ready warps every cycle compares tens of
+candidates for one issue slot, and this search costs power.
+
+\begin{marginfigure}
+  \input{figures/l07-two-level}
+  \caption{Two-level scheduling: the scheduler searches only the
+    active set.}
+  \label{fig:l07-two-level}
+\end{marginfigure}
+
+\begin{definition}[Two-level warp scheduling]
+  \label{def:l07-two-level}
+  In \term{two-level warp scheduling}[2レベルワープスケジューリング]
+  the warps are divided into an
+  \term{active warp set / pending warp set}[アクティブワープ集合／待機ワープ集合]
+  pair.  Only the few active warps are searched; a warp that meets a
+  long-latency operation moves to the pending set, and a pending warp
+  whose operation has completed moves back to the active set when there
+  is room (\cref{fig:l07-two-level}).
+\end{definition}
+
+Two papers are cited for this idea, with different
+motives.\caution{Lecture vs paper: Gebhart et al.\ \cite{gebhart2011energy}
+introduce the active/pending split for \emph{energy} (with a register
+file cache, 36\,\% less register file energy).  Narasiman et al.\
+\cite{narasiman2011twolevel} split the warps into fetch groups for
+\emph{performance}: 19.1\,\% together with large warps.}  Narasiman
+et al.\ divide the warps into
+\term{fetch group}[フェッチグループ]s, for example 32 warps into 4
+groups of 8; one group has priority until all its warps stall, with
+round-robin inside and across groups.  The groups thus reach their
+long-latency operations at different times, the same staggering as in
+\cref{ex:l07-rr-gto}, and some group always has work while another
+waits for memory.
+
+\subsection{Scheduling and cache behaviour}
+
+The scheduler also decides which data must be in the L1 cache at the
+same time.
+
+\begin{definition}[Working set, thrashing and compulsory misses]
+  \label{def:l07-working-set}
+  The \term{working set}[ワーキングセット] of a program over an
+  interval is the set of memory blocks it uses in that interval.
+  The cache suffers \term{cache thrashing}[キャッシュスラッシング] when
+  the working set exceeds it, so that blocks are evicted before they are
+  reused and most accesses miss.  A \term{compulsory miss}[初期参照ミス]
+  is the miss of the first access to a block, which no cache can
+  avoid.
+\end{definition}
+
+A hit on a block that the same warp brought into the cache exploits
+\term{intra-warp locality}[ワープ内局所性]; a hit on a block another
+warp brought in exploits \term{inter-warp locality}[ワープ間局所性].
+\margin{Rogers et al.\ classify the hits of their benchmarks this way:
+in the highly cache-sensitive ones most of the reuse is intra-warp
+\cite{rogers2012ccws}.}  When each
+warp reuses its own data, as in the next example, round-robin is the
+worst order.
+
+\begin{example}
+  \label{ex:l07-thrashing}
+  Three warps each read their own block four times: warp $k$ reads
+  block B$k$.  The L1 holds two blocks with LRU replacement (Lesson~6),
+  and each access hits or misses before the next one issues.
+  \begin{center}
+    \small
+    \begin{tabular}{@{}ll@{}}
+      \toprule
+      order & accesses (bold = miss) \\
+      \midrule
+      RR  & \textbf{B1 B2 B3 B1 B2 B3 B1 B2 B3 B1 B2 B3} \\
+      GTO & \textbf{B1} B1 B1 B1 \textbf{B2} B2 B2 B2 \textbf{B3} B3 B3 B3 \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  Under round-robin each block is evicted by the two others before
+  its warp returns to it: 12 misses in 12 accesses.  Under GTO each
+  warp finishes its block before the next starts: only the 3
+  compulsory misses.\caution{The GTO row assumes that a warp keeps
+issuing after its first miss.  When other warps are ready at that miss,
+GTO switches, and its working set holds more than one warp's data;
+hence $\mathit{SW} \ge 1$ for GTO in the formula below.}
+\end{example}
+
+In general, let each warp have a working set of size $\mathit{SS}_W$
+and let $N$ warps be resident on the SM.  Under round-robin all $N$
+warps are in flight at once and the L1 must hold
+$\mathit{SS}_W \times N$.  A scheduler that limits the number of
+schedulable warps to $\mathit{SW}$ needs only
+$\mathit{SS}_W \times \mathit{SW}$; for GTO, $\mathit{SW}$ is not
+necessarily 1, because it switches warps at every long-latency event.
+In \cref{ex:l07-thrashing}, $\mathit{SS}_W = 1$ block and $N = 3$, which
+exceeds the two-block cache; with $\mathit{SW} = 2$ the working set
+fits.\tip{L1 needed $\approx \mathit{SS}_W$ times the number of warps
+that may issue: $N$ for round-robin, $\mathit{SW}$ under a limit.  To
+fit a cache of size $C$, limit to $\mathit{SW} \le C/\mathit{SS}_W$.}
+
+\begin{definition}[Cache-conscious wavefront scheduling]
+  \label{def:l07-ccws}
+  The scheduler of Rogers et al., called
+  \term{cache-conscious wavefront scheduling (CCWS)}[キャッシュ考慮型ウェーブフロントスケジューリング]
+  \cite{rogers2012ccws}, limits the number of warps that may issue so
+  that their working set fits in the L1: on a stall it chooses among
+  a small set of warps (W1--W3, say) and starts another warp (W4)
+  only when those have completed.\index{CCWS|see{cache-conscious wavefront scheduling (CCWS)}}
+\end{definition}
+
+\caution{Lecture vs paper: the fixed limit described here is the
+paper's baseline \enquote{static wavefront limiting}.  CCWS itself is
+adaptive: a detector notices when evictions destroy a warp's
+locality, and the scheduler then gives that warp more exclusive access
+to the L1D by throttling the others.}%
+The paper's mechanism is the
+\term{lost intra-wavefront locality detector (LLD)}[ウェーブフロント内局所性損失検出器],
+which keeps, for every warp, the tags of the lines that warp brought
+into the L1 and lost to eviction (a victim tag array without data).
+An L1 miss that hits in the warp's own victim tags is lost
+intra-warp locality; it raises the warp's lost-locality score, and
+warps pushed past a cutoff in the score stack (in the paper, above
+it) by the high scores of others may not issue loads to the L1D until
+the scores decay.  The
+reported results are 25\,\% fewer L1 data cache misses on average and
+a harmonic-mean speed-up of 24\,\% over earlier scheduling
+policies.\margin{The CCWS hardware adds 0.17\,\% to the total chip
+area; against a simple greedy scheduler the harmonic-mean gain on
+the highly cache-sensitive benchmarks is 63\,\% \cite{rogers2012ccws}.}\index{LLD|see{lost intra-wavefront locality detector (LLD)}}
+
+Limiting the warps raises two problems.
+\begin{itemize}
+  \item \emph{Synchronisation.}  A barrier (Lesson~3) releases the
+    warps of a block only when all of them have arrived.  If the
+    scheduler holds back a warp of a block whose other warps wait at
+    \texttt{\_\_syncthreads()}, no warp of that block can progress: a
+    deadlock.  The limit must therefore never keep a warp out that
+    others are waiting for.
+  \item \emph{The size of the limit.}  More warps give more
+    thread-level parallelism to hide latency; fewer warps give a
+    smaller working set.  The best limit depends on the cache and the
+    program, which is why CCWS adapts it at run time.
+\end{itemize}
+\Needspace{8\baselineskip}
+In a kernel of the following shape every warp of the block must reach
+the barrier before any warp starts phase~2:
+
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void twoPhase(float *a) {
+  // phase 1: every warp of the block works
+  __syncthreads();   // waits for ALL warps
+  // phase 2
+}
+\end{lstlisting}
+
+\subsection{Other scheduling policies}
+
+The scheduler can also serve the memory system beyond the L1.\margin{GPUMech (Lesson~8) models the performance of both RR and GTO
+analytically, with average errors of 13.2\,\% and 14.0\,\%
+\cite{huang2014gpumech}.}  Like the memory channels of Lesson~4, the
+banks inside each DRAM can serve requests in parallel; the number of banks busy at the same
+time is its \term{bank-level parallelism}[バンクレベル並列性].
+\begin{itemize}
+  \item \emph{Prefetch-aware scheduling} \cite{jog2013orchestrated}
+    builds on the two-level scheduler but forms its groups from
+    \emph{non-consecutive} warps.  Consecutive warps access
+    neighbouring data, so a simple prefetcher triggered by one warp can
+    fetch the data of the next; scheduled apart, the next warp runs
+    late enough for the prefetch to arrive in time, and the requests in
+    flight at once spread over more DRAM banks.\margin{Jog et al.\
+report 25\,\% and 7\,\% average gains over round-robin and two-level
+scheduling, each with prefetching, on a simulated 30-core GPU
+\cite{jog2013orchestrated}.}
+  \item \term{CTA-aware scheduling}[CTA考慮スケジューリング] (OWL
+    \cite{jog2013owl}) decides which CTAs (thread blocks, Lesson~3) are
+    scheduled together, grouping the warps of a few CTAs so that their
+    data stays in the cache, and combines this with locality- and
+    bank-level-parallelism-aware warp selection.\margin{OWL: a 33\,\%
+average gain over round-robin warp scheduling on a simulated 28-core
+GPU; in its motivation, 19 of 38 applications spend on average 62\,\%
+of their cycles with no warp executing \cite{jog2013owl}.}
+\end{itemize}
+
+\begin{keypoint}[Lesson summary]
+  GPU virtual memory translates warps, not threads: coalescing decides
+  the number of translations, uncoalesced loads can need one per
+  thread, and shared high-bandwidth page table walkers with page walk
+  caches, multi-level TLBs, segment mapping and large pages keep the
+  cost down; large pages trade TLB reach for internal fragmentation.
+  A shared virtual address space replaces copy-then-execute by
+  on-demand paging, whose far faults cost tens of microseconds over
+  PCIe; tree-based neighbourhood prefetching amortises them, and
+  eviction under oversubscription must respect the prefetcher's units.
+  The warp scheduler issues in order within a warp but chooses among
+  ready warps: round-robin advances all warps together and bunches
+  their misses, GTO staggers them; two-level schedulers search a small
+  active set for energy and performance; and limiting the schedulable
+  warps (CCWS) shrinks the L1 working set, provided barriers are
+  respected.
+\end{keypoint}
+
+\end{document}
