@@ -1,0 +1,960 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+\newcommand{\lxOUT}{\mathrm{OUT}}\newcommand{\lxIN}{\mathrm{IN}}
+\newcommand{\lxENTRY}{\mathrm{ENTRY}}\newcommand{\lxgen}{\mathrm{gen}}
+\newcommand{\lxkill}{\mathrm{kill}}\newcommand{\lxpred}{\mathrm{pred}}
+
+\chapter{コンパイラの基礎 I}
+\lessoninfo{
+  video={M10，レッスン 1--5（GPU Compiler Flow；PTX；IR and Basic Block；Introduction to Data Flow Analysis；Example of Reaching Definitions）},
+  sources={NVCC ドキュメント \cite{nvidia2026nvcc}；PTX ISA 9.4 \cite{nvidia2026ptx}；Compiling CUDA with clang \cite{llvm2026compilecuda}；NVVM IR 仕様 \cite{nvidia2026nvvm}；Lattner と Adve \cite{lattner2004llvm}（LLVM）；LLVM Language Reference \cite{llvm2026langref}},
+  textbook={K12 \cite{kim2012gpgpu} §1.3.7；CPG \cite{nvidia2024cudaguide} §3.1 Compilation with NVCC；Aho ら \cite{aho2006compilers} §8.4，§9.2},
+  keywords={コンパイラ，フロントエンド，バックエンド，中間表現，抽象構文木，nvcc，LLVM，NVPTX，PTX，SASS，仮想アーキテクチャ，ファットバイナリ，JITコンパイル，ガード述語，3番地コード，リーダ，制御フローグラフ，データフロー解析，伝達関数，到達定義，gen集合とkill集合，不動点},
+}
+
+これまでの章では，CUDA カーネルを GPU がそのまま実行するものとして
+扱ってきた．しかしソースファイルと SM の間にはコンパイラがあり，
+前の章で見たいくつかの仕組みは実はコンパイラの仕事であった．第6章の
+述語付きコード，第3章で各スレッドが受け取るレジスタ，第4章の PTX の
+断片がそうである．本章と次章は，そうしたコードについて考えるのに必要な
+コンパイラの基礎を与える．前半では CUDA プログラムをコンパイルの流れに
+沿って追い，ソースコードから中間表現と PTX を経て GPU が実行する
+機械語に至るまでをたどり，PTX そのものを見る．後半では最適化が
+対象とする構造，すなわち3番地コード，基本ブロックと制御フローグラフ，
+そしてデータフロー解析を導入し，到達定義と呼ばれる解析で具体的に
+計算する．第11章は生存解析，SSA 形式，古典的な最適化，そしてこれらすべてを
+ワープに結びつけるダイバージェンス解析へと続く．
+
+\section{GPU コンパイラの流れ}
+\label{sec:l10-flow}
+
+\term[こんぱいら]{コンパイラ}[compiler]は，ある言語で書かれたプログラム，
+すなわちソースプログラムを，別の言語，通常は機械の命令セットで書かれた
+等価なプログラムに翻訳する．\source{M10，GPU
+コンパイラの流れ；CPG §3.1 Compilation with NVCC；K12 §1.3.7；
+\cite{nvidia2026nvcc}．}コンパイラは3つの部分からなるパイプラインとして
+構成される（\cref{fig:l10-compile-flow}）．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-compile-flow}
+  \caption{古典的なコンパイラのパイプライン．フロントエンドはソース
+    プログラムを IR に変換し，オプティマイザは IR をよりよい IR に
+    書き換え，バックエンドはターゲットマシン向けのコードを生成する．}
+  \label{fig:l10-compile-flow}
+\end{figure}
+
+\begin{definition}[フロントエンド，IR，バックエンド]
+  \term[ふろんとえんど]{フロントエンド}[front end]は
+  ソースプログラムを読み，その構文と意味を検査し，
+  \term[ちゅうかんひょうげん]{中間表現}[intermediate representation (IR)]に翻訳する．
+  中間表現とは，ソース言語にもターゲットマシンにも属さないプログラムの
+  形式である．\index{IR|see{中間表現}}%
+  \margin{オプティマイザは\emph{ミドルエンド}とも呼ばれる．LLVM では
+  それはパスの列であり，各パスは IR から IR への変換である
+  \cite{lattner2004llvm}．}\emph{オプティマイザ}は，IR を同じ結果を
+  より速く，あるいはより少ない命令で計算する IR に変換する．
+  \term[ばっくえんど]{バックエンド}[back end]は
+  \term[こーどせいせい]{コード生成}[code generation]を行う．すなわち IR を
+  ターゲットマシンの命令に翻訳し，そのマシンに依存する最適化を施す．
+\end{definition}
+
+この分割を有用にしているのは IR である．言語ごとに1つのフロントエンドと
+ターゲットごとに1つのバックエンドが単一のオプティマイザを共有するので，
+言語や機械を追加しても，組ごとに完全なコンパイラを1つずつ作るのではなく，
+部品を1つ追加するだけで済む．\margin{$L$ 個の言語と $T$ 個の
+ターゲットがあるとき，IR による分割では $L\cdot T$ 個の完全な
+コンパイラの代わりに $L+T$ 個のフロントエンドとバックエンドで足りる．}
+IR は最適化にも適した水準である．ソース言語より単純でありながら
+どの機械にも依存せず，型やソース上の位置といったメタデータを
+フロントエンドから後段へ運ぶことができる．
+
+\subsection{GPU プログラムの流れ}
+
+CUDA のソースファイルにはホストコードとデバイスコードが混在している
+（第3章）．そのため GPU コンパイラは，まず両者を分離し，それぞれを
+独自のパイプラインに通す．デバイスコードは GPU 向けにコンパイルされ，
+ホストコードは通常の C++ コンパイラでコンパイルされる．GPU 向けの
+結果はホストプログラムに格納され，プログラムの実行時にそれが
+ロードされる．\margin{CPG §3.1.1.1 Offline Compilation \cite{nvidia2024cudaguide}：
+nvcc はデバイスコードをホストコードから分離し，デバイスコードを PTX
+またはバイナリ形式にコンパイルし，カーネル起動の構文を CUDA ランタイムの
+呼び出しに置き換える．}
+
+NVIDIA のコンパイラドライバ \term[えぬぶいしーしー]{nvcc}[nvcc] は，
+この流れを\cref{fig:l10-cuda-flow}の\emph{CUDA コンパイル軌跡}
+（CUDA compilation trajectory）として実装している
+\cite[§3]{nvidia2026nvcc}．入力ファイルは2回前処理される．デバイス側では，
+フロントエンド兼オプティマイザである \texttt{cicc} が \texttt{.ptx}
+ファイルを生成し，アセンブラ \texttt{ptxas} がそれを機械語の
+\texttt{.cubin} ファイルに翻訳する．この2段階は要求された
+アーキテクチャごとに繰り返される．ツール \texttt{fatbinary} は PTX と
+\texttt{.cubin} の結果を1つのイメージにまとめる．ホスト側では
+\texttt{cudafe++} がホストコードを分離して CUDA 拡張を標準 C++ に
+書き換え，ホストの C++ コンパイラがデバイスイメージを埋め込んだ
+そのコードをコンパイルする．最後にリンカが実行ファイルを
+生成する．\margin{ツール名は NVCC ドキュメントの軌跡の図による
+\cite[§3]{nvidia2026nvcc}．\texttt{nvcc -{}-dryrun} は実行する
+コマンドを一覧表示し，\texttt{-{}-keep} は中間の \texttt{.ptx}
+ファイルと \texttt{.cubin} ファイルを残す（§4.2.5.9，§4.2.5.11）．}
+デバイスコードを分割コンパイルする場合は，まずデバイスリンカ
+\texttt{nvlink} がすべての翻訳単位の \texttt{.cubin} ファイルを
+リンクする．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-cuda-flow}
+  \caption{nvcc のコンパイル軌跡（簡略化）．デバイスコードは
+    アーキテクチャごとに1回ずつ cicc と ptxas を通る．fatbinary は PTX と
+    機械語（cubin）をファットバイナリにまとめ，ホストのオブジェクトが
+    それを埋め込む．デバイスリンカ nvlink は省略している．}
+  \label{fig:l10-cuda-flow}
+\end{figure}
+
+\begin{definition}[仮想アーキテクチャ]
+  \term[かそうあーきてくちゃ]{仮想アーキテクチャ}[virtual architecture]とは，
+  PTX コードが対象とする GPU である．プログラムが使ってよい機能の集合であり，
+  Compute Capability~X.Y にちなんで \texttt{compute\_XY} と名付けられる．
+  \texttt{ptxas} のターゲットである実際の GPU は\emph{実アーキテクチャ}
+  （real architecture）であり，\texttt{sm\_XY} と名付けられる．
+\end{definition}
+
+したがって nvcc のコマンドはどれも2つのアーキテクチャを指定する．
+第1段階のための仮想アーキテクチャと第2段階のための実アーキテクチャであり，
+実アーキテクチャは仮想アーキテクチャを実装していなければならない
+\cite[§5.4]{nvidia2026nvcc}．\tip{仮想アーキテクチャはできるだけ低く選び，
+PTX ができるだけ多くの GPU で動くようにする．実アーキテクチャは
+ターゲットの GPU が許す限り高く選ぶ（NVCC §5.4 \cite{nvidia2026nvcc}）．}
+仮想アーキテクチャはプログラムが必要とする機能を述べるものであり，
+プログラムが実行される GPU を固定するものではない．
+
+\subsection{オープンソースのツールチェーン：Clang と LLVM}
+
+オープンソースの CUDA コンパイラにも同じ構造が現れる．
+
+\begin{definition}[LLVM，Clang，NVPTX]
+  \term[えるえるぶいえむ]{LLVM}[LLVM] は，型付きの1つの IR である
+  LLVM IR を中心に構築されたコンパイラ基盤であり，その上の最適化の
+  ライブラリと多数のターゲット向けのバックエンドを備える
+  \cite{lattner2004llvm}．
+  \term[くらん]{Clang}[Clang] は，CUDA を含む C 系言語のための LLVM の
+  フロントエンドである．\term[えぬぶいぴーてぃーえっくす]{NVPTX}[NVPTX] は
+  PTX を生成する LLVM のバックエンドである．
+\end{definition}
+
+スプリッタがホストコードとデバイスコードを分離する．デバイスコードは
+Clang，IR の最適化，NVPTX のコード生成器を通って PTX アセンブリとなり，
+ホスト側のコンパイルがそのデバイスコードをファットバイナリに
+埋め込む．\sidenote{Clang は構文解析の前にファイルを分割しない．
+\enquote{merged parsing} を用い，すべてのホストコードとデバイスコードが
+両方のコンパイル段階に現れ，そのどちらでも意味的に正しくなければならない．
+nvcc と異なり，Clang は常に \texttt{ptxas} も実行し，要求された GPU
+ごとに機械語を埋め込む（\texttt{-{}-offload-arch=sm\_80}）．既定では
+PTX を埋め込まない．前方互換性のために
+\texttt{-{}-cuda-include-ptx=sm\_80}（または \texttt{all}）で
+追加できる \cite{llvm2026compilecuda}．}NVIDIA 自身のデバイス
+コンパイラも同じ技術の上に作られている．そのフロントエンドは
+\emph{NVVM IR}，すなわち \enquote{LLVM IR に基づく} IR を出力し，
+それ自体 LLVM に基づく NVVM コンパイラがそこから PTX を生成する
+\cite{nvidia2026nvvm}．
+
+フロントエンドはソースを構文解析して木にする．
+
+\begin{definition}[抽象構文木]
+  \term[ちゅうしょうこうぶんぎ]{抽象構文木}[abstract syntax tree (AST)]
+  （AST）は，プログラムの構造を木として表す．各内部ノードは演算または文
+  （文の並び，ループ，分岐，代入，算術演算子）であり，その子は
+  オペランドまたは部分文である．葉は変数と定数である．\index{AST|see{抽象構文木}}
+  括弧やセミコロンのような区切り記号は現れない．木の形がすでにそれを
+  表しているからである．
+\end{definition}
+
+\begin{example}[ループの AST]
+  \label{ex:l10-ast}
+  次のループは配列の現時点での最大値を保持する．
+\begin{lstlisting}[language=C++, numbers=none]
+while (i < n) {
+  if (x[i] > m) m = x[i];
+  i = i + 1;
+}
+return m;
+\end{lstlisting}
+  その AST（\cref{fig:l10-ast}）は，根に文の並びがあり，その子は
+  \texttt{while} ループと \texttt{return} の2つである．ループの
+  ノードは条件 \texttt{i < n} と本体を持ち，本体はそれ自体
+  \texttt{if} 文とインクリメントからなる文の並びである．配列アクセス
+  \texttt{x[i]} はそれぞれ，配列と添字を子に持つ添字ノードである．
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-ast}
+  \caption{\cref{ex:l10-ast}のループの抽象構文木．演算と文は青，
+    変数は緑，定数は赤で示す．}
+  \label{fig:l10-ast}
+\end{figure}
+
+\tip{\texttt{clang -fsyntax-only -Xclang -ast-dump file.c} は，
+Clang がファイルに対して構築する AST を表示する．}構文解析器が動く前に，
+C と C++ の\term[ぷりぷろせっさ]{プリプロセッサ}[preprocessor]が
+純粋なテキスト置換を行う．\texttt{\#include} ファイルとマクロを展開し，
+条件付きコンパイルを評価する．\margin{プリプロセッサはテキストに対して
+働くので，\texttt{a + b} というマクロ本体を \texttt{2 * M} で使うと
+\texttt{2 * a + b} になる．そのためマクロ本体は括弧で囲んで書く．}
+次の定義があるとき，
+\begin{lstlisting}[language=C++, numbers=none]
+#define BLOCK_SIZE 256
+int threads = BLOCK_SIZE;
+\end{lstlisting}
+コンパイラ本体が目にするのは \texttt{int threads = 256;} だけである．
+
+\subsection{PTX，SASS，ファットバイナリ}
+
+デバイス側のバックエンドの出力は，まだ機械語ではない．
+
+\begin{definition}[PTX と SASS]
+  \term[ぴーてぃーえっくす]{PTX}[PTX (Parallel Thread Execution)]
+  （Parallel Thread Execution）は NVIDIA の仮想 ISA である（第1章）．
+  アーキテクチャに依存しない命令セットであり，そのプログラムは後で
+  機械語に翻訳される．レジスタは仮想的であるため，PTX コードには
+  レジスタ割り付けがない．
+  \term[さす]{SASS}[SASS]（シェーダアセンブリ）は1つの GPU
+  アーキテクチャの機械語であり，物理レジスタが割り付けられている．
+  SASS は GPU の世代ごとに変わるが，PTX は互換性を保つ．古い PTX
+  バージョン向けに書かれたコードは新しい GPU 向けにもコンパイルでき，
+  新しい PTX バージョンは命令を追加していく．\margin{\cref{ex:l10-ptx-kernel}の
+  \texttt{.version} である PTX ISA~8.0 は CUDA~12.0 とともに登場した．
+  PTX ISA~9.4 のリリース履歴は CUDA~1.0 の PTX ISA~1.0 から始まる
+  \cite[§13]{nvidia2026ptx}．}
+\end{definition}
+
+PTX ISA は目的を直接述べている．\enquote{PTX は汎用の並列スレッド実行の
+ための仮想マシンと ISA を定義する}．その目標には \enquote{複数の GPU 世代に
+わたる安定した ISA} が含まれる \cite[§1.1--1.2]{nvidia2026ptx}．\margin{PTX
+のレジスタはある型の変数であり，カーネルはいくつでも宣言できる．
+\texttt{ptxas} はそれらをスレッド当たり最大255個の物理レジスタに
+対応付け（CPG Table~21 \cite{nvidia2024cudaguide}），残りをローカル
+メモリにスピルする \cite[§5.1.1]{nvidia2026ptx}．レジスタ割り付けは
+第11章で扱う．}
+
+\begin{definition}[ファットバイナリ]
+  \term[ふぁっとばいなり]{ファットバイナリ}[fat binary]とは，ホストコードに
+  加えて，同じデバイスコードの複数の翻訳，すなわちいくつかの
+  実アーキテクチャ向けの機械語といくつかの仮想アーキテクチャ向けの PTX を
+  持つ実行ファイルである．実行時にデバイス部分はドライバに渡され，
+  ドライバは存在する GPU に最も適した翻訳を選ぶ
+  \cite[§5.6.2]{nvidia2026nvcc}．
+\end{definition}
+
+ファットバイナリが存在する GPU 向けの機械語を含まない場合，ドライバは
+実行時に PTX をコンパイルする．
+
+\begin{definition}[JIT コンパイル]
+  \term[じっとこんぱいる]{JITコンパイル}[JIT compilation]
+  （ジャストインタイムコンパイル）では，アプリケーションが PTX を
+  ロードするときにデバイスドライバがそれを機械語にコンパイルする．
+  CPG §3.1.1.2 Just-in-Time Compilation は，これが
+  \enquote{アプリケーションのコンパイル時に存在しなかったデバイスで
+  アプリケーションを実行する唯一の方法} であると述べている
+  \cite{nvidia2024cudaguide}．
+\end{definition}
+
+JIT コンパイルは起動時間を要する．そのためドライバは各結果のコピーを
+\emph{コンピュートキャッシュ}（compute cache）に保持する．このキャッシュは
+ドライバの更新時に無効化されるので，新しい JIT コンパイラが古い
+アプリケーションを改善できる（CPG §3.1.1.2）．\margin{コンピュート
+キャッシュは Linux では \texttt{\textasciitilde/.nv/ComputeCache} に
+置かれ，既定の容量は \SI{1}{\gibi\byte}（組み込みプラットフォームでは
+\SI{256}{\mebi\byte}），最大 \SI{4}{\gibi\byte} であり，
+\texttt{CUDA\_CACHE\_MAXSIZE} で設定する（CPG §18 CUDA Environment
+Variables \cite{nvidia2024cudaguide}）．}想定する GPU 向けの機械語も
+持つファットバイナリはこの遅延をまったく生じず，その PTX によって
+プログラムは後の GPU でも動き続ける．
+\begin{lstlisting}[language=bash, numbers=none]
+nvcc x.cu --gpu-architecture=compute_80 \
+          --gpu-code=compute_80,sm_86,sm_89
+\end{lstlisting}
+は Compute Capability 8.6 と~8.9 向けの機械語を生成し，Compute
+Capability~8.0 向けの PTX を残す．後の GPU はこの PTX を JIT
+コンパイルできる \cite[§5.6.2]{nvidia2026nvcc}．\caution{機械語は
+メジャーな Compute Capability をまたいで移植できない．Compute
+Capability X.y 向けの cubin は，$z\ge y$ である X.z でのみ動作する
+（CPG §3.1.2 Binary Compatibility \cite{nvidia2024cudaguide}）．}
+これに対して PTX は常に同じかそれより高い Compute Capability に
+コンパイルできるが，その結果は仮想アーキテクチャより後に追加された
+機能を使えない．Compute Capability 6.0 向けの PTX を 7.0 の GPU で
+JIT コンパイルしても，テンソルコアは使われない（CPG §3.1.3 PTX
+Compatibility）．
+
+\section{PTX}
+\label{sec:l10-ptx}
+
+PTX は CUDA コードを読む通常の最下層であり，その命令形式は詳しく
+知っておく価値がある．\source{M10，PTX；PTX ISA
+§4.3，§9.2--9.3 \cite{nvidia2026ptx}；K12 §1.3.7．}
+
+\subsection{命令形式}
+
+PTX の命令は，演算の名前である\term[おぺこーど]{オペコード}[opcode]と，
+\term[おぺらんど]{オペランド}[operand]の並びからなる．PTX ISA はこれを
+次のように述べている．\enquote{PTX の命令は一般に0個から4個の
+オペランドを持ち，加えてオペコードの左側の \texttt{@} 記号の後に置く
+省略可能なガード述語を持つ} \cite[§9.2]{nvidia2026ptx}．
+\begin{lstlisting}[language=PTX, numbers=none]
+@p  opcode;
+@p  opcode a;
+@p  opcode d, a;
+@p  opcode d, a, b;
+@p  opcode d, a, b, c;
+\end{lstlisting}
+値を生成する命令では，\texttt{d} がデスティネーション，\texttt{a}，
+\texttt{b}，\texttt{c} がソースであり，デスティネーションが先に
+来る．\margin{オペコードには接尾辞が付く．型（\texttt{.s32} 符号付き，
+\texttt{.u32} 符号なし，\texttt{.f32} 浮動小数点，\texttt{.b32}
+型なしのビット列，\texttt{.pred}）と，メモリ命令では状態空間
+（\texttt{.global}，\texttt{.shared}，\texttt{.local}，
+\texttt{.param}）である．}算術命令とメモリ命令はすべて，
+\texttt{add.s32} や \texttt{ld.global.f32} のように操作の対象とする型を
+指定する．
+
+\begin{definition}[ガード述語，述語レジスタ]
+  \term[じゅつごれじすた]{述語レジスタ}[predicate register]は
+  \texttt{.pred} 型の1ビットの PTX レジスタであり，他のレジスタと同様に
+  \texttt{.reg .pred p, q;} のように宣言する．命令の前に置いた
+  \term[がーどじゅつご]{ガード述語}[guard predicate] \texttt{@p} は
+  その命令を条件付きにする．命令は \texttt{p} が真であるスレッドでのみ
+  効果を持つ．\texttt{@!p} はその否定を使う．ガードのない命令は
+  無条件に実行される．
+\end{definition}
+
+述語レジスタはすべての PTX レジスタと同様に仮想的である．
+\texttt{.pred} 型は，1ビットで足りることを \texttt{ptxas} に
+伝える \cite[§9.3]{nvidia2026ptx}．\margin{述語は，第5章と第6章の
+if 変換と述語付き実行の背後にある仕組みである．}述語を設定するのは
+最も一般には \texttt{setp} であり，これは \enquote{2つの数値を関係演算子で
+比較する} \cite[§9.7.7.2]{nvidia2026ptx}．\texttt{setp} は
+\texttt{|} で区切った2つのデスティネーションに書き込むことができ
+（\texttt{shfl.sync} などいくつかの命令も同じ記法を使う），
+2つ目には比較結果の否定が入る．
+
+\begin{example}[述語による分岐の除去]
+  \label{ex:l10-predication}
+  文 \texttt{if (a < b) c = c + 1; else c = c - 1;} は，\texttt{a}，
+  \texttt{b}，\texttt{c} がそれぞれ \texttt{\%r1}，\texttt{\%r2}，
+  \texttt{\%r3} にあるとき，分岐を必要としない．
+\begin{lstlisting}[language=PTX, numbers=none]
+     setp.lt.s32  %p1|%p2, %r1, %r2; // p1 = a<b, p2 = !p1
+@%p1 add.s32      %r3, %r3, 1;       // then: c = c + 1
+@%p2 sub.s32      %r3, %r3, 1;       // else: c = c - 1
+\end{lstlisting}
+  ワープのどのスレッドも3つの命令すべてを発行し，各スレッドは2つの更新の
+  ちょうど一方をコミットする．分岐命令に同じガードを付けると，本当の
+  条件ジャンプになる．
+\begin{lstlisting}[language=PTX, numbers=none]
+     setp.lt.s32  %p1, %r1, %r2;
+@!%p1 bra         ELSE;              // a >= b ならジャンプ
+\end{lstlisting}
+\end{example}
+
+\tip{比較演算子は，符号付き整数と浮動小数点では \texttt{eq}，
+\texttt{ne}，\texttt{lt}，\texttt{le}，\texttt{gt}，\texttt{ge} である．
+符号なし整数では \texttt{eq}，\texttt{ne}，\texttt{lo}，\texttt{ls}，
+\texttt{hi}，\texttt{hs}（lower，lower or same，higher，higher or same）を
+使う \cite[§9.3.1]{nvidia2026ptx}．}述語付きの形は，ダイバージェンス
+（第6章）の危険と引き換えに両側を発行する．このような短い本体では
+コンパイラはこの形を選ぶ．
+
+\subsection{文}
+
+PTX プログラムは文の並びである．PTX ISA の言葉では，\enquote{PTX の文は
+ディレクティブか命令のいずれかである．文は省略可能なラベルで始まり，
+セミコロンで終わる} \cite[§4.3]{nvidia2026ptx}．
+
+\begin{definition}[ディレクティブ，ラベル]
+  \term[でぃれくてぃぶ]{ディレクティブ}[directive]は，キーワードが
+  ドットで始まり，計算ではなく宣言を行う文である．PTX のバージョンと
+  ターゲット（\texttt{.version}，\texttt{.target}，
+  \texttt{.address\_size}），関数とカーネル（\texttt{.func}，
+  \texttt{.entry}），状態空間内の変数（\texttt{.reg}，
+  \texttt{.global}，\texttt{.shared}）を宣言する．
+  \term[らべる]{ラベル}[label]は，文の前に置かれ，コロンが続く名前である．
+  分岐命令はそれを分岐先として使う．
+\end{definition}
+
+\begin{example}[完全な PTX カーネル]
+  \label{ex:l10-ptx-kernel}
+  次のカーネルは，グローバル配列の要素をスレッドごとに1つずつ2倍にする．
+\begin{lstlisting}[language=PTX, numbers=none]
+.version 8.0
+.target sm_80
+.address_size 64
+.global .f32 buf[1024];
+
+.visible .entry twice()
+{
+    .reg .b32  %r<2>;
+    .reg .b64  %rd<4>;
+    .reg .f32  %f<3>;
+start:
+    mov.u32        %r1, %tid.x;
+    mov.u64        %rd1, buf;      // buf のアドレス
+    mul.wide.u32   %rd2, %r1, 4;   // バイトオフセット 4*tid
+    add.u64        %rd3, %rd1, %rd2;
+    ld.global.f32  %f1, [%rd3];
+    add.f32        %f2, %f1, %f1;  // 2 * buf[tid]
+    st.global.f32  [%rd3], %f2;
+    ret;
+}
+\end{lstlisting}
+  最初の4行はディレクティブである．\texttt{.reg .b32 \%r<2>} は
+  レジスタ \texttt{\%r0} と \texttt{\%r1} を宣言する．ラベル
+  \texttt{start} は最初の命令を示し，算術命令とメモリ命令はすべて
+  型を指定している．
+\end{example}
+
+\margin{\texttt{\%r<2>} は番号付きのレジスタの範囲を表す PTX の
+略記である．\texttt{mul.wide.u32} は2つの32ビット値を掛けて64ビットの
+結果を得る．64ビットのアドレス空間へのバイトオフセットにはこれが必要である．}
+
+\subsection{その他の命令}
+
+算術とメモリアクセスのほかに，PTX には通常の命令群がそろっている．
+制御フローには \texttt{bra}（ラベルへの分岐），\texttt{call}
+（関数呼び出し），\texttt{ret}（復帰）を使う．\caution{PTX ISA には
+スタックポインタの特殊レジスタはない．ただし，そのようなレジスタが
+\texttt{\%tid} や \texttt{\%ntid} と並べて挙げられることがある．
+固定サイズのローカル記憶域は \texttt{.local} 配列であり，コンパイラが
+生成する PTX は，\texttt{\%SP} や \texttt{\%SPL} と名付けた通常の
+レジスタを通してそれをアドレス指定する．実行時にしか大きさの
+わからないスタック記憶域は \texttt{alloca} で確保し，\texttt{stacksave}
+と \texttt{stackrestore} がスタックポインタを読み出し，元に戻す
+\cite[§7.3]{nvidia2026ptx}．}
+同期には，\texttt{\_\_syncthreads()} がコンパイルされる先のバリア
+\texttt{bar.sync} と，\term[めもりふぇんす]{メモリフェンス}[memory fence]
+命令 \texttt{membar} と \texttt{fence} がある．後者は
+\enquote{メモリ操作の順序を強制する} \cite[§9.7.15.4]{nvidia2026ptx}．
+すなわち，スレッドのフェンス前のメモリアクセスは，フェンス後のアクセスより
+先に他のスレッドから見えるようになる．アトミックな読み出し・変更・書き込み
+操作には \texttt{atom} を使い，\texttt{atom.global.add.u32} のように
+常に演算と型を指定する．\margin{すべての組み合わせがあるわけではない．
+半精度のアトミック加算は \texttt{atom.add.noftz.f16}（ゼロへのフラッシュ
+なし）と書き，PTX ISA~6.3 と \texttt{sm\_70} を必要とする
+\cite[§9.7.15.5]{nvidia2026ptx}．}
+
+特殊レジスタ（第4章）は各スレッドに座標を与える．\texttt{\%tid}
+（CTA 内のスレッドインデックス），\texttt{\%ntid}（CTA の各次元の
+スレッド数），\texttt{\%ctaid} と \texttt{\%nctaid}（ブロック
+インデックスとグリッドの大きさ）である \cite[§10]{nvidia2026ptx}．
+命令とその変種の完全な一覧は PTX ISA 自体にある．
+
+\section{IR と基本ブロック}
+\label{sec:l10-ir}
+
+オプティマイザには，命令が単純で制御フローが明示的な形のプログラムが
+必要である．\source{M10，IR と基本ブロック；
+Aho ら §6.2，§8.4 \cite{aho2006compilers}．}第1の要件は3番地コードに，
+第2の要件は基本ブロックとフローグラフにつながる．
+
+\subsection{3番地コード}
+
+\begin{definition}[3番地コード]
+  \term[さんばんちこーど]{3番地コード}[three-address code]では，すべての
+  命令が高々1つの演算子と高々3つのアドレス（変数，一時変数，定数の名前）を
+  持ち，\texttt{A = B op C} という形をとる．複雑な式は，コンパイラが
+  生成する一時変数を使って，このような命令の列に分解される．
+\end{definition}
+
+LLVM IR と PTX はこの形に近い．その命令の大半は1つの演算，1つの
+デスティネーション，1つか2つのソースを持つ（PTX には \texttt{mad} の
+ような3ソースの命令もある）．LLVM IR の
+\begin{lstlisting}[language=C++, numbers=none]
+%sum = add i32 %x, %y
+\end{lstlisting}
+では，\texttt{\%sum} がデスティネーション，\texttt{add} が演算，
+\texttt{i32} が結果の型（32ビット整数），\texttt{\%x} と \texttt{\%y} が
+ソースである \cite{llvm2026langref}．\margin{LLVM IR では符号付き整数と
+符号なし整数に1つの \texttt{add} を使う．どちらも同じビット列を生む
+からである．PTX は解釈をオペコードに書き込む（\texttt{add.s32}，
+\texttt{add.u32}）．}同じ演算の PTX の形は
+\texttt{add.s32 \%r3, \%r1, \%r2} である．式
+\texttt{y = a * b + c} は \texttt{t = a * b} と \texttt{y = t + c} の
+2つの命令になる．
+
+\subsection{基本ブロック}
+
+第6章では\term*{基本ブロック}を非形式的に導入した．その形式的な定義は，
+ほとんどの最適化が対象とする単位である．
+
+\begin{definition}[基本ブロック]
+  \label{def:l10-basic-block}
+  基本ブロック\index{きほんぶろっく@基本ブロック}とは，入口と出口を
+  1つずつ持つ，連続した命令の極大の列である．制御はその最初の命令からしか
+  入れず，いったん入るとブロックのすべての命令が順に実行され，最後の命令の
+  後でのみブロックを離れる．最後の命令は通常，制御フロー命令（分岐，
+  ジャンプ，復帰）である．次の命令が分岐先である場所でもブロックは終わる．
+\end{definition}
+
+\begin{definition}[制御フローグラフ，先行ブロック，後続ブロック]
+  \term[せいぎょふろーぐらふ]{制御フローグラフ}[control flow graph (CFG)]
+  （CFG）は，関数の基本ブロックをノードとし，ジャンプ，成立した条件分岐，
+  次のブロックへのフォールスルーのいずれかによって $B$ の終わりから $C$ の
+  始まりへ制御が移りうるとき，辺 $B\to C$ を持つ．\index{CFG|see{制御フローグラフ}}
+  このとき $B$ は $C$ の\term[せんこうぶろっく]{先行ブロック}[predecessor]，
+  $C$ は $B$ の\term[こうぞくぶろっく]{後続ブロック}[successor]である．
+  \emph{入口}（entry）ノードは最初の命令のブロックに先行し，
+  \emph{出口}（exit）ノードは関数を抜けるすべてのブロックの後に続く．
+\end{definition}
+
+\begin{marginfigure}
+  \centering
+  \input{figures/l10-diamond}
+  \caption{\texttt{if}/\texttt{else} のダイヤモンド型 CFG．}
+  \label{fig:l10-diamond}
+\end{marginfigure}
+\texttt{if}/\texttt{else} は第6章のダイヤモンドを生む
+（\cref{fig:l10-diamond}）．条件を持つブロック B1 には2つの後続
+ブロック，すなわち2つの分岐先 B2 と B3 があり，それらは1つの後続
+ブロックである合流ブロック B4 を共有する．辺は B1$\to$B2，B1$\to$B3，
+B2$\to$B4，B3$\to$B4 である．1つのブロックの中での最適化は単純である．
+ブロックを通る経路は1つしかないからである．ブロックが \texttt{a + b} を
+2回計算し，その間にどちらのオペランドも再定義されなければ，2回目の計算は
+1回目の結果を再利用できる．
+
+\begin{definition}[局所最適化]
+  \term[きょくしょさいてきか]{局所最適化}[local optimization]は，
+  一度に1つの基本ブロックを対象とし，そのブロックに入る経路や
+  そこから出る経路についての情報は使わない．
+\end{definition}
+
+\subsection{基本ブロックの求め方}
+
+命令の列のブロックは，そのリーダから決まる．
+
+\begin{definition}[リーダ]
+  \term[りーだせんとうめいれい]{リーダ（先頭命令）}[leader]は，基本
+  ブロックを開始する命令である．3つの規則ですべてのリーダが求まる．
+  (1) 最初の命令はリーダである．(2) 条件ジャンプまたは無条件ジャンプの
+  分岐先はすべてリーダである．(3) ジャンプの直後の命令はすべてリーダで
+  ある．各基本ブロックは，1つのリーダから次のリーダの直前までである．
+\end{definition}
+
+\margin{分岐ダイバージェンスの再収束点（第6章）は常にリーダである．
+それは合流ブロックの最初の命令であり，分岐先だからである．}
+
+\begin{example}[PTX のループの基本ブロック]
+  \label{ex:l10-leaders}
+  次のループは $0+1+\cdots+(n-1)$ を求める．$i$ は \texttt{\%r1}，
+  和 $s$ は \texttt{\%r2}，$n$ は \texttt{\%r3} にある．
+\begin{lstlisting}[language=PTX, numbers=none]
+      mov.u32  %r1, 0;             // (1) i = 0
+      mov.u32  %r2, 0;             //     s = 0
+loop: setp.hs.u32 %p1, %r1, %r3;   // (2) i >= n (符号なし)
+@%p1  bra      done;
+      add.u32  %r2, %r2, %r1;      // (3) s = s + i
+      add.u32  %r1, %r1, 1;        //     i = i + 1
+      bra      loop;
+done: st.global.u32 [%rd1], %r2;   // (2),(3)
+\end{lstlisting}
+  コメントは，命令をリーダにする規則を示している．最初の \texttt{mov} は
+  規則1によりリーダである．\texttt{loop} の \texttt{setp} は
+  \texttt{bra loop} の分岐先である（規則2）．最初の \texttt{add} は
+  条件分岐 \texttt{@\%p1 bra done} の直後にある（規則3）．\caution{ガード
+  付きの分岐 \texttt{@\%p1 bra} は条件ジャンプである．その次の命令は，
+  単にフォールスルーでも到達するにもかかわらずリーダである．}
+  \texttt{done} のストアは，分岐先であり，かつ \texttt{bra loop} の
+  直後の命令でもある．4つのリーダから4つのブロックが得られる．B1
+  （2つの \texttt{mov}），B2（\texttt{setp} と条件分岐），B3（2つの
+  \texttt{add} と \texttt{bra loop}），B4（ストア）である．
+  \cref{fig:l10-loop-cfg}が CFG を示す．B1$\to$B2，フォールスルーに
+  よる B2$\to$B3 と分岐成立時の B2$\to$B4，そしてループを閉じる辺
+  B3$\to$B2 である．
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-loop-cfg}
+  \caption{\cref{ex:l10-leaders}のループの基本ブロックと CFG．辺
+    B3$\to$B2 は前のブロックへ戻り，ループを閉じる．}
+  \label{fig:l10-loop-cfg}
+\end{figure}
+
+B3$\to$B2 のように，ループを開始するブロックへ戻る辺を
+\emph{後退辺}（back edge）と呼ぶ．\margin{ループ本体の終わりから
+ループの判定への辺は後退辺である．\cref{sec:l10-rd-example}の
+データフローの反復が2回以上のパスを必要とするのはこの辺のためである．}
+
+\section{データフロー解析入門}
+\label{sec:l10-dfa}
+
+多くの最適化は，複数の基本ブロックにまたがる事実を
+必要とする．\source{M10，データフロー解析入門；Aho ら
+§9.1--9.2 \cite{aho2006compilers}．}
+
+\begin{definition}[大域最適化]
+  \term[たいいきさいてきか]{大域最適化}[global optimization]は，
+  関数全体の基本ブロックにわたって集めた情報を使い，その CFG の
+  すべての経路を考慮する．
+\end{definition}
+
+局所的であれ大域的であれ，どの最適化も元のプログラムの意味を
+保存しなければならない．すなわち，どの入力に対しても最適化後の
+プログラムは同じ観測可能な結果を生まなければならない．\caution{浮動小数点は
+既定でこの規則を曲げる．nvcc は乗算とそれに続く加算を1つの融合積和に
+縮約し，丸めが2回から1回になるため，結果が最後のビットで異なりうる．
+\texttt{-{}-fmad=false} でこの縮約を無効にできる（NVCC §4.2.7.11
+\cite{nvidia2026nvcc}）．}代表的な大域最適化は，いずれも第11章で
+扱うが，冗長な命令の除去（どの経路でも同じオペランドで2回計算される式），
+定数伝播と\term[こぴーでんぱ]{コピー伝播}[copy propagation]
+（変数を，それに代入された定数や別の変数で置き換えること．これにより
+さらなる冗長性が現れることが多い），不要コード除去（結果が一度も使われない
+命令の除去），コード移動（命令をより実行回数の少ない場所，たとえば
+ループの外へ移すこと），誘導変数の検出と強度削減である．\margin{コピー
+伝播を1行で示す．\texttt{y = x} の後，後続の \texttt{z = y + 1} は
+\texttt{z = x + 1} になる．\texttt{y} の他の使用が残っていなければ，
+\texttt{y = x} は不要である．}これらはどれも1つのブロックの中では
+判断できない．あるブロックの \texttt{x} が3ブロック前に代入された定数の
+ままかどうかは，その間のすべての経路に依存する．
+
+\begin{definition}[データフロー解析]
+  \term[でーたふろーかいせき]{データフロー解析}[data-flow analysis]と
+  呼ばれる一群の手法は，プログラムの各点について，その点に到達しうる
+  すべての実行に関する事実を計算する．各基本ブロックの効果を解析し，
+  その結果を CFG の辺に沿って伝播させることによる．解析ごとに
+  調べる性質が異なる．
+\end{definition}
+
+\subsection{抽象化：点，状態，伝達関数}
+
+データフロー解析は，プログラムをその文の間の状態によって記述する．
+
+\begin{definition}[プログラム点，伝達関数]
+  \term[ぷろぐらむてん]{プログラム点}[program point]は，文の前または後に
+  位置する．解析は各点に状態，すなわちそこで成り立つ事実の集合を
+  対応付ける．ブロック $B$ について，$\mathrm{IN}[B]$ はその最初の文の
+  前の点の状態，$\mathrm{OUT}[B]$ は最後の文の後の状態である．文 $s$ の
+  \term[でんたつかんすう]{伝達関数}[transfer function] $f_s$ は，$s$ の
+  前の状態を $s$ の後の状態に写す．
+\end{definition}
+
+ブロックの内部では，ある文の後の点は次の文の前の点である
+（\cref{fig:l10-transfer}）．したがって文 $s_1,\dots,s_n$ からなる
+ブロックの伝達関数は合成
+\begin{equation}
+  \label{eq:l10-compose}
+  \mathrm{OUT}[B] = f_B(\mathrm{IN}[B]),\qquad
+  f_B = f_{s_n}\circ\cdots\circ f_{s_2}\circ f_{s_1}
+\end{equation}
+である．ブロックの間では，制御はどの先行ブロックからも到着しうるので，
+ブロックの入口の状態はすべての先行ブロックの状態を組み合わせたもので
+なければならない．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-transfer}
+  \caption{左：3つの文からなるブロックのプログラム点．各文の伝達関数は，
+    その前の状態をその後の状態に写す．右：合流点では，合流演算
+    （ここでは和集合）が先行ブロックの状態を組み合わせる．}
+  \label{fig:l10-transfer}
+\end{figure}
+
+\begin{definition}[合流演算子，前向き解析]
+  \term[ごうりゅうえんざんし]{合流演算子}[meet operator]は，複数の辺から
+  合流点に到着する状態を1つの状態に組み合わせる．
+  \term[まえむきかいせき]{前向き解析}[forward analysis]では，状態は
+  制御と同じ向きに流れる．方程式は
+  \begin{equation}
+    \label{eq:l10-forward}
+    \mathrm{IN}[B] = \bigcup_{P\in\mathrm{pred}(B)}\mathrm{OUT}[P],\qquad
+    \mathrm{OUT}[B] = f_B(\mathrm{IN}[B])
+  \end{equation}
+  である．
+\end{definition}
+
+後ろ向きの問題は逆向きに，値の使用からそれが計算された場所へと
+進む．$\mathrm{IN}[B]=f_B(\mathrm{OUT}[B])$，
+$\mathrm{OUT}[B]=\bigcup_{S\in\mathrm{succ}(B)}\mathrm{IN}[S]$
+である．\margin{レジスタ割り付けの背後にある後ろ向き解析である生存解析は
+第11章の主題である．本書で扱う2つの解析はどちらも和集合を合流演算とする．}
+後に示す\cref{fig:l10-rd-cfg}の CFG では，B5 の先行ブロックは B3 と
+B4 なので，前向き解析では
+$\mathrm{IN}[\mathrm{B5}]=\mathrm{OUT}[\mathrm{B3}]\cup\mathrm{OUT}[\mathrm{B4}]$
+となる．B5 の後続ブロックは B2 と EXIT なので，後ろ向き解析では
+$\mathrm{OUT}[\mathrm{B5}]=\mathrm{IN}[\mathrm{B2}]\cup\mathrm{IN}[\mathrm{EXIT}]$
+となる．
+
+\subsection{到達定義}
+
+最初の解析は，値がどこから来るかに関するものである．
+
+\begin{definition}[定義，使用]
+  変数の\term[ていぎ]{定義}[definition]とは，その変数に値を代入する文で
+  あり，\term[しよう]{使用}[use]とは，その変数を読む文である．
+  \texttt{a = x + y} という文は \texttt{a} を定義し，\texttt{x} と
+  \texttt{y} を使用する．
+\end{definition}
+
+\begin{definition}[到達定義]
+  定義 $d$ が点 $p$ に\emph{到達する}とは，$d$ の直後の点から $p$ への
+  経路で，その途中で $d$ が殺されない，すなわち同じ変数の他の定義に
+  上書きされないものが存在することである．
+  \term[とうたつていぎ]{到達定義}[reaching definitions]の解析は，
+  各プログラム点について，そこに到達する定義の集合を計算する．
+\end{definition}
+
+\caution{経路は1つで足りる．定義が $p$ に到達するのは，$p$ へ至る
+\emph{ある}経路で生き残る場合であり，すべての経路で生き残る必要はない．
+解析はこの方向に保守的であり，実行時には決して通らない経路の定義を
+含めることがある．}\texttt{x} の定義がちょうど1つ，たとえば
+\texttt{x = 4} だけが \texttt{x} の使用に到達するなら，その使用は
+定数~4 で置き換えられる．2つ目の定義も到達するなら置き換えられない．
+定数伝播はこのようにしてこの解析を使う．
+
+\begin{definition}[gen 集合と kill 集合]
+  定義 $d$\,: \texttt{u = v + w} について，
+  \term[じぇんしゅうごう]{gen集合}[gen set]は $\mathrm{gen}_d=\{d\}$，
+  すなわち文が生成する定義であり，\term[きるしゅうごう]{kill集合}[kill set]
+  $\mathrm{kill}_d$ は，プログラム中の \texttt{u} の他のすべての定義，
+  すなわちこの文が上書きする定義の集合である．$d$ の伝達関数は
+  \begin{equation}
+    \label{eq:l10-fd}
+    f_d(x) = \mathrm{gen}_d \cup (x - \mathrm{kill}_d)
+  \end{equation}
+  である．
+\end{definition}
+
+\margin{記法：$x - y$ は差集合，すなわち $y$ に含まれない $x$ の要素である．
+$x$ は文の前の点に到達する定義の集合を表す．}$d$ に到着した定義は，
+$d$ がそれを殺さない限り生き残り，$d$ 自身が追加される．ブロックでは，
+これらの関数は\cref{eq:l10-compose}のように合成される．2つの文では
+\begin{align*}
+  f_2(f_1(x)) &= \mathrm{gen}_2 \cup \bigl(\bigl(\mathrm{gen}_1 \cup
+    (x - \mathrm{kill}_1)\bigr) - \mathrm{kill}_2\bigr)\\
+  &= \bigl(\mathrm{gen}_2 \cup (\mathrm{gen}_1 - \mathrm{kill}_2)\bigr)
+     \cup \bigl(x - (\mathrm{kill}_1 \cup \mathrm{kill}_2)\bigr)
+\end{align*}
+となり，これは\cref{eq:l10-fd}と同じ形である．帰納法により，$n$ 個の
+文からなるブロックの伝達関数は
+$f_B(x)=\mathrm{gen}_B\cup(x-\mathrm{kill}_B)$ であり，
+\begin{equation}
+  \label{eq:l10-genkill}
+  \begin{aligned}
+    \mathrm{kill}_B &= \mathrm{kill}_1\cup\mathrm{kill}_2\cup\cdots\cup\mathrm{kill}_n,\\
+    \mathrm{gen}_B &= \mathrm{gen}_n \cup (\mathrm{gen}_{n-1}-\mathrm{kill}_n)
+      \cup (\mathrm{gen}_{n-2}-\mathrm{kill}_{n-1}-\mathrm{kill}_n)\\
+      &\qquad\cup\cdots\cup(\mathrm{gen}_1-\mathrm{kill}_2-\cdots-\mathrm{kill}_n)
+  \end{aligned}
+\end{equation}
+である．ブロックは，そのいずれかの文が殺す定義をすべて殺し，
+自分の定義のうちブロック内の後の文が上書きしないものをすべて
+生成する．\tip{$\mathrm{gen}_B$ はブロックを下から上へ読むと求まる．
+ある定義は，ブロック内の後の文が同じ変数を再び定義しない限り
+$\mathrm{gen}_B$ に属する．}
+
+\begin{example}[CFG の gen 集合と kill 集合]
+  \label{ex:l10-genkill}
+  \cref{fig:l10-rd-cfg}の CFG は，\texttt{x[0]} から \texttt{x[n-1]} の
+  絶対値の和を \texttt{s} に求める（$n\ge 1$ とする．判定はループの
+  末尾にある）．定義は7つある．\texttt{i} は $d_1$ と $d_7$，
+  \texttt{s} は $d_2$，$d_4$，$d_6$，\texttt{t} は $d_3$ と $d_5$ で
+  定義される．ブロック B4 は2つの文を持つ．$d_5$\,: \texttt{t = -t} は
+  $\mathrm{gen}=\{d_5\}$，$\mathrm{kill}=\{d_3\}$，
+  $d_6$\,: \texttt{s = s + t} は $\mathrm{gen}=\{d_6\}$，
+  $\mathrm{kill}=\{d_2,d_4\}$ である．\cref{eq:l10-genkill}により，
+  $\mathrm{kill}_{\mathrm{B4}}=\{d_2,d_3,d_4\}$，
+  $\mathrm{gen}_{\mathrm{B4}}=\{d_6\}\cup(\{d_5\}-\{d_2,d_4\})=\{d_5,d_6\}$
+  となる．\cref{tab:l10-genkill}に5つのブロックすべてを示す．
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-rd-cfg}
+  \caption{到達定義の例の CFG．\texttt{t} が正なら \texttt{t} を，
+    そうでなければ $-$\texttt{t} を加えるループである．辺 B5$\to$B2 が
+    後退辺である．}
+  \label{fig:l10-rd-cfg}
+\end{figure}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{\cref{fig:l10-rd-cfg}の各ブロックの gen 集合と kill 集合．}
+  \label{tab:l10-genkill}
+  \begin{tabular}{@{}l>{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{24mm}@{}}
+    \toprule
+    ブロック & $\mathrm{gen}_B$ & $\mathrm{kill}_B$ \\
+    \midrule
+    B1 & $\{d_1,d_2\}$ & $\{d_4,d_6,d_7\}$ \\
+    B2 & $\{d_3\}$ & $\{d_5\}$ \\
+    B3 & $\{d_4\}$ & $\{d_2,d_6\}$ \\
+    B4 & $\{d_5,d_6\}$ & $\{d_2,d_3,d_4\}$ \\
+    B5 & $\{d_7\}$ & $\{d_1\}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{到達定義の例}
+\label{sec:l10-rd-example}
+
+すべてのブロックの gen 集合と kill 集合がわかれば，到達定義は
+CFG 全体にわたる連立方程式から求まる．\source{M10，
+到達定義の例；Aho ら §9.2.4
+\cite{aho2006compilers}．}
+
+\subsection{方程式と反復アルゴリズム}
+
+ENTRY 以外のすべてのブロック $B$ について，到達定義は，和集合を
+合流演算とする\cref{eq:l10-forward}の前向き問題である．
+\begin{equation}
+  \label{eq:l10-rd}
+  \mathrm{IN}[B]=\bigcup_{P\in\mathrm{pred}(B)}\mathrm{OUT}[P],\qquad
+  \mathrm{OUT}[B]=\mathrm{gen}_B\cup(\mathrm{IN}[B]-\mathrm{kill}_B)
+\end{equation}
+これに境界条件 $\mathrm{OUT}[\mathrm{ENTRY}]=\emptyset$ が加わる．
+関数の始まりにはどの定義も到達しない．\margin{出口ノードは文を
+持たないので $\mathrm{OUT}[\mathrm{EXIT}]=\mathrm{IN}[\mathrm{EXIT}]$
+であり，これは関数の終わりに到達する定義である．}CFG にループがあると
+方程式は循環する．$\mathrm{IN}[\mathrm{B2}]$ は
+$\mathrm{OUT}[\mathrm{B5}]$ に依存し，それは
+$\mathrm{IN}[\mathrm{B2}]$ に依存する．方程式は反復によって解く．
+
+\begin{definition}[反復アルゴリズム，不動点]
+  データフロー問題の\term[はんぷくあるごりずむ]{反復アルゴリズム}[iterative algorithm]は，
+  すべての状態に初期値を与えて始め，すべてのブロックについて方程式を
+  順に評価するパスを，1回のパス全体でどの状態も変化しなくなるまで
+  繰り返す．そのとき状態は方程式の解であり，パスの
+  \term[ふどうてん]{不動点}[fixed point]である．すなわち方程式をもう一度
+  適用しても状態は変わらない．
+\end{definition}
+
+到達定義の場合，アルゴリズムは次のとおりである．
+\begin{lstlisting}[mathescape, numbers=none]
+$\lxOUT[\lxENTRY] = \emptyset$
+for each block $B \ne \lxENTRY$:  $\lxOUT[B] = \emptyset$
+while some $\lxOUT$ changed in the last pass:
+    for each block $B \ne \lxENTRY$:
+        $\lxIN[B] = \bigcup_{P \in \lxpred(B)} \lxOUT[P]$
+        $\lxOUT[B] = \lxgen_B \cup (\lxIN[B] - \lxkill_B)$
+\end{lstlisting}
+
+このアルゴリズムは停止する．どの $\mathrm{OUT}$ 集合も空から始まり，
+\cref{eq:l10-rd}は入力が増えたときにしか定義を追加しないので，どの集合も
+縮むことはない．集合は有限な定義の集合の部分集合なので，増えるのは
+有限回に限られる．\caution{パスがブロックを訪れる順序は，パスの回数を
+変えるが結果は変えない．次の例のように先行ブロックを後続ブロックより
+先に訪れると，1回のパスで情報が遠くまで伝わり，さらにパスを要するのは
+後退辺だけになる．}空集合から始めると最小の解が得られ，それはその点への
+経路が実際に存在する定義だけを含む．
+
+\begin{definition}[ビットベクタ]
+  \term[びっとべくた]{ビットベクタ}[bit vector]は，番号付けされた $N$ 個の
+  要素からなる固定の集合の部分集合を $N$ ビットで表す．要素 $k$ が
+  部分集合に含まれるときビット $k$ が1である．和集合はビットごとの OR，
+  積集合はビットごとの AND になり，$x-y$ は $x$ AND NOT $y$ になる．
+\end{definition}
+
+定義に $d_1,\dots,d_N$ と番号を付けると，アルゴリズムの各集合は1つの
+ビットベクタとなり，伝達関数全体は機械語ワード当たり2回のビット演算に
+なる．\margin{例の7つの定義は1つの機械語ワードに収まる．1000個の定義を
+持つ関数では，集合1つに64ビットのワードが16個必要である．}
+
+\subsection{例の計算}
+
+\cref{tab:l10-rd-trace}は，\cref{fig:l10-rd-cfg}の CFG に
+アルゴリズムを適用したものであり，B1 から B5，EXIT の順に訪れる．
+各ビットベクタは $d_1,\dots,d_7$ を，その定義を含むブロックごとに
+区切って並べる（B1：$d_1d_2$；B2：$d_3$；B3：$d_4$；B4：$d_5d_6$；
+B5：$d_7$）．
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}% JA: 4pt in EN; the first column is wider
+  \caption{\cref{fig:l10-rd-cfg}の到達定義のパスごとの推移．
+    ビット $k$ は $d_k$ を表し，上付き添字はパスの番号である．
+    3回目のパスはパス~2を再現する．}
+  \label{tab:l10-rd-trace}
+  \begin{tabular}{@{}l*{5}{c}@{}}
+    \toprule
+    ブロック & $\mathrm{OUT}^0$ & $\mathrm{IN}^1$ & $\mathrm{OUT}^1$
+      & $\mathrm{IN}^2$ & $\mathrm{OUT}^2$ \\
+    \midrule
+    B1 & \texttt{00 0 0 00 0} & \texttt{00 0 0 00 0} & \texttt{11 0 0 00 0}
+       & \texttt{00 0 0 00 0} & \texttt{11 0 0 00 0} \\
+    B2 & \texttt{00 0 0 00 0} & \texttt{11 0 0 00 0} & \texttt{11 1 0 00 0}
+       & \texttt{11 1 1 11 1} & \texttt{11 1 1 01 1} \\
+    B3 & \texttt{00 0 0 00 0} & \texttt{11 1 0 00 0} & \texttt{10 1 1 00 0}
+       & \texttt{11 1 1 01 1} & \texttt{10 1 1 00 1} \\
+    B4 & \texttt{00 0 0 00 0} & \texttt{11 1 0 00 0} & \texttt{10 0 0 11 0}
+       & \texttt{11 1 1 01 1} & \texttt{10 0 0 11 1} \\
+    B5 & \texttt{00 0 0 00 0} & \texttt{10 1 1 11 0} & \texttt{00 1 1 11 1}
+       & \texttt{10 1 1 11 1} & \texttt{00 1 1 11 1} \\
+    EXIT & \texttt{00 0 0 00 0} & \texttt{00 1 1 11 1} & \texttt{00 1 1 11 1}
+       & \texttt{00 1 1 11 1} & \texttt{00 1 1 11 1} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{example}[1回目のパス]
+  \label{ex:l10-pass1}
+  B1 の先行ブロックは ENTRY だけなので，$\mathrm{IN}[\mathrm{B1}]=\emptyset$，
+  $\mathrm{OUT}[\mathrm{B1}]=\mathrm{gen}_{\mathrm{B1}}=\{d_1,d_2\}$ である．
+  B2 の先行ブロックは B1 と B5 であり，$\mathrm{OUT}[\mathrm{B5}]$ は
+  まだ空なので，$\mathrm{IN}[\mathrm{B2}]=\{d_1,d_2\}$，
+  $\mathrm{OUT}[\mathrm{B2}]=\{d_3\}\cup(\{d_1,d_2\}-\{d_5\})=\{d_1,d_2,d_3\}$
+  となる．B3 は $d_2$ を殺して $d_4$ を加え，$\{d_1,d_3,d_4\}$ となる．
+  B4 は $d_2$ と $d_3$ を殺して $d_5,d_6$ を加え，$\{d_1,d_5,d_6\}$ となる．
+  合流点 B5 では両者の和集合は $\{d_1,d_3,d_4,d_5,d_6\}$ であり，B5 は
+  $d_1$ を $d_7$ で置き換える．$\mathrm{OUT}[\mathrm{B5}]=\{d_3,d_4,d_5,d_6,d_7\}$
+  であり，これは EXIT にも到達する．
+\end{example}
+
+\begin{example}[2回目と3回目のパス]
+  \label{ex:l10-pass2}
+  パス~2では $\mathrm{OUT}[\mathrm{B5}]$ はもはや空ではなく，後退辺が
+  その定義を B2 に運ぶ．
+  $\mathrm{IN}[\mathrm{B2}]=\{d_1,d_2\}\cup\{d_3,\dots,d_7\}$，すなわち
+  7つすべてである．B2 が殺すのは $d_5$ だけなので，
+  $\mathrm{OUT}[\mathrm{B2}]$ には $d_4$，$d_6$，$d_7$ が加わり，
+  B3 と B4 の $\mathrm{IN}$ 集合にも同じく加わる．このうち B3 と B4 が
+  先へ渡すのは $d_7$ だけである．どちらも残りの2つを殺すか再生成する
+  からである．B5 で新しいのは $d_7$ だけであり，これは B5 がいずれにせよ
+  生成する．したがって $\mathrm{OUT}[\mathrm{B5}]$ は変わらない．
+  B2，B3，B4 が変化したので3回目のパスを実行する．その
+  $\mathrm{IN}[\mathrm{B2}]$ はパス~2と同じなので，どの集合も変化せず，
+  パス~2の状態が不動点である．
+\end{example}
+
+\Needspace{26\baselineskip}
+この解はオプティマイザが問う質問に答える．\texttt{i} の2つの定義
+$d_1$ と $d_7$ はどちらも B2 の使用 \texttt{x[i]} に到達するので，
+そこで \texttt{i} を定数~0 で置き換えることはできない．後退辺がなければ
+$d_1$ だけが到達するはずである．\margin{\texttt{t} の定義のうち B3 と
+B4 に到達するのは $d_3$ だけである．$d_5$ は後退辺を通って B2 に到着するが，
+そこで殺される．したがって B3 と B4 での \texttt{t} の各使用は，同じ
+反復でロードされた値を読む．}初期化 $d_2$（\texttt{s = 0}）は B2 には
+到達するが B5 には到達しない．ループ本体を通るどちらの経路も
+\texttt{s} を再定義するからである．EXIT に到達する定義 $d_3$ から
+$d_7$ は，関数がその終わりでなお観測できる値の定義である．
+
+\begin{keypoint}[章のまとめ]
+  コンパイラは，AST と IR を構築するフロントエンド，IR を書き換える
+  オプティマイザ，コードを生成するバックエンドからなる．CUDA では nvcc が
+  ホストコードとデバイスコードを分ける．デバイスコードは cicc（または
+  Clang と LLVM の NVPTX バックエンド）によって PTX になり，PTX は
+  ptxas によって SASS になる．nvcc が作るファットバイナリは両方を持つので，
+  ビルド時に存在しなかった GPU 向けにドライバが PTX を JIT コンパイルできる．
+  PTX は仮想 ISA であり，0個から4個のオペランドを持つ型付きの命令，
+  無制限の仮想レジスタ，\texttt{setp} で設定するガード述語を持つ．
+  オプティマイザは，3つのリーダ規則で求めた基本ブロックに分割され，
+  制御フローグラフで結ばれた3番地コードを対象とする．大域最適化は
+  データフロー解析に基づく．ブロックごとの伝達関数，合流点での合流演算，
+  そして不動点に達する反復アルゴリズムである．到達定義は
+  $\mathrm{OUT}[B]=\mathrm{gen}_B\cup(\mathrm{IN}[B]-\mathrm{kill}_B)$
+  と先行ブロックにわたる和集合としての $\mathrm{IN}[B]$ による前向き解析であり，
+  ビットベクタで効率よく計算される．この解析は，定義域，方向，伝達関数，
+  合流演算，境界条件，初期値によって定まる．第11章は生存解析について
+  これら6項目を埋める．
+\end{keypoint}
+
+\end{document}

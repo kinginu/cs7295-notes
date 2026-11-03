@@ -1,0 +1,29 @@
+% The classic compiler pipeline (Lesson 10).  A source program passes
+% through the front end, which produces IR; the optimizer transforms IR
+% into better IR; the back end generates code for the target machine.
+% Redraws the outline figure m10l1_compileflow.
+% Usage: \input{figures/l10-compile-flow}
+% Width: body (120 mm); the drawing is about 114 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    st/.style={draw, fill=ln-accent!20, minimum width=20mm, minimum height=9mm,
+               align=center, inner sep=1pt},
+    io/.style={align=center, inner sep=1pt, text width=17mm}]
+  \node[io] (src) at (8,0) {\iflangja{ソース\\プログラム}{source\\program}};
+  \node[st] (fe) at (32,0) {\iflangja{フロント\\エンド}{front end}};
+  \node[st] (op) at (61,0) {\iflangja{オプティマイザ}{optimizer}};
+  \node[st] (be) at (90,0) {\iflangja{バックエンド\\（コード生成）}{back end\\(code generation)}};
+  \node[io] (tgt) at (111,0) {\iflangja{ターゲット\\プログラム}{target\\program}};
+  \draw[->] (src) -- (fe);
+  \draw[->] (fe) -- node[above, inner sep=1.5pt] {IR} (op);
+  \draw[->] (op) -- node[above, inner sep=1.5pt] {IR} (be);
+  \draw[->] (be) -- (tgt);
+  \draw[->] (op.north east) ++(-4,0) arc[start angle=-30, end angle=210, radius=4.6]
+    node[pos=0.5, above, inner sep=1pt] {\iflangja{IR→IR}{IR$\to$IR}};
+  \node[text=ln-muted, align=center] at (32,-9)
+    {\iflangja{言語ごと}{one per language}};
+  \node[text=ln-muted, align=center] at (61,-9)
+    {\iflangja{共通}{shared}};
+  \node[text=ln-muted, align=center] at (90,-9)
+    {\iflangja{ターゲットごと}{one per target}};
+\end{tikzpicture}

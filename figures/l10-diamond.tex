@@ -1,0 +1,21 @@
+% The diamond control-flow graph of an if/else (Lesson 10).
+% B1 holds the condition and branches to B2 (then) and B3 (else); both
+% fall into the join block B4.
+% Redraws the CFG of outline figure m10l3_flowgraph.
+% Usage: \input{figures/l10-diamond}
+% Width: margin (50 mm); the drawing is about 34 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, fill=ln-box, minimum width=9mm, minimum height=5mm,
+               inner sep=1.5pt}]
+  \node[bb, fill=ln-accent!15] (b1) at (17,30) {B1};
+  \node[bb] (b2) at (5,17) {B2};
+  \node[bb] (b3) at (29,17) {B3};
+  \node[bb] (b4) at (17,4) {B4};
+  \draw[->] (b1) -- node[above left, inner sep=1pt]
+    {\iflangja{真}{then}} (b2);
+  \draw[->] (b1) -- node[above right, inner sep=1pt]
+    {\iflangja{偽}{else}} (b3);
+  \draw[->] (b2) -- (b4);
+  \draw[->] (b3) -- (b4);
+\end{tikzpicture}

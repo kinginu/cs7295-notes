@@ -1,0 +1,50 @@
+% Abstract syntax tree of a running-maximum loop (Lesson 10).  The tree of
+%   while (i < n) { if (x[i] > m) m = x[i]; i = i + 1; }  return m;
+% Operations (sequence, while, if, assignment, comparison, addition,
+% indexing) are blue, variables green, constants red.
+% Original (replaces the outline figure m10l1_clang, which shows GCD).
+% Usage: \input{figures/l10-ast}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    op/.style={draw, fill=ln-accent!25, rounded corners=1.5pt, minimum height=5mm,
+               minimum width=7mm, inner sep=1.5pt},
+    var/.style={draw, fill=ln-tip!30, minimum height=5mm, minimum width=5mm, inner sep=1.5pt},
+    cst/.style={draw, fill=ln-caution!25, minimum height=5mm, minimum width=5mm, inner sep=1.5pt}]
+  \node[op] (seq) at (55,50) {\iflangja{文の並び}{sequence}};
+  \node[op] (wh) at (40,40) {while};
+  \node[op] (ret) at (92,40) {return};
+  \node[var] (rm) at (92,30) {\texttt{m}};
+  \node[op] (lt) at (12,30) {\texttt{<}};
+  \node[op] (body) at (55,30) {\iflangja{文の並び}{sequence}};
+  \node[var] (li) at (5,20) {\texttt{i}};
+  \node[var] (ln) at (19,20) {\texttt{n}};
+  \node[op] (if) at (38,20) {if};
+  \node[op] (as2) at (82,20) {\texttt{:=}};
+  \node[op] (gt) at (28,10) {\texttt{>}};
+  \node[op] (as1) at (54,10) {\texttt{:=}};
+  \node[var] (ai) at (73,10) {\texttt{i}};
+  \node[op] (pl) at (91,10) {\texttt{+}};
+  \node[op] (ix1) at (19,0) {\texttt{[\,]}};
+  \node[var] (gm) at (34,0) {\texttt{m}};
+  \node[var] (am) at (46,0) {\texttt{m}};
+  \node[op] (ix2) at (60,0) {\texttt{[\,]}};
+  \node[var] (pi) at (85,0) {\texttt{i}};
+  \node[cst] (p1) at (97,0) {\texttt{1}};
+  \node[var] (x1) at (13,-10) {\texttt{x}};
+  \node[var] (i1) at (25,-10) {\texttt{i}};
+  \node[var] (x2) at (54,-10) {\texttt{x}};
+  \node[var] (i2) at (66,-10) {\texttt{i}};
+  \foreach \a/\b in {seq/wh, seq/ret, ret/rm, wh/lt, wh/body, lt/li, lt/ln,
+                     body/if, body/as2, if/gt, if/as1, gt/ix1, gt/gm, as1/am, as1/ix2,
+                     as2/ai, as2/pl, pl/pi, pl/p1, ix1/x1, ix1/i1, ix2/x2, ix2/i2}
+    \draw (\a.south) -- (\b.north);
+  \node[text=ln-muted, anchor=east, inner sep=1pt] at (25,36) {\iflangja{条件}{condition}};
+  \node[text=ln-muted, anchor=west, inner sep=1pt] at (48,36) {\iflangja{本体}{body}};
+  % legend
+  \node[op, anchor=west] at (97,56) {};
+  \node[anchor=west] at (104,56) {\iflangja{演算・文}{operation}};
+  \node[var, anchor=west] at (97,50) {};
+  \node[anchor=west] at (104,50) {\iflangja{変数}{variable}};
+  \node[cst, anchor=west] at (97,44) {};
+  \node[anchor=west] at (104,44) {\iflangja{定数}{constant}};
+\end{tikzpicture}

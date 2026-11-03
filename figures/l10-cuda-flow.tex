@@ -1,0 +1,56 @@
+% The CUDA compilation trajectory of nvcc, simplified (Lesson 10).  A
+% .cu file is preprocessed twice.  Device path: cicc (front end,
+% optimizer, PTX code generation) -> .ptx -> ptxas -> .cubin (SASS),
+% repeated per architecture; fatbinary packs PTX and cubin into a fat
+% binary.  Host path: cudafe++ separates host code, the host C++ compiler
+% compiles it with the fat binary embedded; the linker builds the
+% executable.  The device linker nvlink (separate compilation) is omitted.
+% Redraws the outline figures m10l1_compileflowgpu and
+% m10l1_compileflowgpunvidia (simplified; not NVIDIA's figure).
+% Usage: \input{figures/l10-cuda-flow}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.5mm]},
+    tool/.style={draw, fill=ln-accent!20, minimum height=8mm, align=center,
+                 inner sep=1.5pt},
+    file/.style={draw, fill=ln-box, rounded corners=1.5pt, minimum height=6mm,
+                 align=center, inner sep=1.5pt, font=\scriptsize\ttfamily}]
+  % source
+  \node[file, minimum height=10mm] (cu) at (6,20) {x.cu};
+  % device row
+  \node[tool] (dpp) at (22,36) {\iflangja{プリ\\プロセッサ}{pre-\\processor}};
+  \node[tool, fill=ln-source!25] (cicc) at (44,36) {cicc\\[-1pt]
+    {\scriptsize\sffamily\iflangja{FE＋最適化＋PTX生成}{FE + opt.\ + PTX gen.}}};
+  \node[file] (ptx) at (65,36) {x.ptx};
+  \node[tool, fill=ln-source!25] (ptxas) at (81,36) {ptxas};
+  \node[file] (cubin) at (100,36) {x.cubin\\[-1pt]{\scriptsize\sffamily (SASS)}};
+  % fatbinary
+  \node[tool] (fatb) at (100,20) {fatbinary};
+  % host row
+  \node[tool] (hpp) at (22,4) {\iflangja{プリ\\プロセッサ}{pre-\\processor}};
+  \node[tool] (fe) at (44,4) {cudafe++};
+  \node[tool] (cxx) at (71,4) {\iflangja{ホスト C++\\コンパイラ}{host C++\\compiler}};
+  \node[file] (obj) at (91,4) {x.o};
+  \node[tool] (ld) at (108,4) {\iflangja{リンカ}{linker}};
+  \draw[->] (cu.north) |- (dpp.west);
+  \draw[->] (cu.south) |- (hpp.west);
+  \draw[->] (dpp) -- (cicc);
+  \draw[->] (cicc) -- (ptx);
+  \draw[->] (ptx) -- (ptxas);
+  \draw[->] (ptxas) -- (cubin);
+  \draw[->] (cubin) -- (fatb);
+  \draw[->] (ptx.south) |- (fatb.west);
+  \draw[->] (hpp) -- (fe);
+  \draw[->] (fe) -- (cxx);
+  \draw[->] (cxx) -- (obj);
+  \draw[->] (obj) -- (ld);
+  \draw[->, dashed] (fatb.south) -- ++(0,-4) -| node[pos=0.25, above, inner sep=1pt]
+    {\iflangja{ファットバイナリを埋め込む}{fat binary embedded}} (cxx.north);
+  \draw[->] (ld.south) -- ++(0,-6) node[below, inner sep=1pt]
+    {\iflangja{実行ファイル}{executable}};
+  % lane labels
+  \node[anchor=south west, text=ln-muted] at (13,41.5)
+    {\iflangja{デバイスコード（アーキテクチャごとに繰り返す）}{device code (repeated per architecture)}};
+  \node[anchor=north west, text=ln-muted] at (13,-1.5)
+    {\iflangja{ホストコード}{host code}};
+\end{tikzpicture}

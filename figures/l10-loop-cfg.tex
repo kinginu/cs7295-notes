@@ -1,0 +1,31 @@
+% Basic blocks and control-flow graph of a PTX counting loop (Lesson 10).
+% B1 initialises i and s; B2 tests i >= n and branches to done; B3 adds
+% and jumps back to loop (back edge B3 -> B2); B4 stores the sum.
+% Original (the outline figure m10l3_egptx2 shows an if-else; this is the
+% book's own loop example).
+% Usage: \input{figures/l10-loop-cfg}
+% Width: body (120 mm); the drawing is about 104 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, fill=ln-box, align=left, inner sep=2pt,
+               font=\scriptsize\ttfamily},
+    nm/.style={font=\scriptsize\sffamily\bfseries, inner sep=1pt}]
+  \node[text=ln-muted] (en) at (35,58) {ENTRY};
+  \node[bb] (b1) at (35,50) {mov.u32 \%r1, 0;\\mov.u32 \%r2, 0;};
+  \node[bb, fill=ln-accent!15] (b2) at (35,37)
+    {loop: setp.hs.u32 \%p1, \%r1, \%r3;\\\phantom{loop: }@\%p1 bra done;};
+  \node[bb] (b3) at (35,20) {add.u32 \%r2, \%r2, \%r1;\\add.u32 \%r1, \%r1, 1;\\bra loop;};
+  \node[bb] (b4) at (92,20) {done:\\st.global.u32 [\%rd1], \%r2;};
+  \node[text=ln-muted] (ex) at (92,8) {EXIT};
+  \node[nm, anchor=east] at (b1.west) {B1\,};
+  \node[nm, anchor=south east] at (b2.north west) {B2};
+  \node[nm, anchor=west] at (b3.east) {\,B3};
+  \node[nm, anchor=west] at (b4.east) {\,B4};
+  \draw[->] (en) -- (b1);
+  \draw[->] (b1) -- (b2);
+  \draw[->] (b2) -- node[right, inner sep=2pt] {\iflangja{フォールスルー（$i<n$）}{fall-through ($i<n$)}} (b3);
+  \draw[->] (b2.east) -| node[pos=0.25, above, inner sep=1.5pt] {\iflangja{分岐成立（$i\ge n$）}{taken ($i\ge n$)}} (b4.north);
+  \draw[->, ln-caution, thick] (b3.west) -- ++(-6,0) |- node[pos=0.25, left, inner sep=1.5pt]
+    {\iflangja{後退辺}{back edge}} (b2.west);
+  \draw[->] (b4) -- (ex);
+\end{tikzpicture}

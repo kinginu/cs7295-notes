@@ -1,0 +1,991 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+\newcommand{\lxOUT}{\mathrm{OUT}}\newcommand{\lxIN}{\mathrm{IN}}
+\newcommand{\lxENTRY}{\mathrm{ENTRY}}\newcommand{\lxgen}{\mathrm{gen}}
+\newcommand{\lxkill}{\mathrm{kill}}\newcommand{\lxpred}{\mathrm{pred}}
+
+\chapter{Compiler Background - I}
+\lessoninfo{
+  video={M10, lessons 1--5 (GPU Compiler Flow; PTX; IR and Basic Block; Introduction to Data Flow Analysis; Example of Reaching Definitions)},
+  sources={NVCC documentation \cite{nvidia2026nvcc}; PTX ISA 9.4 \cite{nvidia2026ptx}; Compiling CUDA with clang \cite{llvm2026compilecuda}; NVVM IR specification \cite{nvidia2026nvvm}; Lattner and Adve \cite{lattner2004llvm} (LLVM); LLVM Language Reference \cite{llvm2026langref}},
+  textbook={K12 \cite{kim2012gpgpu} §1.3.7; CPG \cite{nvidia2024cudaguide} §3.1 Compilation with NVCC; Aho et al.\ \cite{aho2006compilers} §8.4, §9.2},
+  keywords={compiler, front end, back end, intermediate representation, abstract syntax tree, nvcc, LLVM, NVPTX, PTX, SASS, virtual architecture, fat binary, JIT compilation, guard predicate, three-address code, leader, control flow graph, data-flow analysis, transfer function, reaching definitions, gen and kill sets, fixed point},
+}
+
+The previous lessons treated a CUDA kernel as something the GPU simply
+runs; between the source file and the SM stands a compiler, and several
+mechanisms of earlier lessons were in fact the compiler's work: the
+predicated code of Lesson~6, the registers each thread receives in
+Lesson~3, the PTX fragments of Lesson~4.  This lesson and the next give
+the compiler background needed to reason about such code.  The first
+half follows a CUDA program through the compilation flow, from source
+code over an intermediate representation and PTX to the machine code
+that the GPU executes, and looks at PTX itself.  The second half
+introduces the structures on which optimisations work: three-address
+code, basic blocks and control-flow graphs, and data-flow analysis,
+worked out for the analysis called reaching definitions.  Lesson~11
+continues with liveness, SSA form, classic optimisations and the
+divergence analysis that connects all of this back to warps.
+
+\section{GPU compiler flow}
+\label{sec:l10-flow}
+
+A \term{compiler}[コンパイラ] translates a program written in one
+language, the source program, into an equivalent program in another
+language, usually the instruction set of a machine.\source{M10, GPU
+compiler flow; CPG §3.1 Compilation with NVCC; K12 §1.3.7;
+\cite{nvidia2026nvcc}.}  It is organised as a pipeline of three parts
+(\cref{fig:l10-compile-flow}).
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-compile-flow}
+  \caption{The classic compiler pipeline.  The front end turns the
+    source program into IR, the optimizer rewrites IR into better IR,
+    and the back end generates code for the target machine.}
+  \label{fig:l10-compile-flow}
+\end{figure}
+
+\begin{definition}[Front end, IR, back end]
+  The \term{front end}[フロントエンド] reads the source program, checks
+  its syntax and meaning, and translates it into an
+  \term{intermediate representation (IR)}[中間表現], a program form
+  that belongs neither to the source language nor to the
+  target machine.\index{IR|see{intermediate representation (IR)}}%
+  \margin{The optimizer is also called the \emph{middle end}; in
+  LLVM it is a sequence of passes, each an IR-to-IR transformation
+  \cite{lattner2004llvm}.}  The
+  \emph{optimizer} transforms IR into IR that computes the same results
+  faster or with fewer instructions.  The
+  \term{back end}[バックエンド] performs
+  \term{code generation}[コード生成]: it translates IR into
+  instructions of the target machine and applies the optimisations that
+  depend on that machine.
+\end{definition}
+
+The IR is what makes the split useful.  One front end per language and
+one back end per target share a single optimizer, so that adding a
+language or a machine adds one component rather than one complete
+compiler per pair.\margin{With $L$ languages and $T$ targets, the IR
+split needs $L+T$ front and back ends instead of $L\cdot T$
+complete compilers.}  The IR is also a good level for optimisation:
+it is simpler than the source language and still independent of any
+machine, and it can carry metadata, such as types and source
+positions, from the front end to the later stages.
+
+\subsection{The flow for a GPU program}
+
+A CUDA source file mixes host code and device code (Lesson~3).  A GPU
+compiler therefore first separates the two and sends each through a
+pipeline of its own: the device code is compiled for the GPU, the host
+code with an ordinary C++ compiler, and the result for the GPU is
+packed into the host program, which loads it when the program
+runs.\margin{CPG §3.1.1.1 Offline Compilation \cite{nvidia2024cudaguide}:
+nvcc separates device code from host code, compiles the device code to
+PTX or binary form, and replaces the kernel launch syntax with calls
+into the CUDA runtime.}
+
+NVIDIA's compiler driver \term{nvcc}[nvcc] implements this flow as the
+\emph{CUDA compilation trajectory} of \cref{fig:l10-cuda-flow}
+\cite[§3]{nvidia2026nvcc}.  The input file is preprocessed twice.  On
+the device side the front end and optimizer \texttt{cicc} produces a
+\texttt{.ptx} file, and the assembler \texttt{ptxas} translates it into
+a \texttt{.cubin} file of machine code; this pair of steps is repeated
+for every architecture requested.  The tool \texttt{fatbinary} packs
+the PTX and \texttt{.cubin} results into one image.  On the host side
+\texttt{cudafe++} separates the host code and rewrites the CUDA
+extensions into standard C++, and the host C++ compiler compiles that
+code with the device image embedded.  The linker finally produces the
+executable.\margin{The tool names come from the trajectory figure of
+the NVCC documentation \cite[§3]{nvidia2026nvcc}; \texttt{nvcc
+-{}-dryrun} lists the commands it would run, and \texttt{-{}-keep}
+keeps the intermediate \texttt{.ptx} and \texttt{.cubin} files
+(§4.2.5.9, §4.2.5.11).}  With separate compilation of device code, a
+device linker \texttt{nvlink} first links the \texttt{.cubin} files of
+all translation units.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-cuda-flow}
+  \caption{The nvcc compilation trajectory, simplified.  Device code
+    passes cicc and ptxas once per architecture; fatbinary packs the
+    PTX and the machine code (cubin) into a fat binary that the host
+    object embeds.  The device linker nvlink is omitted.}
+  \label{fig:l10-cuda-flow}
+\end{figure}
+
+\begin{definition}[Virtual architecture]
+  A \term{virtual architecture}[仮想アーキテクチャ] is the GPU that PTX
+  code is written for: a set of capabilities that a program may use,
+  named \texttt{compute\_XY} after a compute capability~X.Y.  An actual
+  GPU, the target of \texttt{ptxas}, is a \emph{real architecture},
+  named \texttt{sm\_XY}.
+\end{definition}
+
+Every nvcc command therefore names two architectures, a virtual one for
+the first stage and a real one for the second, and the real one must
+implement the virtual one \cite[§5.4]{nvidia2026nvcc}.\tip{Choose the
+virtual architecture as low as possible, so that the PTX runs on as
+many GPUs as possible, and the real architecture as high as the target
+GPUs allow (NVCC §5.4 \cite{nvidia2026nvcc}).}  The virtual
+architecture states which features the program needs; it does not fix
+the GPU it will run on.
+
+\subsection{The open-source toolchain: Clang and LLVM}
+
+The same structure appears in the open-source CUDA compiler.
+
+\begin{definition}[LLVM, Clang, NVPTX]
+  \term{LLVM}[LLVM] is a compiler infrastructure built around one typed
+  IR, the LLVM IR, with a library of optimisations on it and back ends
+  for many targets \cite{lattner2004llvm}.
+  \term{Clang}[Clang] is the LLVM front end for the C family of
+  languages, including CUDA.  \term{NVPTX}[NVPTX] is the LLVM back end
+  that generates PTX.
+\end{definition}
+
+A splitter separates host and device code.  The device code passes
+through Clang, the IR optimisations and the NVPTX code generator and
+becomes PTX assembly; the host compilation then embeds the device code
+into a fat binary.\sidenote{Clang does not split the file before
+parsing it: it uses \enquote{merged parsing}, in which all host and
+device code is present in both compilation steps and must be
+semantically correct in both.  Unlike nvcc, it always also runs
+\texttt{ptxas} and embeds machine code for each requested GPU
+(\texttt{-{}-offload-arch=sm\_80}).  By default it does not embed
+PTX; \texttt{-{}-cuda-include-ptx=sm\_80} (or \texttt{all}) adds it
+for forward compatibility \cite{llvm2026compilecuda}.}  NVIDIA's
+own device compiler is built on the same technology: its front end
+emits \emph{NVVM IR}, an IR \enquote{based on the LLVM IR}, and the
+NVVM compiler, itself based on LLVM, generates PTX from it
+\cite{nvidia2026nvvm}.
+
+The front end parses the source into a tree.
+
+\begin{definition}[Abstract syntax tree]
+  An \term{abstract syntax tree (AST)}[抽象構文木] represents the
+  structure of a program as a tree: each inner node is an operation or
+  statement (a sequence, a loop, a branch, an assignment, an
+  arithmetic operator) and its children are its operands or
+  sub-statements; the leaves are variables and
+  constants.\index{AST|see{abstract syntax tree (AST)}}
+  Punctuation such as parentheses and semicolons does not appear: the
+  tree shape already expresses it.
+\end{definition}
+
+\begin{example}[The AST of a loop]
+  \label{ex:l10-ast}
+  The loop below keeps the running maximum of an array.
+\begin{lstlisting}[language=C++, numbers=none]
+while (i < n) {
+  if (x[i] > m) m = x[i];
+  i = i + 1;
+}
+return m;
+\end{lstlisting}
+  Its AST (\cref{fig:l10-ast}) has a sequence at the root with two
+  children, the \texttt{while} loop and the \texttt{return}.  The loop
+  node has the condition \texttt{i < n} and the body, itself a sequence
+  of the \texttt{if} statement and the increment.  Each array access
+  \texttt{x[i]} is an indexing node with the array and the index as
+  children.
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-ast}
+  \caption{The abstract syntax tree of the loop in
+    \cref{ex:l10-ast}.  Operations and statements are blue, variables
+    green, constants red.}
+  \label{fig:l10-ast}
+\end{figure}
+
+\tip{\texttt{clang -fsyntax-only -Xclang -ast-dump file.c} prints the
+AST that Clang builds for a file.}  Before the parser runs, the
+\term{preprocessor}[プリプロセッサ] of C and C++ performs pure text
+substitution: it expands \texttt{\#include} files and macros and
+evaluates conditional compilation.\margin{Since the preprocessor works
+on text, a macro body such as \texttt{a + b} used in
+\texttt{2 * M} becomes \texttt{2 * a + b}; macro bodies are
+therefore written in parentheses.}  With the definition
+\begin{lstlisting}[language=C++, numbers=none]
+#define BLOCK_SIZE 256
+int threads = BLOCK_SIZE;
+\end{lstlisting}
+the compiler proper sees only \texttt{int threads = 256;}.
+
+\subsection{PTX, SASS and the fat binary}
+
+The output of the device back end is not yet machine code.
+
+\begin{definition}[PTX and SASS]
+  \term{PTX (Parallel Thread Execution)}[PTX] is NVIDIA's virtual ISA
+  (Lesson~1): an architecture-independent instruction set whose
+  programs are translated into machine code later.  Its registers are
+  virtual, so PTX code has no register allocation.
+  \term{SASS}[SASS] (shader assembly) is the machine code of one GPU
+  architecture, with physical registers allocated.  SASS changes with
+  every GPU generation; PTX stays compatible: code written for an older
+  PTX version still compiles for newer GPUs, while new PTX versions add
+  instructions.\margin{PTX ISA~8.0, the \texttt{.version} of
+  \cref{ex:l10-ptx-kernel}, came with CUDA~12.0; the release history
+  of PTX ISA~9.4 runs from PTX ISA~1.0 with CUDA~1.0
+  \cite[§13]{nvidia2026ptx}.}
+\end{definition}
+
+The PTX ISA states the purpose directly: \enquote{PTX defines a virtual
+machine and ISA for general purpose parallel thread execution}, and its
+goals include \enquote{a stable ISA that spans multiple GPU
+generations} \cite[§1.1--1.2]{nvidia2026ptx}.\margin{A PTX
+register is a variable of a type, and a kernel may declare any number;
+\texttt{ptxas} maps them onto at most 255 physical registers per thread
+(CPG Table~21 \cite{nvidia2024cudaguide}) and spills the rest to local
+memory \cite[§5.1.1]{nvidia2026ptx}.  Lesson~11 treats register
+allocation.}
+
+\begin{definition}[Fat binary]
+  A \term{fat binary}[ファットバイナリ] is an executable that carries,
+  next to the host code, several translations of the same device code:
+  machine code for some real architectures and PTX for some virtual
+  ones.  At run time the device part is handed to the driver, which
+  selects the most suitable translation for the GPU present
+  \cite[§5.6.2]{nvidia2026nvcc}.
+\end{definition}
+
+If the fat binary contains no machine code for the GPU present, the
+driver compiles the PTX at run time.
+
+\begin{definition}[JIT compilation]
+  In \term{JIT compilation}[JITコンパイル] (just-in-time compilation)
+  the device driver compiles PTX into machine code when an application
+  loads it.  CPG §3.1.1.2 Just-in-Time Compilation states that it is
+  \enquote{the only way for applications to run on devices that did not
+  exist at the time the application was compiled}
+  \cite{nvidia2024cudaguide}.
+\end{definition}
+
+JIT compilation costs start-up time.  The driver therefore keeps a copy
+of each result in the \emph{compute cache}, which is invalidated when
+the driver is upgraded, so that a new JIT compiler can improve old
+applications (CPG §3.1.1.2).\margin{The compute cache lives in
+\texttt{\textasciitilde/.nv/ComputeCache} on Linux and holds
+\SI{1}{\gibi\byte} by default (\SI{256}{\mebi\byte} on embedded
+platforms), at most \SI{4}{\gibi\byte}, set by
+\texttt{CUDA\_CACHE\_MAXSIZE} (CPG §18 CUDA Environment Variables
+\cite{nvidia2024cudaguide}).}  A fat binary that also carries machine
+code for the expected GPUs avoids the delay altogether, and its PTX
+keeps the program running on later GPUs:
+\begin{lstlisting}[language=bash, numbers=none]
+nvcc x.cu --gpu-architecture=compute_80 \
+          --gpu-code=compute_80,sm_86,sm_89
+\end{lstlisting}
+builds machine code for compute capabilities 8.6 and~8.9 and keeps PTX
+for compute capability~8.0, which a later GPU can JIT-compile
+\cite[§5.6.2]{nvidia2026nvcc}.\caution{Machine code does not move
+across major compute capabilities: a cubin for compute capability X.y
+runs only on X.z with $z\ge y$ (CPG §3.1.2 Binary Compatibility
+\cite{nvidia2024cudaguide}).}  PTX, in contrast, always compiles to an
+equal or higher compute capability, but the result cannot use features
+added after its virtual architecture: PTX for compute capability 6.0,
+JIT-compiled on a 7.0 GPU, uses no tensor cores (CPG §3.1.3 PTX
+Compatibility).
+
+\section{PTX}
+\label{sec:l10-ptx}
+
+PTX is the lowest level at which CUDA code is normally read, so its
+instruction format is worth knowing in detail.\source{M10, PTX; PTX ISA
+§4.3, §9.2--9.3 \cite{nvidia2026ptx}; K12 §1.3.7.}
+
+\subsection{Instruction format}
+
+A PTX instruction consists of an \term{opcode}[オペコード], the name of
+the operation, and a list of \term{operand}[オペランド]s.  The PTX ISA
+puts it as follows: \enquote{PTX instructions generally have from zero
+to four operands, plus an optional guard predicate appearing after an
+\texttt{@} symbol to the left of the opcode}
+\cite[§9.2]{nvidia2026ptx}.
+\begin{lstlisting}[language=PTX, numbers=none]
+@p  opcode;
+@p  opcode a;
+@p  opcode d, a;
+@p  opcode d, a, b;
+@p  opcode d, a, b, c;
+\end{lstlisting}
+For an instruction that produces a value, \texttt{d} is the
+destination and \texttt{a}, \texttt{b}, \texttt{c} are sources; the
+destination comes first.\margin{The opcode carries suffixes: a type
+(\texttt{.s32} signed, \texttt{.u32} unsigned, \texttt{.f32} float,
+\texttt{.b32} untyped bits, \texttt{.pred}) and, for memory
+instructions, a state space (\texttt{.global}, \texttt{.shared},
+\texttt{.local}, \texttt{.param}).}  Every arithmetic and memory
+instruction names the type it operates on, as in \texttt{add.s32} or \texttt{ld.global.f32}.
+
+\begin{definition}[Guard predicate, predicate register]
+  A \term{predicate register}[述語レジスタ] is a one-bit PTX register
+  of type \texttt{.pred}, declared like any other register, e.g.\
+  \texttt{.reg .pred p, q;}.  A \term{guard predicate}[ガード述語]
+  \texttt{@p} placed before an instruction makes it conditional: the
+  instruction takes effect only in threads where \texttt{p} is true;
+  \texttt{@!p} uses the negation.  An instruction without a guard is
+  executed unconditionally.
+\end{definition}
+
+Predicate registers are virtual like all PTX registers; the
+\texttt{.pred} type tells \texttt{ptxas} that one bit
+suffices \cite[§9.3]{nvidia2026ptx}.\margin{Predicates are the
+mechanism behind the if-conversion and predicated execution of
+Lessons 5 and~6.}  They are set most commonly by \texttt{setp}, which
+\enquote{compare[s] two numeric values with a relational operator}
+\cite[§9.7.7.2]{nvidia2026ptx}.  \texttt{setp} can write two
+destinations, separated by \texttt{|} (a few other instructions, such
+as \texttt{shfl.sync}, use the same notation): the second receives the
+negation of the comparison.
+
+\begin{example}[Removing a branch with predicates]
+  \label{ex:l10-predication}
+  The statement \texttt{if (a < b) c = c + 1; else c = c - 1;} with
+  \texttt{a}, \texttt{b}, \texttt{c} in \texttt{\%r1}, \texttt{\%r2},
+  \texttt{\%r3} needs no branch:
+\begin{lstlisting}[language=PTX, numbers=none]
+     setp.lt.s32  %p1|%p2, %r1, %r2; // p1 = a<b, p2 = !p1
+@%p1 add.s32      %r3, %r3, 1;       // then: c = c + 1
+@%p2 sub.s32      %r3, %r3, 1;       // else: c = c - 1
+\end{lstlisting}
+  Every thread of a warp issues all three instructions, and each thread
+  commits exactly one of the two updates.  The same guard on a branch
+  instruction gives a real conditional jump:
+\begin{lstlisting}[language=PTX, numbers=none]
+     setp.lt.s32  %p1, %r1, %r2;
+@!%p1 bra         ELSE;              // a >= b: jump
+\end{lstlisting}
+\end{example}
+
+\tip{The comparison operators are \texttt{eq}, \texttt{ne},
+\texttt{lt}, \texttt{le}, \texttt{gt}, \texttt{ge} for signed integers
+and floats; unsigned integers use \texttt{eq}, \texttt{ne},
+\texttt{lo}, \texttt{ls}, \texttt{hi}, \texttt{hs} (lower, lower or
+same, higher, higher or same) \cite[§9.3.1]{nvidia2026ptx}.}  The predicated form trades the
+risk of divergence (Lesson~6) for issuing both sides; for short bodies
+like these the compiler prefers it.
+
+\subsection{Statements}
+
+A PTX program is a sequence of statements.  In the words of the PTX
+ISA, \enquote{a PTX statement is either a directive or an instruction.
+Statements begin with an optional label and end with a semicolon}
+\cite[§4.3]{nvidia2026ptx}.
+
+\begin{definition}[Directive, label]
+  A \term{directive}[ディレクティブ] is a statement whose keyword begins
+  with a dot and which declares rather than computes: the PTX version
+  and target (\texttt{.version}, \texttt{.target},
+  \texttt{.address\_size}), functions and kernels (\texttt{.func},
+  \texttt{.entry}), and variables in a state space (\texttt{.reg},
+  \texttt{.global}, \texttt{.shared}).  A \term{label}[ラベル] is a
+  name followed by a colon in front of a statement; branch instructions
+  use it as their target.
+\end{definition}
+
+\begin{example}[A complete PTX kernel]
+  \label{ex:l10-ptx-kernel}
+  The kernel below doubles one element of a global array per thread.
+\begin{lstlisting}[language=PTX, numbers=none]
+.version 8.0
+.target sm_80
+.address_size 64
+.global .f32 buf[1024];
+
+.visible .entry twice()
+{
+    .reg .b32  %r<2>;
+    .reg .b64  %rd<4>;
+    .reg .f32  %f<3>;
+start:
+    mov.u32        %r1, %tid.x;
+    mov.u64        %rd1, buf;      // address of buf
+    mul.wide.u32   %rd2, %r1, 4;   // byte offset 4*tid
+    add.u64        %rd3, %rd1, %rd2;
+    ld.global.f32  %f1, [%rd3];
+    add.f32        %f2, %f1, %f1;  // 2 * buf[tid]
+    st.global.f32  [%rd3], %f2;
+    ret;
+}
+\end{lstlisting}
+  The first four lines are directives; \texttt{.reg .b32 \%r<2>}
+  declares the registers \texttt{\%r0} and \texttt{\%r1}.  The label
+  \texttt{start} marks the first instruction, and every arithmetic and
+  memory instruction names its type.
+\end{example}
+
+\margin{\texttt{\%r<2>} is PTX shorthand for a numbered range of
+registers; \texttt{mul.wide.u32} multiplies two 32-bit values into a
+64-bit result, as needed for a byte offset into a 64-bit address
+space.}
+
+\subsection{Other instructions}
+
+Beyond arithmetic and memory access, PTX has the usual groups of
+instructions.  Control flow uses \texttt{bra} (branch to a label),
+\texttt{call} (call a function) and \texttt{ret} (return).\caution{There
+is no stack-pointer special register in the PTX ISA, although such a
+register is sometimes listed with \texttt{\%tid} and \texttt{\%ntid}.
+Fixed-size local storage is a \texttt{.local} array, and
+compiler-generated PTX addresses it through ordinary registers it names
+\texttt{\%SP} and \texttt{\%SPL}.  Stack storage whose size is known
+only at run time is allocated with \texttt{alloca}; \texttt{stacksave}
+and \texttt{stackrestore} read and reset the stack pointer
+\cite[§7.3]{nvidia2026ptx}.}
+Synchronisation includes the barrier \texttt{bar.sync} that
+\texttt{\_\_syncthreads()} compiles to and the
+\term{memory fence}[メモリフェンス] instructions \texttt{membar} and
+\texttt{fence}, which \enquote{enforce an ordering of memory
+operations} \cite[§9.7.15.4]{nvidia2026ptx}: the memory accesses of a
+thread before the fence become visible to other threads before its
+accesses after the fence.  Atomic read-modify-write operations use
+\texttt{atom}, always with an operation and a type, as in
+\texttt{atom.global.add.u32}.\margin{Not every combination exists:
+the half-precision atomic add is written \texttt{atom.add.noftz.f16}
+(no flush to zero) and requires PTX ISA~6.3 and
+\texttt{sm\_70} \cite[§9.7.15.5]{nvidia2026ptx}.}
+
+Special registers (Lesson~4) give each thread its coordinates:
+\texttt{\%tid} (thread index in the CTA), \texttt{\%ntid} (number of
+threads per CTA dimension), \texttt{\%ctaid} and \texttt{\%nctaid}
+(block index and grid size) \cite[§10]{nvidia2026ptx}.  The full list of instructions and
+their variants is in the PTX ISA itself.
+
+\section{IR and basic blocks}
+\label{sec:l10-ir}
+
+An optimizer needs the program in a form whose instructions are simple
+and whose control flow is explicit.\source{M10, IR and basic block;
+Aho et al.\ §6.2, §8.4 \cite{aho2006compilers}.}  The first requirement
+leads to three-address code, the second to basic blocks and flow
+graphs.
+
+\subsection{Three-address code}
+
+\begin{definition}[Three-address code]
+  In \term{three-address code}[3番地コード] every instruction has at
+  most one operator and at most three addresses (names of variables,
+  temporaries or constants), in the form \texttt{A = B op C}.  A
+  complex expression is broken into a sequence of such instructions with
+  compiler-generated temporaries.
+\end{definition}
+
+LLVM IR and PTX are close to this form: most of their instructions
+have one operation, one destination and one or two sources (PTX also
+has three-source instructions such as \texttt{mad}).  In LLVM IR
+\begin{lstlisting}[language=C++, numbers=none]
+%sum = add i32 %x, %y
+\end{lstlisting}
+\texttt{\%sum} is the destination, \texttt{add} the operation,
+\texttt{i32} the type of the result (a 32-bit integer) and
+\texttt{\%x}, \texttt{\%y} the sources
+\cite{llvm2026langref}.\margin{LLVM IR has one \texttt{add} for
+signed and unsigned integers, since both produce the same bits; PTX
+writes the interpretation into the opcode (\texttt{add.s32},
+\texttt{add.u32}).}  The PTX form of the same operation is
+\texttt{add.s32 \%r3, \%r1, \%r2}.  The expression
+\texttt{y = a * b + c} becomes two instructions, \texttt{t = a * b}
+and \texttt{y = t + c}.
+
+\subsection{Basic blocks}
+
+Lesson~6 introduced the \term*{basic block} informally.  The formal
+definition is the unit on which most optimisations work.
+
+\begin{definition}[Basic block]
+  \label{def:l10-basic-block}
+  A basic block\index{basic block} is a maximal sequence of consecutive
+  instructions with one entry and one exit: control can enter only at
+  its first instruction, and once it has entered, all instructions of
+  the block execute in order, leaving the block only after the last
+  one.  The last instruction is usually a control-flow instruction (a
+  branch, a jump or a return); a block also ends where the next
+  instruction is a branch target.
+\end{definition}
+
+\begin{definition}[Control flow graph, predecessor, successor]
+  A \term{control flow graph (CFG)}[制御フローグラフ] has the basic
+  blocks of a function as its nodes and an edge $B\to C$ whenever
+  control can pass from the end of $B$ to the start of $C$: by a jump,
+  by a taken conditional branch, or by falling through to the next
+  block.\index{CFG|see{control flow graph (CFG)}}  $B$ is then a
+  \term{predecessor}[先行ブロック] of $C$, and $C$ a
+  \term{successor}[後続ブロック] of $B$.  An \emph{entry} node
+  precedes the block of the first instruction, and an \emph{exit}
+  node follows every block that leaves the function.
+\end{definition}
+
+\begin{marginfigure}
+  \centering
+  \input{figures/l10-diamond}
+  \caption{The diamond CFG of an \texttt{if}/\texttt{else}.}
+  \label{fig:l10-diamond}
+\end{marginfigure}
+An \texttt{if}/\texttt{else} gives the diamond of Lesson~6
+(\cref{fig:l10-diamond}): the block B1 with the condition has two
+successors, the two branches B2 and B3, which share one successor, the
+join block B4; the edges are B1$\to$B2, B1$\to$B3, B2$\to$B4 and
+B3$\to$B4.  Optimisation inside one block is simple, because there is
+only one path through it: if a block computes \texttt{a + b} twice and
+neither operand is redefined in between, the second computation can
+reuse the result of the first.
+
+\begin{definition}[Local optimization]
+  A \term{local optimization}[局所最適化] considers one basic block at a
+  time, with no information about the paths that lead into the block or
+  out of it.
+\end{definition}
+
+\subsection{Finding the basic blocks}
+
+The blocks of a list of instructions follow from its leaders.
+
+\begin{definition}[Leader]
+  A \term{leader}[リーダ（先頭命令）] is an instruction that starts a
+  basic block.  Three rules find all leaders: (1) the first instruction
+  is a leader; (2) every target of a conditional or unconditional jump
+  is a leader; (3) every instruction that immediately follows a jump is
+  a leader.  Each basic block then runs from one leader up to, and not
+  including, the next leader.
+\end{definition}
+
+\margin{The reconvergence point of a divergent branch (Lesson~6) is
+always a leader: it is the first instruction of the join block, a
+branch target.}
+
+\begin{example}[Basic blocks of a PTX loop]
+  \label{ex:l10-leaders}
+  The loop below sums $0+1+\cdots+(n-1)$, with $i$ in \texttt{\%r1},
+  the sum $s$ in \texttt{\%r2} and $n$ in \texttt{\%r3}.
+\begin{lstlisting}[language=PTX, numbers=none]
+      mov.u32  %r1, 0;             // (1) i = 0
+      mov.u32  %r2, 0;             //     s = 0
+loop: setp.hs.u32 %p1, %r1, %r3;   // (2) i >= n (unsigned)
+@%p1  bra      done;
+      add.u32  %r2, %r2, %r1;      // (3) s = s + i
+      add.u32  %r1, %r1, 1;        //     i = i + 1
+      bra      loop;
+done: st.global.u32 [%rd1], %r2;   // (2),(3)
+\end{lstlisting}
+  The comments mark the rules that make an instruction a leader.  The
+  first \texttt{mov} is a leader by rule~1.  The \texttt{setp} at
+  \texttt{loop} is the target of \texttt{bra loop} (rule~2).  The first
+  \texttt{add} follows the conditional \texttt{@\%p1 bra done}
+  (rule~3).\caution{A guarded branch \texttt{@\%p1 bra} is a conditional
+  jump: the instruction after it is a leader even though it is also
+  reached by simply falling through.}  The store at \texttt{done} is both a target and the
+  instruction after \texttt{bra loop}.  The four leaders give four
+  blocks: B1 (the two \texttt{mov}s), B2 (\texttt{setp} and the
+  conditional branch), B3 (the two \texttt{add}s and \texttt{bra
+  loop}) and B4 (the store).  \Cref{fig:l10-loop-cfg} shows the CFG:
+  B1$\to$B2; B2$\to$B3 by falling through and B2$\to$B4 when the
+  branch is taken; and B3$\to$B2, the edge that closes the loop.
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-loop-cfg}
+  \caption{The basic blocks and the CFG of the loop in
+    \cref{ex:l10-leaders}.  The edge B3$\to$B2 returns to an earlier
+    block and closes the loop.}
+  \label{fig:l10-loop-cfg}
+\end{figure}
+
+An edge such as B3$\to$B2, which leads back
+to a block that starts the loop, is called a \emph{back
+edge}.\margin{The edge from the end of a loop body to the loop test is
+a back edge; it is what makes the data-flow iteration of
+\cref{sec:l10-rd-example} need more than one pass.}
+
+\section{Introduction to data-flow analysis}
+\label{sec:l10-dfa}
+
+Many optimisations need facts that span several basic
+blocks.\source{M10, introduction to data-flow analysis; Aho et al.\
+§9.1--9.2 \cite{aho2006compilers}.}
+
+\begin{definition}[Global optimization]
+  A \term{global optimization}[大域最適化] uses information collected
+  across the basic blocks of a whole function, taking into account all
+  paths of its CFG.
+\end{definition}
+
+Every optimisation, local or global, must preserve the semantics of the
+original program: for every input the optimised program produces the
+same observable results.\caution{Floating point bends this rule by
+default: nvcc contracts a multiply followed by an add into one fused
+multiply-add, which rounds once instead of twice, so results can differ
+in the last bit; \texttt{-{}-fmad=false} turns the contraction off
+(NVCC §4.2.7.11 \cite{nvidia2026nvcc}).}  The common global optimisations, all treated
+in Lesson~11, are the removal of redundant instructions (an expression
+computed twice, on every path, with the same operands), constant and
+\term{copy propagation}[コピー伝播] (replacing a variable by the
+constant or the other variable it was assigned from, which often
+exposes further redundancy), dead code elimination (removing
+instructions whose results are never used), code motion (moving an
+instruction to where it executes less often, e.g.\ out of a loop), and
+the detection of induction variables with strength
+reduction.\margin{Copy propagation in one line: after \texttt{y = x},
+a later \texttt{z = y + 1} becomes \texttt{z = x + 1}; if no other use
+of \texttt{y} remains, \texttt{y = x} is dead.}  None of them can be
+decided inside one block: whether \texttt{x} in some block is still
+the constant assigned three blocks earlier depends on every path in
+between.
+
+\begin{definition}[Data-flow analysis]
+  The family of techniques called
+  \term{data-flow analysis}[データフロー解析] computes, for every
+  point of a program, a fact about all executions that can reach that
+  point, by analysing the effect of each basic block and propagating
+  the results along the edges of the CFG.  The analyses differ in the
+  property they examine.
+\end{definition}
+
+\subsection{The abstraction: points, states and transfer functions}
+
+Data-flow analysis describes a program by the states between its
+statements.
+
+\begin{definition}[Program point, transfer function]
+  A \term{program point}[プログラム点] lies before or after a
+  statement.  The analysis attaches to each point a state, the set of
+  facts that hold there.  For a block $B$, $\mathrm{IN}[B]$ is the
+  state at the point before its first statement and $\mathrm{OUT}[B]$
+  the state after its last.  The \term{transfer function}[伝達関数]
+  $f_s$ of a statement $s$ maps the state before $s$ to the state after
+  it.
+\end{definition}
+
+Inside a block, the point after one statement is the point before the
+next (\cref{fig:l10-transfer}), so the transfer function of a block of
+statements $s_1,\dots,s_n$ is the composition
+\begin{equation}
+  \label{eq:l10-compose}
+  \mathrm{OUT}[B] = f_B(\mathrm{IN}[B]),\qquad
+  f_B = f_{s_n}\circ\cdots\circ f_{s_2}\circ f_{s_1}.
+\end{equation}
+Between blocks, the state on entry to a block must combine the states
+of all its predecessors, since control can arrive from any of them.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-transfer}
+  \caption{Left: the program points of a block of three statements;
+    each statement's transfer function maps the state before it to the
+    state after it.  Right: at a join, the meet (here the union)
+    combines the states of the predecessors.}
+  \label{fig:l10-transfer}
+\end{figure}
+
+\begin{definition}[Meet operator, forward analysis]
+  The \term{meet operator}[合流演算子] combines the states that arrive
+  at a join from several edges into one state.  In a
+  \term{forward analysis}[前向き解析] the states flow in the direction
+  of control: the equations are
+  \begin{equation}
+    \label{eq:l10-forward}
+    \mathrm{IN}[B] = \bigcup_{P\in\mathrm{pred}(B)}\mathrm{OUT}[P],\qquad
+    \mathrm{OUT}[B] = f_B(\mathrm{IN}[B]).
+  \end{equation}
+\end{definition}
+
+A backward problem runs the other way, from the uses of a value back
+to where it was computed: $\mathrm{IN}[B]=f_B(\mathrm{OUT}[B])$ and
+$\mathrm{OUT}[B]=\bigcup_{S\in\mathrm{succ}(B)}\mathrm{IN}[S]$.\margin{Liveness,
+the backward analysis behind register allocation, is the subject of
+Lesson~11.  Both analyses of this course use union as the meet.}  In
+the CFG of \cref{fig:l10-rd-cfg} below, B5 has the predecessors B3 and
+B4, so in a forward analysis
+$\mathrm{IN}[\mathrm{B5}]=\mathrm{OUT}[\mathrm{B3}]\cup\mathrm{OUT}[\mathrm{B4}]$;
+B5 has the successors B2 and EXIT, so in a backward analysis
+$\mathrm{OUT}[\mathrm{B5}]=\mathrm{IN}[\mathrm{B2}]\cup\mathrm{IN}[\mathrm{EXIT}]$.
+
+\subsection{Reaching definitions}
+
+The first analysis concerns where values come from.
+
+\begin{definition}[Definition, use]
+  A \term{definition}[定義] of a variable is a statement that assigns
+  it a value; a \term{use}[使用] is a statement that reads it.  In
+  \texttt{a = x + y} the statement defines \texttt{a} and uses
+  \texttt{x} and \texttt{y}.
+\end{definition}
+
+\begin{definition}[Reaching definitions]
+  A definition $d$ \emph{reaches} a point $p$ if there is a path from
+  the point immediately after $d$ to $p$ along which $d$ is not killed,
+  that is, along which no other definition of the same variable
+  overwrites it.  The analysis of \term{reaching definitions}[到達定義]
+  computes, for every program point, the set of definitions that reach
+  it.
+\end{definition}
+
+\caution{One path suffices: a definition reaches $p$ if it survives on
+\emph{some} path to $p$, not necessarily on all of them.  The analysis
+is conservative in this direction, since it may list a definition
+whose path is never taken at run time.}  If exactly one definition of
+\texttt{x}, say \texttt{x = 4}, reaches a use of \texttt{x}, the use
+can be replaced by the constant~4; if a second definition also reaches
+it, it cannot.  This is how constant propagation uses the analysis.
+
+\begin{definition}[Gen and kill sets]
+  For a definition $d$\,: \texttt{u = v + w}, the
+  \term{gen set}[gen集合] is $\mathrm{gen}_d=\{d\}$, the definition the
+  statement creates, and the \term{kill set}[kill集合]
+  $\mathrm{kill}_d$ is the set of all other definitions of \texttt{u}
+  in the program, which the statement overwrites.  The transfer
+  function of $d$ is
+  \begin{equation}
+    \label{eq:l10-fd}
+    f_d(x) = \mathrm{gen}_d \cup (x - \mathrm{kill}_d).
+  \end{equation}
+\end{definition}
+
+\margin{Notation: $x - y$ is set difference, the elements of $x$ not in
+$y$; $x$ stands for the set of definitions that reach the point before
+the statement.}  A definition that arrives at $d$ survives unless $d$
+kills it, and $d$ itself is added.  For a block, the functions compose
+as in \cref{eq:l10-compose}.  Two statements give
+\begin{align*}
+  f_2(f_1(x)) &= \mathrm{gen}_2 \cup \bigl(\bigl(\mathrm{gen}_1 \cup
+    (x - \mathrm{kill}_1)\bigr) - \mathrm{kill}_2\bigr)\\
+  &= \bigl(\mathrm{gen}_2 \cup (\mathrm{gen}_1 - \mathrm{kill}_2)\bigr)
+     \cup \bigl(x - (\mathrm{kill}_1 \cup \mathrm{kill}_2)\bigr),
+\end{align*}
+which has the same form as \cref{eq:l10-fd}.  By induction, a block of
+$n$ statements has the transfer function
+$f_B(x)=\mathrm{gen}_B\cup(x-\mathrm{kill}_B)$ with
+\begin{equation}
+  \label{eq:l10-genkill}
+  \begin{aligned}
+    \mathrm{kill}_B &= \mathrm{kill}_1\cup\mathrm{kill}_2\cup\cdots\cup\mathrm{kill}_n,\\
+    \mathrm{gen}_B &= \mathrm{gen}_n \cup (\mathrm{gen}_{n-1}-\mathrm{kill}_n)
+      \cup (\mathrm{gen}_{n-2}-\mathrm{kill}_{n-1}-\mathrm{kill}_n)\\
+      &\qquad\cup\cdots\cup(\mathrm{gen}_1-\mathrm{kill}_2-\cdots-\mathrm{kill}_n).
+  \end{aligned}
+\end{equation}
+A block kills every definition that one of its statements kills, and
+generates every definition of its own that no later statement in the
+block overwrites.\tip{Read a block bottom-up to find
+$\mathrm{gen}_B$: a definition belongs to it unless a later statement
+of the block defines the same variable again.}
+
+\begin{example}[Gen and kill sets of a CFG]
+  \label{ex:l10-genkill}
+  The CFG of \cref{fig:l10-rd-cfg} sums the absolute values of
+  \texttt{x[0]} to \texttt{x[n-1]} into \texttt{s} (for $n\ge 1$;
+  the test is at the bottom of the loop).  It has seven
+  definitions: \texttt{i} is defined by $d_1$ and $d_7$, \texttt{s} by
+  $d_2$, $d_4$ and $d_6$, \texttt{t} by $d_3$ and $d_5$.  Block B4
+  holds two statements: $d_5$\,: \texttt{t = -t} with
+  $\mathrm{gen}=\{d_5\}$, $\mathrm{kill}=\{d_3\}$, and
+  $d_6$\,: \texttt{s = s + t} with $\mathrm{gen}=\{d_6\}$,
+  $\mathrm{kill}=\{d_2,d_4\}$.  By \cref{eq:l10-genkill},
+  $\mathrm{kill}_{\mathrm{B4}}=\{d_2,d_3,d_4\}$ and
+  $\mathrm{gen}_{\mathrm{B4}}=\{d_6\}\cup(\{d_5\}-\{d_2,d_4\})=\{d_5,d_6\}$.
+  \Cref{tab:l10-genkill} lists all five blocks.
+\end{example}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l10-rd-cfg}
+  \caption{The CFG of the reaching-definitions example: a loop that
+    adds \texttt{t} when it is positive and $-$\texttt{t} otherwise.
+    The edge B5$\to$B2 is the back edge.}
+  \label{fig:l10-rd-cfg}
+\end{figure}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{Gen and kill sets of the blocks of \cref{fig:l10-rd-cfg}.}
+  \label{tab:l10-genkill}
+  \begin{tabular}{@{}l>{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{24mm}@{}}
+    \toprule
+    Block & $\mathrm{gen}_B$ & $\mathrm{kill}_B$ \\
+    \midrule
+    B1 & $\{d_1,d_2\}$ & $\{d_4,d_6,d_7\}$ \\
+    B2 & $\{d_3\}$ & $\{d_5\}$ \\
+    B3 & $\{d_4\}$ & $\{d_2,d_6\}$ \\
+    B4 & $\{d_5,d_6\}$ & $\{d_2,d_3,d_4\}$ \\
+    B5 & $\{d_7\}$ & $\{d_1\}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{An example of reaching definitions}
+\label{sec:l10-rd-example}
+
+With the gen and kill sets of every block, the reaching definitions
+follow from a system of equations over the whole CFG.\source{M10,
+example of reaching definitions; Aho et al.\ §9.2.4
+\cite{aho2006compilers}.}
+
+\subsection{Equations and the iterative algorithm}
+
+For every block $B$ other than ENTRY, reaching definitions is the
+forward problem of \cref{eq:l10-forward} with union as the meet:
+\begin{equation}
+  \label{eq:l10-rd}
+  \mathrm{IN}[B]=\bigcup_{P\in\mathrm{pred}(B)}\mathrm{OUT}[P],\qquad
+  \mathrm{OUT}[B]=\mathrm{gen}_B\cup(\mathrm{IN}[B]-\mathrm{kill}_B),
+\end{equation}
+together with the boundary condition
+$\mathrm{OUT}[\mathrm{ENTRY}]=\emptyset$: no definition reaches the
+start of the function.\margin{The exit node has no statements, so
+$\mathrm{OUT}[\mathrm{EXIT}]=\mathrm{IN}[\mathrm{EXIT}]$, the
+definitions that reach the end of the function.}  With a loop in the
+CFG the equations are circular: $\mathrm{IN}[\mathrm{B2}]$ depends on
+$\mathrm{OUT}[\mathrm{B5}]$, which depends on
+$\mathrm{IN}[\mathrm{B2}]$.  They are solved by iteration.
+
+\begin{definition}[Iterative algorithm, fixed point]
+  The \term{iterative algorithm}[反復アルゴリズム] for a data-flow
+  problem starts from an initial value for every state and evaluates
+  the equations for all blocks in turn, pass after pass, until a whole
+  pass changes no state.  The states are then a solution of the
+  equations, a \term{fixed point}[不動点] of the passes: applying the
+  equations once more leaves them unchanged.
+\end{definition}
+
+For reaching definitions the algorithm reads:
+\begin{lstlisting}[mathescape, numbers=none]
+$\lxOUT[\lxENTRY] = \emptyset$
+for each block $B \ne \lxENTRY$:  $\lxOUT[B] = \emptyset$
+while some $\lxOUT$ changed in the last pass:
+    for each block $B \ne \lxENTRY$:
+        $\lxIN[B] = \bigcup_{P \in \lxpred(B)} \lxOUT[P]$
+        $\lxOUT[B] = \lxgen_B \cup (\lxIN[B] - \lxkill_B)$
+\end{lstlisting}
+
+The algorithm terminates.  Every $\mathrm{OUT}$ set starts empty, and
+since \cref{eq:l10-rd} only adds definitions when its inputs grow, no
+set ever shrinks; the sets are subsets of the finite set of
+definitions, so they can grow only finitely often.\caution{The order in
+which a pass visits the blocks changes the number of passes, not the
+result.  Visiting predecessors before successors, as in the example
+below, lets the information travel far in one pass; only back edges
+then require another.}  Starting from empty sets yields the smallest
+solution, which contains only definitions that really have a path to
+the point.
+
+\begin{definition}[Bit vector]
+  A \term{bit vector}[ビットベクタ] represents a subset of a fixed,
+  numbered set of $N$ elements as $N$ bits, bit $k$ being 1 when
+  element $k$ is in the subset.  Union becomes bitwise OR, intersection
+  bitwise AND and $x-y$ becomes $x$ AND NOT $y$.
+\end{definition}
+
+With the definitions numbered $d_1,\dots,d_N$, each set of the
+algorithm is one bit vector, and a whole transfer function is two
+bitwise operations per machine word.\margin{The seven definitions of the
+example fit into one machine word; a function with 1000 definitions
+needs 16 words of 64 bits per set.}
+
+\subsection{The example worked out}
+
+\Cref{tab:l10-rd-trace} applies the algorithm to the CFG of
+\cref{fig:l10-rd-cfg}, visiting B1 to B5 and EXIT in this order.  Each
+bit vector lists $d_1,\dots,d_7$ grouped by the block that contains the
+definition (B1: $d_1d_2$; B2: $d_3$; B3: $d_4$; B4: $d_5d_6$; B5:
+$d_7$).
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \caption{Reaching definitions for \cref{fig:l10-rd-cfg}, pass by
+    pass.  Bit $k$ stands for $d_k$; the superscript is the pass.  A
+    third pass reproduces pass~2.}
+  \label{tab:l10-rd-trace}
+  \begin{tabular}{@{}l*{5}{c}@{}}
+    \toprule
+    Block & $\mathrm{OUT}^0$ & $\mathrm{IN}^1$ & $\mathrm{OUT}^1$
+      & $\mathrm{IN}^2$ & $\mathrm{OUT}^2$ \\
+    \midrule
+    B1 & \texttt{00 0 0 00 0} & \texttt{00 0 0 00 0} & \texttt{11 0 0 00 0}
+       & \texttt{00 0 0 00 0} & \texttt{11 0 0 00 0} \\
+    B2 & \texttt{00 0 0 00 0} & \texttt{11 0 0 00 0} & \texttt{11 1 0 00 0}
+       & \texttt{11 1 1 11 1} & \texttt{11 1 1 01 1} \\
+    B3 & \texttt{00 0 0 00 0} & \texttt{11 1 0 00 0} & \texttt{10 1 1 00 0}
+       & \texttt{11 1 1 01 1} & \texttt{10 1 1 00 1} \\
+    B4 & \texttt{00 0 0 00 0} & \texttt{11 1 0 00 0} & \texttt{10 0 0 11 0}
+       & \texttt{11 1 1 01 1} & \texttt{10 0 0 11 1} \\
+    B5 & \texttt{00 0 0 00 0} & \texttt{10 1 1 11 0} & \texttt{00 1 1 11 1}
+       & \texttt{10 1 1 11 1} & \texttt{00 1 1 11 1} \\
+    EXIT & \texttt{00 0 0 00 0} & \texttt{00 1 1 11 1} & \texttt{00 1 1 11 1}
+       & \texttt{00 1 1 11 1} & \texttt{00 1 1 11 1} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{example}[The first pass]
+  \label{ex:l10-pass1}
+  B1 has only ENTRY as predecessor, so $\mathrm{IN}[\mathrm{B1}]=\emptyset$
+  and $\mathrm{OUT}[\mathrm{B1}]=\mathrm{gen}_{\mathrm{B1}}=\{d_1,d_2\}$.
+  B2 has the predecessors B1 and B5, and $\mathrm{OUT}[\mathrm{B5}]$ is
+  still empty, so $\mathrm{IN}[\mathrm{B2}]=\{d_1,d_2\}$ and
+  $\mathrm{OUT}[\mathrm{B2}]=\{d_3\}\cup(\{d_1,d_2\}-\{d_5\})=\{d_1,d_2,d_3\}$.
+  B3 kills $d_2$ and adds $d_4$: $\{d_1,d_3,d_4\}$.  B4 kills $d_2$ and
+  $d_3$ and adds $d_5,d_6$: $\{d_1,d_5,d_6\}$.  At the join B5 the union
+  of the two is $\{d_1,d_3,d_4,d_5,d_6\}$, and B5 replaces $d_1$ by
+  $d_7$: $\mathrm{OUT}[\mathrm{B5}]=\{d_3,d_4,d_5,d_6,d_7\}$, which also
+  reaches EXIT.
+\end{example}
+
+\begin{example}[The second and third passes]
+  \label{ex:l10-pass2}
+  In pass~2, $\mathrm{OUT}[\mathrm{B5}]$ is no longer empty, and the
+  back edge brings its definitions into B2:
+  $\mathrm{IN}[\mathrm{B2}]=\{d_1,d_2\}\cup\{d_3,\dots,d_7\}$, all seven.
+  B2 kills only $d_5$, so $\mathrm{OUT}[\mathrm{B2}]$ gains $d_4$, $d_6$
+  and $d_7$, and so do the $\mathrm{IN}$ sets of B3 and B4.  Of these,
+  B3 and B4 pass on only $d_7$, since each kills or regenerates the
+  other two, and at B5 only $d_7$ is new, which B5 generates anyway:
+  $\mathrm{OUT}[\mathrm{B5}]$ is unchanged.  Because B2, B3 and B4
+  changed, a third pass is run; its $\mathrm{IN}[\mathrm{B2}]$ is the
+  same as in pass~2, so no set changes, and the states of pass~2 are
+  the fixed point.
+\end{example}
+
+\Needspace{26\baselineskip}
+The solution answers questions an optimizer asks.  Both definitions of
+\texttt{i}, $d_1$ and $d_7$, reach the use \texttt{x[i]} in B2, so
+\texttt{i} cannot be replaced there by the constant~0; without the back
+edge only $d_1$ would reach it.\margin{Only $d_3$ among the definitions
+of \texttt{t} reaches B3 and B4: $d_5$ arrives at B2 through the back
+edge but is killed there.  Each use of \texttt{t} in B3 and B4 thus
+reads the value loaded in the same iteration.}  The initialisation
+$d_2$ (\texttt{s = 0}) reaches B2 but not B5: both paths through the
+loop body redefine \texttt{s}.  The definitions that reach EXIT,
+$d_3$ to $d_7$, are the ones whose values the function can still
+observe at its end.
+
+\begin{keypoint}[Lesson summary]
+  A compiler consists of a front end that builds an AST and an IR, an
+  optimizer that rewrites the IR, and a back end that generates code.
+  For CUDA, nvcc splits host from device code; the device code becomes
+  PTX through cicc (or Clang and the LLVM NVPTX back end), PTX becomes
+  SASS through ptxas, and a fat binary built by nvcc carries both, so that the driver
+  can JIT-compile the PTX for GPUs that did not exist at build time.
+  PTX is a virtual ISA with typed instructions of zero to four operands,
+  unlimited virtual registers and guard predicates set by
+  \texttt{setp}.  Optimisers work on three-address code divided into
+  basic blocks, found with the three leader rules, and connected into a
+  control-flow graph.  Global optimisations rest on data-flow analysis:
+  transfer functions per block, a meet at joins, and an iterative
+  algorithm that reaches a fixed point.  Reaching definitions is the
+  forward analysis with
+  $\mathrm{OUT}[B]=\mathrm{gen}_B\cup(\mathrm{IN}[B]-\mathrm{kill}_B)$
+  and $\mathrm{IN}[B]$ the union over the predecessors, computed
+  efficiently with bit vectors; it is fixed by its domain, direction,
+  transfer function, meet, boundary condition and initial value, the
+  six items that Lesson~11 fills in for liveness.
+\end{keypoint}
+
+\end{document}
