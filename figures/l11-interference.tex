@@ -1,0 +1,44 @@
+% Register allocation from liveness (Lesson 11).  Left: a five-
+% instruction sequence and the live range of each of its five values
+% (bar from the definition to the last use).  Right: the interference
+% graph (an edge joins two values that are live at the same time) and
+% a colouring with two registers, R1 and R2.
+% Original figure.
+% Usage: \input{figures/l11-interference}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    vr/.style={circle, draw, minimum size=7mm, inner sep=0pt}]
+  % instructions
+  \foreach \i/\code in {1/{a = p + 1}, 2/{b = a * p}, 3/{c = b + 1},
+                        4/{d = c * b}, 5/{return d}} {
+    \node[anchor=west] at (0,46-\i*8) {\i};
+    \node[anchor=west, font=\scriptsize\ttfamily] at (4,46-\i*8) {\code};
+  }
+  % variable columns
+  \foreach \v/\x in {p/34, a/41, b/48, c/55, d/62}
+    \node[font=\scriptsize\ttfamily\bfseries] at (\x,44) {\v};
+  % live ranges: from just below the defining row (or the top for the
+  % input p) to the row of the last use
+  \foreach \x/\ya/\yb/\col in {34/41/30/ln-accent, 41/37/30/ln-tip,
+                               48/29/14/ln-accent, 55/21/14/ln-tip,
+                               62/13/6/ln-accent} {
+    \fill[\col!60] (\x-1.2,\yb) rectangle (\x+1.2,\ya);
+  }
+  \draw[ln-rule] (-1,41.5) -- (66,41.5);
+  \node[anchor=north, text=ln-muted, align=center] at (48,3)
+    {\iflangja{棒 = 生存範囲（定義から最後の使用まで）}{bar = live range (definition to last use)}};
+  % interference graph
+  \node[anchor=west, font=\scriptsize\sffamily\bfseries] at (74,44)
+    {\iflangja{干渉グラフ}{interference graph}};
+  \node[vr, fill=ln-accent!30] (p) at (80,32) {\texttt{p}};
+  \node[vr, fill=ln-tip!30]    (a) at (96,32) {\texttt{a}};
+  \node[vr, fill=ln-accent!30] (b) at (80,18) {\texttt{b}};
+  \node[vr, fill=ln-tip!30]    (c) at (96,18) {\texttt{c}};
+  \node[vr, fill=ln-accent!30] (d) at (88,6)  {\texttt{d}};
+  \draw[thick] (p) -- (a);
+  \draw[thick] (b) -- (c);
+  \node[anchor=west, align=left] at (104,32)
+    {\colorbox{ln-accent!30}{R1}\\\texttt{p, b, d}};
+  \node[anchor=west, align=left] at (104,18)
+    {\colorbox{ln-tip!30}{R2}\\\texttt{a, c}};
+\end{tikzpicture}

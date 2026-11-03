@@ -1,0 +1,28 @@
+% Where phi functions go in a loop (Lesson 11): the SSA form of a
+% counting loop.  B2 is a join of the entry path and the back edge, so
+% i and s receive phi functions there; n has one definition and needs
+% none; B4 has a single predecessor, so no phi is placed there although
+% two definitions of s reach it.
+% Original figure (applies the criterion of the outline figure
+% m11l2_path_converge to the book's own CFG).
+% Usage: \input{figures/l11-path-convergence}
+% Width: body (120 mm); the drawing is about 112 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, fill=ln-box, align=left, inner sep=2pt,
+               minimum width=30mm, rounded corners=0.8mm}]
+  \node[bb] (b1) at (22,46) {\textbf{B1}\\\texttt{i1 = 0}\\\texttt{s1 = 0}};
+  \node[bb, fill=ln-tip!15] (b2) at (22,27)
+    {\textbf{B2}\\\texttt{i2 = $\phi$(i1, i3)}\\\texttt{s2 = $\phi$(s1, s3)}\\\texttt{if (i2 < n)}};
+  \node[bb] (b3) at (66,27) {\textbf{B3}\\\texttt{s3 = s2 + i2}\\\texttt{i3 = i2 + 1}};
+  \node[bb] (b4) at (22,6) {\textbf{B4}\\\texttt{return s2}};
+  \draw[->] (b1) -- (b2);
+  \draw[->] (b2.east) -- node[above] {\texttt{i2 < n}} (b3.west);
+  \draw[->, ln-caution, thick] (b3.south) -- ++(0,-6) -| 
+    node[pos=0.25, below] {\iflangja{後退辺}{back edge}} ([xshift=4mm]b2.south);
+  \draw[->] ([xshift=-6mm]b2.south) -- node[left] {\texttt{i2 >= n}} ([xshift=-6mm]b4.north);
+  \node[anchor=west, align=left, text=ln-muted, text width=34mm] at (84,40)
+    {\iflangja{B2: 2経路（B1 から，B3 から）が B2 でのみ交わる $\Rightarrow$ $\phi$}{B2: the paths from B1 and from B3 meet only at B2 $\Rightarrow$ $\phi$}};
+  \node[anchor=west, align=left, text=ln-muted, text width=34mm] at (84,8)
+    {\iflangja{B4: 経路はすべて B2 を通る $\Rightarrow$ $\phi$ 不要}{B4: every path passes through B2 $\Rightarrow$ no $\phi$}};
+\end{tikzpicture}

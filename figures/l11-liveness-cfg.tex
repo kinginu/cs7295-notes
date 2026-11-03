@@ -1,0 +1,46 @@
+% Live-variable analysis (Lesson 11): the control-flow graph of the
+% chapter's own running example, a loop that accumulates s while k
+% counts down, with an inner branch on t.  Each block shows its code
+% and its use and def sets; the back edge B4 -> B2 closes the loop.
+% Original figure (replaces the lecture's m11l1_live_eg, whose CFG the
+% book does not reuse).
+% Usage: \input{figures/l11-liveness-cfg}
+% Width: body (120 mm); the drawing is about 104 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, fill=ln-box, minimum width=40mm, align=left,
+               inner sep=2pt, rounded corners=0.8mm},
+    term/.style={draw, rounded corners=2mm, minimum width=14mm,
+                 minimum height=5mm, inner sep=1pt}]
+  \node[term] (en) at (36,100) {ENTRY};
+  \node[bb] (b1) at (36,89)
+    {\textbf{B1}\quad\texttt{s = 0}\\
+     \hphantom{\textbf{B1}\quad}\texttt{k = n}\\[1pt]
+     {\color{ln-accent}use $\{n\}$\quad def $\{s,k\}$}};
+  \node[bb] (b2) at (36,71)
+    {\textbf{B2}\quad\texttt{k = k - 1}\\
+     \hphantom{\textbf{B2}\quad}\texttt{t = k * w}\\
+     \hphantom{\textbf{B2}\quad}\texttt{if (t > 0)}\\[1pt]
+     {\color{ln-accent}use $\{k,w\}$\quad def $\{t\}$}};
+  \node[bb] (b3) at (86,58)
+    {\textbf{B3}\quad\texttt{s = s + t}\\[1pt]
+     {\color{ln-accent}use $\{s,t\}$\quad def $\varnothing$}};
+  \node[bb] (b4) at (36,47)
+    {\textbf{B4}\quad\texttt{if (k > 0)}\\[1pt]
+     {\color{ln-accent}use $\{k\}$\quad def $\varnothing$}};
+  \node[bb] (b5) at (36,33)
+    {\textbf{B5}\quad\texttt{return s + v}\\[1pt]
+     {\color{ln-accent}use $\{s,v\}$\quad def $\varnothing$}};
+  \node[term] (ex) at (36,22) {EXIT};
+  \draw[->] (en) -- (b1);
+  \draw[->] (b1) -- (b2);
+  \draw[->] (b2.east) -| node[pos=0.25, above] {\texttt{t > 0}} (b3.north);
+  \draw[->] (b2) -- node[right] {\texttt{t <= 0}} (b4);
+  \draw[->] (b3.south) |- (b4.east);
+  \draw[->] (b4) -- node[right] {\texttt{k <= 0}} (b5);
+  \draw[->] (b5) -- (ex);
+  \draw[->, ln-caution, thick] (b4.west) -- ++(-6,0) |- 
+    node[pos=0.25, left, align=right] {\iflangja{後退辺}{back\\edge}\\\texttt{k > 0}} (b2.west);
+  \node[anchor=west, text=ln-muted, align=left] at (68,89)
+    {\iflangja{入力: $n, w, v$}{inputs: $n, w, v$}};
+\end{tikzpicture}

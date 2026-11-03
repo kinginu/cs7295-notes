@@ -1,0 +1,48 @@
+% Divergence analysis as dependence propagation (Lesson 11): the
+% def-use edges of the kernel in the text, from the sources threadIdx.x
+% (thread dependent) and blockIdx.x, n (uniform) to the four branch
+% conditions.  Red nodes are thread dependent, blue nodes uniform; the
+% dashed edge is a dependence through a load address.
+% Original figure (the idea of the outline figures m11l4_td and
+% m11l4_check, on the book's own kernel).
+% Usage: \input{figures/l11-divergence}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    v/.style={draw, rounded corners=0.8mm, inner sep=2pt,
+              minimum height=5.5mm, font=\scriptsize\ttfamily},
+    var/.style={v, fill=ln-caution!18},
+    uni/.style={v, fill=ln-accent!15},
+    br/.style={v, very thick}]
+  \node[font=\scriptsize\sffamily\bfseries] at (8,52) {\iflangja{発生源}{sources}};
+  \node[font=\scriptsize\sffamily\bfseries] at (50,52) {\iflangja{値}{values}};
+  \node[font=\scriptsize\sffamily\bfseries] at (100,52) {\iflangja{分岐条件}{branch conditions}};
+  \node[var] (tidx) at (8,40) {threadIdx.x};
+  \node[uni] (bidx) at (8,22) {blockIdx.x};
+  \node[uni] (n)    at (8,6)  {n};
+  \node[var] (tid)  at (34,40) {tid};
+  \node[var] (q)    at (58,46) {q = tid / 2};
+  \node[uni] (base) at (34,22) {base};
+  \node[var] (y)    at (62,32) {y = mem[base + tid]};
+  \node[uni] (x)    at (62,16) {x = mem[base]};
+  \node[br, draw=ln-caution, fill=ln-caution!18] (c1) at (102,46) {q > 3};
+  \node[br, draw=ln-caution, fill=ln-caution!18] (c2) at (102,32) {y > 0};
+  \node[br, draw=ln-accent, fill=ln-accent!15] (c3) at (102,16) {x > 0};
+  \node[br, draw=ln-accent, fill=ln-accent!15] (c4) at (102,4)  {j < n};
+  \draw[->] (tidx) -- (tid);
+  \draw[->] (tid) -- (q);
+  \draw[->, dashed] (tid) -- node[pos=0.45, below left, inner sep=1pt,
+    font=\scriptsize\sffamily] {\iflangja{アドレス}{address}} (y);
+  \draw[->] (bidx) -- (base);
+  \draw[->] (n) -- (base);
+  \draw[->] (base) -- (y);
+  \draw[->] (base) -- (x);
+  \draw[->] (q) -- (c1);
+  \draw[->] (y) -- (c2);
+  \draw[->] (x) -- (c3);
+  \draw[->] (n) -- (c4);
+  \node[anchor=west, text=ln-caution] at (112,46) {\iflangja{発散}{div.}};
+  \node[anchor=west, text=ln-caution] at (112,32) {\iflangja{発散}{div.}};
+  \node[anchor=west, text=ln-accent] at (112,16) {\iflangja{一様}{unif.}};
+  \node[anchor=west, text=ln-accent] at (112,4)  {\iflangja{一様}{unif.}};
+\end{tikzpicture}

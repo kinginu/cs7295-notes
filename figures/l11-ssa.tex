@@ -1,0 +1,36 @@
+% Conversion to SSA form (Lesson 11).  Left: a diamond CFG in which s is
+% redefined on the else path and t on the then path.  Right: the same
+% CFG in SSA form, every definition a new version and two phi functions
+% at the join block BB4 (arguments in the order of the predecessors
+% BB2, BB3); u needs none.
+% Original figure in the layout of the outline figures m11l2_ssa and
+% m11l2_ssa_eg (phi drawn correctly, not as the empty-set sign).
+% Usage: \input{figures/l11-ssa}
+% Width: body (120 mm); the drawing is about 116 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    bb/.style={draw, fill=ln-box, align=left, inner sep=2pt,
+               minimum width=24mm, rounded corners=0.8mm}]
+  % before
+  \node[font=\scriptsize\sffamily\bfseries] at (27,50) {\iflangja{変換前}{before}};
+  \node[bb] (a1) at (27,40)
+    {\textbf{BB1}\\\texttt{s = 1}\\\texttt{t = x + 2}\\\texttt{if (x > 0)}};
+  \node[bb] (a2) at (13,24) {\textbf{BB2}\\\texttt{t = t * 3}};
+  \node[bb] (a3) at (41,24) {\textbf{BB3}\\\texttt{s = 5}};
+  \node[bb] (a4) at (27,7)  {\textbf{BB4}\\\texttt{u = s + t}};
+  % after
+  \node[font=\scriptsize\sffamily\bfseries] at (89,50) {\iflangja{SSA 形式}{SSA form}};
+  \node[bb] (b1) at (89,40)
+    {\textbf{BB1}\\\texttt{s1 = 1}\\\texttt{t1 = x + 2}\\\texttt{if (x > 0)}};
+  \node[bb] (b2) at (75,24) {\textbf{BB2}\\\texttt{t2 = t1 * 3}};
+  \node[bb] (b3) at (103,24) {\textbf{BB3}\\\texttt{s2 = 5}};
+  \node[bb, fill=ln-tip!15] (b4) at (89,5)
+    {\textbf{BB4}\\\texttt{s3 = $\phi$(s1, s2)}\\\texttt{t3 = $\phi$(t2, t1)}\\\texttt{u1 = s3 + t3}};
+  \foreach \p in {a, b} {
+    \draw[->] (\p1) -- (\p2);
+    \draw[->] (\p1) -- (\p3);
+    \draw[->] (\p2) -- (\p4);
+    \draw[->] (\p3) -- (\p4);
+  }
+  \draw[->, ln-accent, very thick] (56,24) -- (61,24);
+\end{tikzpicture}

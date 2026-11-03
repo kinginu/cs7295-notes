@@ -1,0 +1,916 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{Compiler Background - II}
+\lessoninfo{
+  video={M11, lessons 1--4 (Live-Variable Analysis; SSA; Examples of Compiler Optimizations; Divergence Analysis)},
+  sources={Cytron et al.\ \cite{cytron1991ssa} (SSA construction with dominance frontiers); Chaitin \cite{chaitin1982coloring} (register allocation by graph colouring); LLVM Language Reference \cite{llvm2026langref} (\texttt{phi}, \texttt{select}); LLVM passes \cite{llvm2026passes} (\texttt{mem2reg}); PTX ISA \cite{nvidia2026ptx}},
+  textbook={Aho et al.\ \cite{aho2006compilers} §6.2 Three-Address Code, §8.8 Register Allocation and Assignment, §9.1 The Principal Sources of Optimization, §9.2 Introduction to Data-Flow Analysis, §9.6 Loops in Flow Graphs; CPG \cite{nvidia2024cudaguide} §5.2.3 Multiprocessor Level, §5.3.2 Device Memory Accesses, §5.4.2 Control Flow Instructions, §7.1.5 \_\_noinline\_\_ and \_\_forceinline\_\_, §7.39 \#pragma unroll; PMPP \cite{hwu2022pmpp} ch.~10},
+  keywords={live variable, liveness analysis, backward analysis, def and use sets, register allocation, interference graph, register spill, static single assignment, phi function, path-convergence criterion, dominance frontier, loop unrolling, function inlining, dead code elimination, constant propagation, strength reduction, loop-invariant code motion, induction variable, divergence analysis, thread-dependent and uniform values},
+}
+
+Lesson~10 followed a CUDA program through the compiler to PTX, cut the
+PTX into basic blocks and a control-flow graph, and set up data-flow
+analysis with reaching definitions, a forward problem.  This lesson
+completes the toolkit with its backward counterpart, live-variable
+analysis, and with its most important client, register allocation,
+which on a GPU decides how many warps fit on an SM.  It then presents
+static single assignment form, the representation in which LLVM, and
+with it NVIDIA's LLVM-based NVVM compiler, carries a program, and the classic optimisations
+that the analyses enable: loop unrolling, inlining, dead code
+elimination, constant propagation, strength reduction and code motion.
+The last section turns to a question that only parallel code poses:
+which branches can diverge.  It connects the hardware of Lesson~6, the
+SIMT stack and its reconvergence points, to an analysis the compiler
+performs on the def-use chains of the thread index.
+
+\section{Live-variable analysis}
+\label{sec:l11-liveness}
+
+Reaching definitions asks, for each program point, which assignments
+may have produced the values seen there.\source{M11, liveness; Aho et
+al.\ §9.2 Introduction to Data-Flow Analysis \cite{aho2006compilers}.}
+Liveness asks the opposite question: which of the values present at a
+point will still be needed later.
+
+\begin{definition}[Live variable]
+  \label{def:l11-live}
+  A variable $x$ is a \term{live variable}[生存変数] at a program point
+  $p$ if the value of $x$ at $p$ may be used along some path in the
+  control-flow graph that starts at $p$, before $x$ is redefined on that
+  path; otherwise $x$ is \emph{dead} at $p$.  The data-flow analysis
+  that computes, for every point, the set of live variables is
+  \term{liveness analysis}[生存変数解析].
+\end{definition}
+
+\margin{Lesson~6 used the same notion for the hardware: a live register
+holds a value that will still be read.  Liveness analysis computes it
+at compile time for every variable and every point.}%
+A dead value occupies a register for nothing.  The main use of liveness
+is therefore register allocation (\cref{sec:l11-regalloc}): only live
+variables need registers, and the register of a variable that has died
+can be handed to another.  The same information tells which
+assignments are useless, the basis of the dead code elimination of
+\cref{sec:l11-optimizations}.
+
+\subsection{Data-flow equations}
+
+The effect of one basic block $B$ on liveness is summarised by two sets.
+
+\begin{definition}[Def and use sets]
+  \label{def:l11-def-use}
+  The \term{def set}[def集合] $\mathit{def}_B$ of a block $B$ is the set
+  of variables that $B$ defines before any use of them in $B$.  The
+  \term{use set}[use集合] $\mathit{use}_B$ is the set of variables that
+  $B$ may use before any definition of them in $B$.
+\end{definition}
+
+\caution{An assignment such as \texttt{k = k - 1} reads \texttt{k}
+before writing it, so \texttt{k} belongs to $\mathit{use}_B$ and, by
+the definition, not to $\mathit{def}_B$.  Listing it in both sets, as
+is sometimes done, gives the same IN set, because a variable in
+$\mathit{use}_B$ is live on entry anyway.}%
+A variable in $\mathit{use}_B$ is live on entry to $B$ whatever happens
+after $B$, since $B$ itself reads it.  A variable in $\mathit{def}_B$ is
+dead on entry to $B$ unless $B$ reads it first, since $B$ overwrites it.
+Every other variable passes through $B$ unchanged: it is live on entry
+exactly when it is live on exit.  With IN$[B]$ and OUT$[B]$ the sets of
+live variables just before and just after $B$, this gives the equations
+\begin{align}
+  \mathrm{IN}[\mathrm{EXIT}] &= \varnothing, \label{eq:l11-boundary}\\
+  \mathrm{IN}[B] &= \mathit{use}_B \cup
+     \bigl(\mathrm{OUT}[B] - \mathit{def}_B\bigr), \label{eq:l11-in}\\
+  \mathrm{OUT}[B] &= \bigcup_{S \in \mathrm{succ}(B)} \mathrm{IN}[S].
+     \label{eq:l11-out}
+\end{align}
+\margin{Notation as in Lesson~10: $\mathrm{succ}(B)$ is the set of
+successors of $B$, IN and OUT the values at the program points before
+and after the block.}%
+\Cref{eq:l11-boundary} is the boundary condition: no variable is live
+when the program ends.  \Cref{eq:l11-in} is the transfer function of
+the block, \cref{eq:l11-out} the meet: a variable is live on exit from
+$B$ if and only if it is live on entry to at least one successor, since
+some path continues through that successor.
+
+\begin{definition}[Backward analysis]
+  \label{def:l11-backward}
+  A data-flow problem in which information flows against the edges of
+  the control-flow graph, the IN set of a block being computed from its
+  OUT set and the OUT set from the IN sets of the successors, is a
+  \term{backward analysis}[後ろ向き解析].  Liveness is backward because
+  whether a value is needed depends on what the program does
+  \emph{later}; reaching definitions is forward because whether a
+  definition arrives depends on what happened \emph{earlier}.
+\end{definition}
+
+The equations are solved by the same iterative method as reaching
+definitions, run in the other direction.  Every IN set starts empty
+(\cref{eq:l11-boundary} and the initial guess for every other block);
+then the blocks are visited repeatedly, each time computing OUT$[B]$
+from the current IN sets of the successors and IN$[B]$ from OUT$[B]$,
+until a whole pass changes no IN set.\tip{Visit the blocks in reverse
+order (exit first) for a backward problem: most values are then
+already up to date when they are read, and fewer passes are needed.
+The result does not depend on the order, only the work does.}  The
+sets only grow, and there are finitely many variables, so the method
+reaches a fixed point; it is the smallest solution of the equations,
+which is the precise one.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-liveness-cfg}
+  \caption{The running example of this section: a loop over $k$ with a
+    branch on $t$.  Each block lists its code and its use and def sets;
+    $n$, $w$ and $v$ are inputs.}
+  \label{fig:l11-liveness-cfg}
+\end{figure}
+
+\begin{example}
+  \label{ex:l11-liveness}
+  \Cref{fig:l11-liveness-cfg} shows a loop that counts $k$ down from
+  $n$ and adds $t = k\cdot w$ to $s$ whenever $t$ is positive; the
+  result is $s + v$.  The blocks are visited in the order B5, B4, B3,
+  B2, B1, and \cref{tab:l11-liveness} gives the sets after the first
+  and second passes.
+  \begin{itemize}
+    \item \emph{Pass 1.}  OUT[B5] $= \mathrm{IN}[\mathrm{EXIT}] =
+      \varnothing$, so IN[B5] $= \{s,v\}$.  B4 has the successors B2
+      and B5; IN[B2] is still empty, so OUT[B4] $= \{s,v\}$ and
+      IN[B4] $= \{k\} \cup \{s,v\} = \{k,s,v\}$.  Then IN[B3] $=
+      \{s,t\} \cup \{k,s,v\} = \{k,s,t,v\}$.  OUT[B2] is the union of
+      IN[B3] and IN[B4], $\{k,s,t,v\}$; removing $\mathit{def} =
+      \{t\}$ and adding $\mathit{use} = \{k,w\}$ gives IN[B2] $=
+      \{k,s,v,w\}$.  Finally IN[B1] $= \{n\} \cup (\{k,s,v,w\} -
+      \{s,k\}) = \{n,v,w\}$.
+    \item \emph{Pass 2.}  The back edge now carries information: IN[B2]
+      is no longer empty, so OUT[B4] $= \{k,s,v,w\}$ and $w$ enters
+      IN[B4] and IN[B3].  OUT[B2] gains $w$, but $w$ was already in
+      IN[B2], so IN[B2] and everything above it are unchanged.
+    \item \emph{Pass 3} recomputes every set and changes nothing: the
+      fixed point is reached.
+  \end{itemize}
+  The result is what the code suggests: the inputs $w$ and $v$ are live
+  throughout the loop because they are read in every iteration and at
+  the end; $n$ is live only on entry to B1; and $t$ is live only on the
+  edge from B2 to B3, so its register is free again in B4.\margin{Our
+  numbers: five variables of the loop body live at once at most
+  ($k, s, t, v, w$ on the edge B2$\to$B3), so the loop needs five
+  registers before any spilling; $n$ can share one of them, being dead
+  once B1 has copied it into $k$.}
+\end{example}
+
+\begin{table}[tb]
+  \centering\small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lllllll@{}}
+    \toprule
+    Block & $\mathit{use}_B$ & $\mathit{def}_B$ & OUT$^1$ & IN$^1$ & OUT$^2$ & IN$^2$ \\
+    \midrule
+    B5 & $\{s,v\}$ & $\varnothing$ & $\varnothing$ & $\{s,v\}$ & $\varnothing$ & $\{s,v\}$ \\
+    B4 & $\{k\}$ & $\varnothing$ & $\{s,v\}$ & $\{k,s,v\}$ & $\{k,s,v,w\}$ & $\{k,s,v,w\}$ \\
+    B3 & $\{s,t\}$ & $\varnothing$ & $\{k,s,v\}$ & $\{k,s,t,v\}$ & $\{k,s,v,w\}$ & $\{k,s,t,v,w\}$ \\
+    B2 & $\{k,w\}$ & $\{t\}$ & $\{k,s,t,v\}$ & $\{k,s,v,w\}$ & $\{k,s,t,v,w\}$ & $\{k,s,v,w\}$ \\
+    B1 & $\{n\}$ & $\{s,k\}$ & $\{k,s,v,w\}$ & $\{n,v,w\}$ & $\{k,s,v,w\}$ & $\{n,v,w\}$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Liveness for \cref{fig:l11-liveness-cfg}, blocks in the
+    order visited.  Superscripts number the passes; the third pass
+    repeats the second.}
+  \label{tab:l11-liveness}
+\end{table}
+
+\subsection{Register allocation}
+\label{sec:l11-regalloc}
+
+\begin{definition}[Register allocation]
+  \label{def:l11-regalloc}
+  The compiler pass that maps the values of a program onto the finite
+  set of machine registers is \term{register allocation}[レジスタ割り付け].
+  Two values may share a register if they are never live at the same
+  point.  The \term{interference graph}[干渉グラフ] has one node per
+  value and an edge between two values that are live at the same time;
+  an assignment of registers is a colouring of this graph in which
+  adjacent nodes get different colours.
+\end{definition}
+
+\margin{Graph-colouring register allocation, with spilling when the
+colouring fails, goes back to Chaitin \cite{chaitin1982coloring}; Aho
+et al.\ §8.8 \cite{aho2006compilers} presents it as the standard
+global method.}%
+\Cref{fig:l11-interference} applies this to a straight-line sequence.
+After instruction~2 neither $p$ nor $a$ is read again, so the register
+of either can receive $b$; after instruction~4 neither $b$ nor $c$ is
+read again, so the register of either can receive $d$.  Only two pairs
+of values are ever live together, $p$ with $a$ and $b$ with $c$, so
+two registers serve five values.
+
+The same reasoning on a branching program uses the IN and OUT sets of
+the blocks.  In \cref{fig:l11-liveness-cfg}, $t$ is not in OUT[B4]: of
+the two successors of B4, B2 redefines $t$ before reading it and B5
+never reads it, so $t$ is dead on the back edge; its register is free
+for other values from the last read of $t$ until B2 writes it again.
+Conversely, B2 and B4 never read $s$, yet $s$ is in their IN and OUT
+sets (\cref{tab:l11-liveness}): B3 and B5 read it later, so $s$ stays
+live on every path to those reads and keeps its register throughout
+the loop.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-interference}
+  \caption{Liveness drives register allocation.  Left: the live range
+    of each value of a five-instruction sequence.  Right: the
+    interference graph; two colours suffice, so the five values fit
+    into two registers.}
+  \label{fig:l11-interference}
+\end{figure}
+
+When more values are live at some point than there are registers, the
+colouring fails and some values must leave the register file.
+
+\begin{definition}[Spill and fill]
+  \label{def:l11-spill}
+  A \term{register spill}[レジスタスピル] stores a live value from a
+  register to memory, usually a stack slot, to free the register; the
+  later load that brings the value back into a register before its next
+  use is a \term{fill (reload)}[フィル（再ロード）].
+\end{definition}
+
+PTX has no register allocation: its registers are virtual and
+unlimited in number, and the PTX that the front end emits contains no
+spills.\margin{A PTX kernel declares as many virtual registers as it
+needs, e.g.\ \texttt{.reg .b32 \%r<100>;} for \texttt{\%r0} to
+\texttt{\%r99} (PTX ISA, Parameterized Variable Names
+\cite{nvidia2026ptx}).}  Registers are allocated by \texttt{ptxas} when
+it translates PTX into SASS for a real architecture, and the spills it
+inserts go to the thread's local memory (Lesson~3).  CPG §5.3.2 lists
+\enquote{any variable if the kernel uses more registers than available
+(this is also known as register spilling)} among the variables placed
+in local memory \cite{nvidia2024cudaguide}.  Local memory is private
+to a thread but resides in device memory, so a fill that misses in the
+L1 cache costs as much as a global memory access.
+
+On a GPU the allocator balances two costs.  Fewer registers per thread
+mean more resident warps, and so more latency hiding (Lesson~3); more
+registers mean fewer spills.  A single register can matter: on an SM
+with 65,536 registers, two blocks of 512 threads fit at 64 registers per
+thread, but only one at 65 (CPG §5.2.3 Multiprocessor Level
+\cite{nvidia2024cudaguide}).
+The limit is 255 registers per thread (CPG Table~21
+\cite{nvidia2024cudaguide}), and the programmer can
+lower it with the \texttt{-maxrregcount} option or the
+\texttt{\_\_launch\_bounds\_\_()} qualifier, accepting spills for
+occupancy.\tip{Compile with \mbox{\texttt{--ptxas-options=-v}}: the compiler then
+reports, per kernel, its registers and its local memory use
+(\texttt{lmem}, CPG §5.3.2 \cite{nvidia2024cudaguide}); \texttt{ptxas}
+also prints the bytes of spill stores and loads, and nonzero values
+mean the allocator ran out of registers.}
+
+\subsection{Liveness and reaching definitions compared}
+
+The two analyses are the standard pair of data-flow problems: the same
+iterative solver, different sets and opposite directions
+(\cref{tab:l11-compare}).
+
+\begin{table}[tb]
+  \centering\small
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}
+                    >{\raggedright\arraybackslash}p{42mm}
+                    >{\raggedright\arraybackslash}p{42mm}@{}}
+    \toprule
+    & Reaching definitions (Lesson~10) & Live variables \\
+    \midrule
+    Domain & sets of definitions & sets of variables \\
+    Direction & forward & backward \\
+    Transfer function & $\mathit{gen}_B \cup (x - \mathit{kill}_B)$ &
+      $\mathit{use}_B \cup (x - \mathit{def}_B)$ \\
+    Meet & $\cup$ over predecessors & $\cup$ over successors \\
+    Equations & OUT$[B] = f_B(\mathrm{IN}[B])$, IN$[B] = \bigcup_{P}
+      \mathrm{OUT}[P]$ & IN$[B] = f_B(\mathrm{OUT}[B])$, OUT$[B] =
+      \bigcup_{S} \mathrm{IN}[S]$ \\
+    Boundary & OUT[ENTRY] $= \varnothing$ & IN[EXIT] $= \varnothing$ \\
+    Initialisation & OUT$[B] = \varnothing$ & IN$[B] = \varnothing$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Reaching definitions and liveness side by side.}
+  \label{tab:l11-compare}
+\end{table}
+
+\begin{keypoint}
+  Liveness runs backward from IN[EXIT] $= \varnothing$ with
+  IN$[B] = \mathit{use}_B \cup (\mathrm{OUT}[B] - \mathit{def}_B)$ and
+  OUT$[B]$ the union over the successors.  Values that are never live
+  together can share a register; when too many are live at once,
+  \texttt{ptxas} spills some to local memory.
+\end{keypoint}
+
+\section{Static single assignment}
+\label{sec:l11-ssa}
+
+In ordinary three-address code a variable may be assigned many times,
+so every analysis must first find out which assignment a use
+refers to, which is the question reaching definitions
+answers.\source{M11, SSA; Aho et al.\ §6.2 Three-Address Code
+\cite{aho2006compilers}; Cytron et al.\ \cite{cytron1991ssa}.}  The link
+from a definition to the uses it reaches is a
+\term{def-use chain}[定義・使用連鎖].  Static single assignment form
+builds the chains into the names of the program.
+
+\begin{definition}[Static single assignment]
+  \label{def:l11-ssa}
+  A program is in \term{SSA form}[SSA形式] when every variable is
+  assigned at exactly one place in the program text.  The property is
+  called \term{static single assignment (SSA)}[静的単一代入]:
+  \emph{static} because the single assignment may still execute many
+  times, in a loop.  A program is converted by giving every definition
+  of a variable a new version, \texttt{a1}, \texttt{a2}, \ldots, and
+  renaming every use to the version that reaches it.
+\end{definition}
+
+\margin{LLVM IR is in SSA form for all its virtual registers (LLVM
+Language Reference \cite{llvm2026langref}); the NVPTX back end of
+Lesson~10 receives the program in that form.}%
+In SSA form a use names its definition, so a def-use chain is a direct
+link and does not need a separate analysis.  Constant propagation, dead
+code elimination and most other optimisations become simpler, which is
+why SSA is the basis of most compiler intermediate representations.\sidenote{LLVM
+front ends do not build SSA themselves.  Clang emits every local
+variable as a stack slot (\texttt{alloca}) with loads and stores, and
+the \texttt{mem2reg} pass promotes such slots to SSA registers,
+inserting $\phi$ functions with the standard algorithm based on the
+dominance frontiers introduced below to obtain pruned SSA (LLVM passes \cite{llvm2026passes}).}
+
+\subsection{Joins and phi functions}
+
+Renaming is straightforward in straight-line code.  At a block with
+several predecessors it is not: in \cref{fig:l11-ssa} the use of
+\texttt{s} in BB4 is reached by \texttt{s1} along BB2 and by
+\texttt{s2} along BB3, and no single name is correct for both paths.
+
+\begin{definition}[Join point and phi function]
+  \label{def:l11-phi}
+  A \term{join point}[合流点] is a block with more than one predecessor.
+  A \term{phi function}[φ関数] placed at the start of a join point,
+  $x_3 = \phi(x_1, x_2)$, has one argument per predecessor and defines
+  a new version $x_3$ whose value is the argument of the edge along
+  which control arrived.  After the $\phi$, every later use refers to
+  $x_3$.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-ssa}
+  \caption{Conversion to SSA form.  Each definition gets a new version;
+    at the join BB4, $\phi$ functions merge the versions of \texttt{s}
+    and \texttt{t} that arrive from BB2 (first argument) and BB3
+    (second argument).}
+  \label{fig:l11-ssa}
+\end{figure}
+
+In \cref{fig:l11-ssa}, \texttt{s3 = $\phi$(s1, s2)} is \texttt{s1} when
+control comes from BB2 and \texttt{s2} when it comes from BB3;
+\texttt{t3} merges \texttt{t2} (BB2) and \texttt{t1} (BB3).  The use in
+\texttt{u1 = s3 + t3} then has exactly one reaching definition per
+name.  A $\phi$ is not an instruction of any machine.  When the program
+leaves SSA form, it becomes a move on each incoming edge, or, when the
+two paths are short, a select or a \term{conditional move}[条件付き移動]
+that picks one of two registers by a predicate.\margin{The GPU
+counterpart of the conditional move is the \texttt{selp} instruction
+of PTX, which picks one of two source operands by a predicate operand
+(PTX ISA \cite{nvidia2026ptx}); unlike the guarded \texttt{@p}
+execution of Lesson~6 it is not itself predicated.}
+
+LLVM writes the $\phi$ with the predecessor label beside each value.
+In SSA form as \texttt{mem2reg} leaves it, before any further
+optimisation, the function \texttt{min(a, b)} keeps its branch and
+merges the two results in the block \texttt{end}:
+\begin{lstlisting}[numbers=none]
+define i32 @min(i32 %a, i32 %b) {
+entry:
+  %lt = icmp slt i32 %a, %b
+  br i1 %lt, label %ta, label %tb
+ta:
+  br label %end
+tb:
+  br label %end
+end:
+  %r = phi i32 [ %a, %ta ], [ %b, %tb ]
+  ret i32 %r
+}
+\end{lstlisting}
+\margin{SimplifyCFG replaces this diamond by one
+\texttt{select i1 \%lt, i32 \%a, i32 \%b}, the conditional move of the
+IR (LLVM Language Reference \cite{llvm2026langref}); InstCombine then
+canonicalises this min pattern to \texttt{@llvm.smin.i32}.}%
+When the target is lowered, \texttt{\%r} becomes either a register
+written on both incoming edges or a single conditional move.
+
+\subsection{Where to place phi functions}
+
+The simplest placement inserts a $\phi$ for every variable at every
+join point.  It is correct but wasteful: in \cref{fig:l11-ssa} the
+variable \texttt{u} is defined only in BB4 and \texttt{x} is never
+redefined, so a $\phi$ for either would merge one value with itself.
+A $\phi$ is needed only where different definitions actually meet.
+
+\begin{definition}[Path-convergence criterion]
+  \label{def:l11-path-convergence}
+  The \term{path-convergence criterion}[経路収束条件] requires a $\phi$
+  for variable $a$ at block $z$ when all of the following hold:
+  \begin{enumerate}
+    \item a block $x$ contains a definition of $a$;
+    \item a block $y \neq x$ contains a definition of $a$;
+    \item there is a nonempty path $P_{xz}$ from $x$ to $z$;
+    \item there is a nonempty path $P_{yz}$ from $y$ to $z$;
+    \item $P_{xz}$ and $P_{yz}$ have no node in common other than $z$;
+    \item $z$ does not appear within both $P_{xz}$ and $P_{yz}$ before
+      their ends, though it may appear in one of them.
+  \end{enumerate}
+  The start node counts as containing a definition of every variable.
+  Because each inserted $\phi$ is itself a new definition of $a$, the
+  criterion is applied again until no further $\phi$ is required.
+\end{definition}
+
+\caution{Lecture vs paper: production compilers do not search paths.
+Cytron et al.\ place $\phi$ functions at the iterated dominance
+frontier of the defining blocks, in time that is linear in practice
+(quadratic in the worst case) \cite{cytron1991ssa}.  \emph{Pruned}
+SSA, which \texttt{mem2reg} builds, also drops $\phi$s whose result
+is never used (LLVM passes \cite{llvm2026passes}).}%
+Condition~5 is the one that saves $\phi$s.  Two definitions whose paths
+already met at an earlier join were merged there; the $\phi$ at that
+earlier join is the single definition that flows on, and a second
+$\phi$ further down would be redundant.  Condition~6 allows loops: a
+path may pass through $z$ once before arriving there for the second
+time along a back edge.  The start-node rule matters for a variable
+assigned on one branch only: if BB3 of \cref{fig:l11-ssa} also set
+\texttt{w = 7}, with no earlier assignment to \texttt{w}, the path
+from the start node through BB2 and the path from BB3 would first meet
+at BB4, so BB4 would receive \texttt{w2 = $\phi$(w0, w1)}, whose first
+argument is the initial version \texttt{w0} of the start node.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-path-convergence}
+  \caption{SSA form of a counting loop.  The loop header B2 joins the
+    entry path and the back edge, so \texttt{i} and \texttt{s} get
+    $\phi$ functions there and nowhere else.}
+  \label{fig:l11-path-convergence}
+\end{figure}
+
+\begin{example}
+  \label{ex:l11-path-convergence}
+  \Cref{fig:l11-path-convergence} sums the integers below \texttt{n}.
+  Before renaming, \texttt{i} and \texttt{s} are defined in B1 and in B3.
+  The paths B1$\to$B2 and B3$\to$B2 share only B2, so both conditions
+  5 and 6 hold at B2 and each variable gets a $\phi$ there; its second
+  argument comes from the back edge.  At B4 every path from B1 and
+  every path from B3 runs through B2, so condition~5 fails and B4 uses
+  \texttt{s2} directly, although two definitions of \texttt{s} reach
+  it.  \texttt{n} is defined only at the start, so condition~2 fails
+  and it needs no $\phi$ anywhere.  The iteration adds nothing either:
+  the new definitions in B2 meet the others only at B2 itself, which
+  already has its $\phi$s.
+\end{example}
+
+The faster algorithm rests on dominance, the forward counterpart of the
+post-dominance of Lesson~6.  A block $d$ is a
+\term{dominator}[支配節点] of a block $n$ if every path from the entry
+to $n$ passes through $d$.  The \term{dominance frontier}[支配辺境] of
+$d$ is the set of blocks $z$ such that $d$ dominates a predecessor of
+$z$ but does not strictly dominate $z$ itself: the first blocks at
+which paths from $d$ meet paths that bypass $d$
+\cite{cytron1991ssa}.\margin{In \cref{fig:l11-path-convergence} B2
+dominates B3 and B4; the dominance frontier of B3 is $\{\mathrm{B2}\}$,
+exactly where its definitions need $\phi$s.  Dominators: Aho et al.\
+§9.6 \cite{aho2006compilers}.}  A definition in $d$ needs $\phi$
+functions exactly at the blocks of the frontier of $d$, then at the
+frontiers of those blocks, and so on, which is the result of the
+path-convergence criterion without enumerating paths.
+
+\begin{keypoint}
+  SSA gives every assignment its own name, so each use has one
+  definition.  At a join point, $\phi$ functions merge the versions
+  arriving along different edges; they are needed only where distinct
+  definitions first meet, which the path-convergence criterion (or
+  dominance frontiers) determines.  A $\phi$ is lowered to moves or a
+  conditional move.
+\end{keypoint}
+
+\section{Examples of compiler optimizations}
+\label{sec:l11-optimizations}
+
+The analyses above exist to justify transformations.\source{M11,
+compiler optimizations; Aho et al.\ §9.1 The Principal Sources of
+Optimization \cite{aho2006compilers}; CPG §7.39 \#pragma unroll, §7.1.5
+\cite{nvidia2024cudaguide}.}  Each optimisation below must preserve the
+meaning of the program, and each needs some fact about it that a
+data-flow analysis or the SSA form provides.  The examples are given in
+CUDA C++ or PTX; \cref{tab:l11-optimizations} summarises them.
+
+\subsection{Loop unrolling}
+
+\begin{definition}[Loop unrolling]
+  \label{def:l11-unroll}
+  The transformation called \term{loop unrolling}[ループ展開] replicates
+  the body of a loop $u$
+  times, the \emph{unroll factor}, so that one iteration of the new
+  loop does the work of $u$ old iterations.  When the trip count is
+  unknown or not a multiple of $u$, an
+  \term{epilogue loop}[エピローグループ] after the unrolled loop
+  executes the remaining iterations one at a time.
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+// before
+for (int i = 0; i < n; i++)
+  y[i] = c * x[i];
+
+// unrolled by 4, with an epilogue loop
+int i = 0;
+for (; i + 3 < n; i += 4) {
+  y[i]     = c * x[i];
+  y[i + 1] = c * x[i + 1];
+  y[i + 2] = c * x[i + 2];
+  y[i + 3] = c * x[i + 3];
+}
+for (; i < n; i++)          // 0 to 3 iterations
+  y[i] = c * x[i];
+\end{lstlisting}
+
+\margin{\enquote{By default, the compiler unrolls small loops with a
+known trip count}; \texttt{\#pragma unroll} with an optional factor
+controls any loop, and \texttt{\#pragma unroll 1} forbids unrolling
+(CPG §7.39 \cite{nvidia2024cudaguide}).}%
+Unrolling removes three of every four compare-and-branch sequences and
+increment instructions.  More importantly, it puts four independent
+multiplications and memory accesses into one basic block, where the
+scheduler can interleave them to hide latency and a vectorising
+compiler can combine them.  The cost is code size and, on a GPU,
+registers: the four loaded values are live at the same time.\caution{An
+unroll factor that pushes a kernel over its register budget can cost
+more through lost occupancy or spills than it saves in branches.}
+
+\subsection{Function inlining}
+
+\begin{definition}[Function inlining]
+  \label{def:l11-inlining}
+  The transformation called \term{function inlining}[関数のインライン展開]
+  replaces a call by a copy
+  of the body of the called function, with the arguments substituted
+  for the parameters.  Deciding it needs facts about both caller and
+  callee, so it is an \term{inter-procedural analysis}[手続き間解析]
+  decision, as opposed to the intra-procedural analyses of the previous
+  sections.
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+__device__ float sq(float v) { return v * v; }
+__device__ float norm2(float a, float b) {
+  return sq(a) + sq(b);
+}
+// after inlining both levels at a call norm2(x, y):
+float r = x * x + y * y;
+\end{lstlisting}
+
+Inlining removes the call and return, the passing of arguments and the
+saving of registers on the stack.  It also exposes the body to the
+optimisations of the caller: constants of the call site propagate into
+it, and code that is dead for these arguments disappears.  The cost is
+code size, since every call site receives its own copy.\margin{The
+CUDA compiler inlines a \texttt{\_\_device\_\_} function \enquote{when
+deemed appropriate}; \texttt{\_\_noinline\_\_} asks it not to and
+\texttt{\_\_forceinline\_\_} forces it (CPG §7.1.5
+\cite{nvidia2024cudaguide}).}
+
+\subsection{Dead code elimination}
+
+\begin{definition}[Dead code elimination]
+  \label{def:l11-dce}
+  The optimisation called \term{dead code elimination}[不要コード除去]
+  removes instructions whose
+  results never influence the output of the program: an assignment to a
+  variable that is dead immediately after it, and code that can never
+  execute.
+\end{definition}
+
+\begin{lstlisting}[language=PTX, numbers=none]
+ld.param.f32  %f1, [x];
+mul.f32       %f2, %f1, %f1;   // dead: %f2 is
+add.f32       %f2, %f1, 1.0;   //   rewritten here
+st.global.f32 [%rd1], %f2;
+\end{lstlisting}
+
+The product written by \texttt{mul.f32} is overwritten before any
+instruction reads it: \texttt{\%f2} is dead after the \texttt{mul}, in
+the sense of \cref{def:l11-live}, so the instruction is removed.  The
+argument is a liveness argument; in SSA form it becomes simpler still,
+because a definition with no uses is dead by inspection.  Removing an
+instruction can make the definitions it read dead in turn, so the
+elimination is repeated.\caution{An instruction with a side effect (a
+store, an atomic, a barrier) is never dead merely because its result is
+unused; only pure computations are removed.}
+
+\subsection{Constant propagation and folding}
+
+\begin{definition}[Constant propagation and folding]
+  \label{def:l11-constprop}
+  The optimisation called \term{constant propagation}[定数伝播] replaces
+  a use of a variable by a constant when every definition reaching the
+  use assigns that constant.  The optimisation called
+  \term{constant folding}[定数畳み込み] evaluates at compile time an
+  operation all of whose operands are constants.
+\end{definition}
+
+\begin{lstlisting}[language=PTX, numbers=none]
+// before
+mov.f32  %f1, 2.0;
+mov.f32  %f2, 4.0;
+add.f32  %f3, %f1, %f2;
+mul.f32  %f4, %f3, %f5;
+// after propagation, folding, propagation
+mul.f32  %f4, %f5, 6.0;
+\end{lstlisting}
+
+Propagating the two constants into the \texttt{add} makes it
+$2.0 + 4.0$, which folding turns into the constant $6.0$; propagating
+that constant into the \texttt{mul} leaves the two \texttt{mov}
+instructions and the \texttt{add} without uses, and dead code
+elimination removes them.  One optimisation thus enables the
+next.\margin{Constant propagation is a client of reaching definitions
+(Lesson~10): a use is constant if all definitions reaching it assign
+the same constant.  Copy propagation, also from Lesson~10, works the
+same way for copies.}
+
+\subsection{Strength reduction}
+
+\begin{definition}[Strength reduction]
+  \label{def:l11-strength}
+  The optimisation called \term{strength reduction}[強さの低減] replaces
+  an operation by an
+  equivalent one that costs less: a division by a multiplication, a
+  multiplication by a shift or an addition, a call to a power function
+  by a multiplication.
+\end{definition}
+
+The two classic examples are a division by two, which becomes a right
+shift, and a square, which becomes a multiplication of the value by
+itself.  In PTX they are given as the following pairs, the square in
+the form of an \texttt{ex2.approx.f32}:
+\begin{lstlisting}[language=PTX, numbers=none]
+div.rn.f32     %f2, %f1, 2.0;   // becomes
+mul.f32        %f2, %f1, 0.5;
+ex2.approx.f32 %f3, %f1;        // becomes
+mul.f32        %f3, %f1, %f1;
+\end{lstlisting}
+\caution{Lecture vs ISA: both pairs are mislabelled.  The first is a
+floating-point division turned into a multiplication, not a shift; a
+right shift replaces division only for unsigned or non-negative
+integers, since for a negative signed value it rounds toward $-\infty$
+while division rounds toward zero.  And \texttt{ex2} computes $2^x$,
+not $x^2$ (PTX ISA \cite{nvidia2026ptx}), so the second pair is not
+an equivalence; the correct square example is \texttt{pow(a, 2)}
+$\to$ \texttt{a * a}.}%
+A floating-point division by two equals a multiplication by $0.5$
+exactly, because both scale by a power of two.  The shift belongs to
+integers: an unsigned division by $2^k$, such as \texttt{div.u32 \%r2,
+\%r1, 8}, becomes the right shift \texttt{shr.u32 \%r2, \%r1, 3}, while
+a signed one needs a correction for negative values.  A square is
+reduced from a call: \texttt{pow(a, 2)} becomes \texttt{a * a}.
+Division by a constant that is not a
+power of two, $x/3$, cannot be replaced by $x\cdot(1/3)$ in floating
+point without changing some results, so the compiler does it only when
+the program allows approximate division, as \texttt{nvcc
+--prec-div=false} (implied by \texttt{-use\_fast\_math}) does for
+single precision.  A divisor that is a power of two only at run time is
+beyond the compiler; Lesson~5 shows the rewrite by hand.
+
+\subsection{Loop-invariant code motion and induction variables}
+
+\begin{definition}[Code motion]
+  \label{def:l11-code-motion}
+  The transformation called \term{code motion}[コード移動] moves a
+  computation to another place in
+  the program where it executes less often with the same result.  Its
+  most common form, \term{loop-invariant code motion}[ループ不変式の移動],
+  hoists a computation whose operands do not change inside a loop out of
+  the loop, so that it executes once instead of once per iteration.
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+// before: scale is recomputed in every iteration
+for (int i = 0; i < n; i++) {
+  float scale = alpha / beta;
+  y[i] += scale * x[i];
+}
+// after: computed once, before the loop
+float scale = alpha / beta;
+for (int i = 0; i < n; i++)
+  y[i] += scale * x[i];
+\end{lstlisting}
+
+The number of dynamic instructions falls by one division per
+iteration.\margin{An instruction is loop invariant when each of its
+operands is a constant, is defined outside the loop, or is defined by
+another loop-invariant instruction; the test is applied repeatedly
+(Aho et al.\ §9.1 \cite{aho2006compilers}).}  To be allowed, the compiler must know that neither
+\texttt{alpha} nor \texttt{beta} is changed in the loop, a question for
+reaching definitions, and that executing the division when the loop
+runs zero times is harmless.
+
+\begin{definition}[Induction variable]
+  \label{def:l11-induction}
+  An \term{induction variable}[誘導変数] is a variable that changes by
+  the same amount in every iteration of a loop, such as the counter
+  \texttt{i} that controls it.  In PTX its update is a single
+  instruction such as \texttt{add.s32 \%r4, \%r4, 1;}.
+\end{definition}
+
+Recognising induction variables enables further optimisations.  The
+address of \texttt{x[i]} is $\mathit{base} + 4i$, itself an induction
+variable that grows by $4$ per iteration, so strength reduction can
+replace the multiplication by an addition of $4$ to a pointer; the
+trip count of the loop, needed for unrolling, follows from the initial
+value, step and bound of the counter.
+
+\begin{table}[tb]
+  \centering\small
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}
+                    >{\raggedright\arraybackslash}p{42mm}
+                    >{\raggedright\arraybackslash}p{38mm}@{}}
+    \toprule
+    Optimisation & What it saves & What it needs to know \\
+    \midrule
+    Loop unrolling & branches, counter updates; exposes parallelism &
+      trip count, register budget \\
+    Function inlining & call overhead; enables other optimisations &
+      callee body (inter-procedural) \\
+    Dead code elimination & instructions with unused results & liveness
+      or SSA uses \\
+    Constant propagation and folding & run-time computation of constants
+      & reaching definitions \\
+    Strength reduction & expensive operations & exact equivalence of the
+      cheaper form \\
+    Loop-invariant code motion & repeated work in loops & reaching
+      definitions; loop structure \\
+    \bottomrule
+  \end{tabular}
+  \caption{The optimisations of this section and the analyses behind
+    them.}
+  \label{tab:l11-optimizations}
+\end{table}
+
+\section{Divergence analysis}
+\label{sec:l11-divergence}
+
+Lesson~6 showed how the hardware executes a divergent branch: the SIMT
+stack runs the paths one after the other under partial masks and joins
+them at the reconvergence point, normally the immediate post-dominator
+of the branch.\source{M11, divergence analysis; CPG §5.4.2 Control
+Flow Instructions, §4.1 SIMT Architecture \cite{nvidia2024cudaguide};
+PMPP ch.~10 \cite{hwu2022pmpp}.}  The compiler supplies the
+reconvergence information, and it can omit the stack operations, or
+emit simpler code, for branches it proves warp-uniform.  It therefore
+needs to know statically which branches may diverge.\margin{PTX can
+record the result: \texttt{bra.uni} marks a branch that is guaranteed
+to be non-divergent, all active threads of the warp having the same
+predicate and target (PTX ISA, \texttt{bra} \cite{nvidia2026ptx}).}
+
+\begin{definition}[Divergence analysis]
+  \label{def:l11-divergence-analysis}
+  The static analysis called
+  \term{divergence analysis}[ダイバージェンス解析] is one
+  that determines, for each branch of a kernel, whether its condition
+  may evaluate differently in different threads of a warp.  Its output
+  is the set of branches that may diverge and need reconvergence
+  information; every other branch is uniform.
+\end{definition}
+
+The question predates GPUs.  A compiler that turns a loop into vector
+instructions, \term{vectorization}[ベクトル化], must check that all
+iterations it packs together execute the same instructions in lockstep,
+including inside branches of the loop body; GPU compilers inherited
+these tests.\margin{The two settings are the same problem: the
+iterations of a vectorised loop play the role of the threads of a warp,
+and a branch on the loop index plays the role of a branch on the
+thread index.}  For a simple if-else the test is easy; with complex
+control flow and synchronisation it becomes hard.
+
+\subsection{Thread-dependent and uniform values}
+
+\begin{definition}[Thread-dependent and uniform values]
+  \label{def:l11-thread-dependent}
+  An expression is a \term{thread-dependent value}[スレッド依存値] at a
+  program point $p$ if it may evaluate to different values in different
+  threads at $p$.  It is a \term{uniform value}[一様値] at $p$ if it has
+  the same value in all threads of a warp (or, more strongly, of the
+  kernel).  A branch is divergent only if its condition is thread
+  dependent.
+\end{definition}
+
+The source of thread dependence is the thread index: \texttt{threadIdx}
+differs in every lane.  Kernel parameters, \texttt{blockIdx},
+\texttt{blockDim} and constants are uniform within a block, and so are
+values computed only from them.  Dependence then spreads along the
+def-use chains: a value computed from a thread-dependent operand is
+thread dependent.  The kernel below has four branches.
+
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void k(const int *mem, int *out, int n) {
+  int tid  = threadIdx.x;
+  int q    = tid / 2;
+  int base = blockIdx.x * n;
+  int x    = mem[base];        // same address in all
+  int y    = mem[base + tid];  // address per thread
+  int acc  = 0;
+  if (q > 3)  acc += 1;        // divergent
+  if (y > 0)  acc += 2;        // divergent
+  if (x > 0)  acc += 4;        // uniform
+  for (int j = 0; j < n; j++)  // uniform
+    acc += j;
+  out[base + tid] = acc;
+}
+\end{lstlisting}
+
+\Cref{fig:l11-divergence} draws the def-use edges.  The condition
+\texttt{q > 3} depends on \texttt{threadIdx.x} through \texttt{tid} and
+\texttt{q}: indirect dependence is still dependence.  The two loads
+differ in their addresses.  A value loaded from memory is thread
+dependent if its address is, because different threads then read
+different words; \texttt{mem[base]} is read at one address by all
+threads, so \texttt{x} is uniform and so is the branch on it.\margin{Uniform
+within a warp is all that divergence needs: \texttt{blockIdx.x} and
+\texttt{base} differ between blocks, but never between the threads of
+one warp, since a warp never spans two blocks.}  The loop condition \texttt{j < n} depends
+only on the parameter \texttt{n} and the uniform counter \texttt{j}:
+all threads run the same number of iterations.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-divergence}
+  \caption{The def-use edges of the kernel above, from the sources to
+    the branch conditions.  Thread dependence (red) spreads from
+    \texttt{threadIdx.x}; the condition of a branch decides whether it
+    may diverge.}
+  \label{fig:l11-divergence}
+\end{figure}
+
+Checking a branch thus becomes a reachability question on the def-use
+chains: does a definition that depends on a thread index reach the
+condition?  As with reaching definitions, the dependence facts are
+propagated through the control-flow graph until nothing changes; loops
+make the iteration necessary, because a value can become thread
+dependent through its own back edge.\caution{The lecture tracks data
+dependence only, which is not enough for a sound analysis.  After \texttt{b = 0; if (q >
+3) b = 1;} the value of \texttt{b} at the join differs between threads
+although both assignments are constants, because the branch that chose
+between them diverged.  A sound analysis also marks values defined
+under a divergent branch and merged at its join (a $\phi$ in SSA form)
+as thread dependent: \emph{control dependence}.}
+
+\subsection{Conservative analysis}
+
+\begin{definition}[Conservative analysis]
+  \label{def:l11-conservative}
+  A static analysis is a \term{conservative analysis}[保守的解析] when
+  its approximation errs only on the safe side: here, it may report a
+  uniform branch as divergent but never a divergent branch as uniform.
+\end{definition}
+
+Treating a uniform branch as divergent costs only performance: an
+unnecessary reconvergence point and the stack operations for it.\margin{CPG §5.4.2 gives the
+standard uniform branch that a naive analysis calls divergent: a condition that depends only on
+\texttt{threadIdx / warpSize} cannot diverge, since warps consist of
+consecutive thread IDs (CPG §4.1 \cite{nvidia2024cudaguide}), yet it is
+derived from \texttt{threadIdx}.}%
+Treating a divergent branch as uniform would be wrong, so every
+practical analysis is conservative.  The difficulty is precision: an
+analysis that marks every value derived from \texttt{threadIdx} as
+thread dependent soon marks all branches and all loops as possibly
+divergent, and the analysis is useless.  Compilers therefore add rules that
+prune such false positives, for example by recognising values that are
+uniform within a warp although they differ between the warps of a
+block (such as \texttt{threadIdx.x / warpSize}), and the larger
+and more irregular the control-flow graph, the harder it is to stay
+both safe and precise.\tip{Writing a branch condition in terms of
+\texttt{threadIdx.x / 32} (in a one-dimensional block),
+\texttt{blockIdx} or kernel parameters keeps it warp-uniform; this is the programmer's side of the analysis
+(Lesson~5).}
+
+\begin{keypoint}[Lesson summary]
+  Liveness is the backward data-flow problem: IN$[B] = \mathit{use}_B
+  \cup (\mathrm{OUT}[B] - \mathit{def}_B)$, OUT$[B]$ the union of the
+  successors' IN sets, IN[EXIT] $= \varnothing$, solved iteratively to a
+  fixed point.  Register allocation colours the interference graph of
+  live ranges; when registers run out, \texttt{ptxas} spills to local
+  memory, trading occupancy against memory traffic.  SSA form gives
+  every definition its own name and merges versions with $\phi$
+  functions at join points where distinct definitions first meet.
+  Unrolling, inlining, dead code elimination, constant propagation and
+  folding, strength reduction and loop-invariant code motion each rest
+  on such an analysis.  Divergence analysis propagates thread
+  dependence from \texttt{threadIdx} along def-use chains (and, to be
+  sound, control dependence) to the branch conditions; it must be
+  conservative, and its value lies in pruning the uniform branches.
+\end{keypoint}
+
+\end{document}

@@ -1,0 +1,866 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{コンパイラの基礎 II}
+\lessoninfo{
+  video={M11，レッスン 1--4（Live-Variable Analysis；SSA；Examples of Compiler Optimizations；Divergence Analysis）},
+  sources={Cytron ら \cite{cytron1991ssa}（支配辺境による SSA の構築）；Chaitin \cite{chaitin1982coloring}（グラフ彩色によるレジスタ割り付け）；LLVM Language Reference \cite{llvm2026langref}（\texttt{phi}，\texttt{select}）；LLVM のパス \cite{llvm2026passes}（\texttt{mem2reg}）；PTX ISA \cite{nvidia2026ptx}},
+  textbook={Aho ら \cite{aho2006compilers} §6.2 Three-Address Code，§8.8 Register Allocation and Assignment，§9.1 The Principal Sources of Optimization，§9.2 Introduction to Data-Flow Analysis，§9.6 Loops in Flow Graphs；CPG \cite{nvidia2024cudaguide} §5.2.3 Multiprocessor Level，§5.3.2 Device Memory Accesses，§5.4.2 Control Flow Instructions，§7.1.5 \_\_noinline\_\_ and \_\_forceinline\_\_，§7.39 \#pragma unroll；PMPP \cite{hwu2022pmpp} ch.~10},
+  keywords={生存変数，生存変数解析，後ろ向き解析，def集合と use集合，レジスタ割り付け，干渉グラフ，レジスタスピル，静的単一代入，φ関数，経路収束条件，支配辺境，ループ展開，関数のインライン展開，不要コード除去，定数伝播，強さの低減，ループ不変式の移動，誘導変数，ダイバージェンス解析，スレッド依存値と一様値},
+}
+
+第10章では CUDA プログラムをコンパイラに通して PTX までたどり，
+PTX を基本ブロックと制御フローグラフに切り分け，前向き問題である
+到達定義を例にデータフロー解析を組み立てた．本章はその道具立てを，
+後ろ向きの対となる生存変数解析と，その最も重要な利用先である
+レジスタ割り付けによって完成させる．レジスタ割り付けは，GPU では
+1つの SM に何個のワープが載るかを決める．続いて，LLVM が，したがって
+NVIDIA の LLVM ベースの NVVM コンパイラもプログラムを保持する表現である
+静的単一代入形式を示し，これらの解析が可能にする古典的な最適化，
+すなわちループ展開，インライン展開，不要コード除去，定数伝播，
+強さの低減，コード移動を取り上げる．最後の節は，並列コードだけが
+提起する問い，すなわちどの分岐がダイバージェントになりうるかを扱う．
+これは第6章のハードウェア，すなわち SIMT スタックとその再収束点を，
+コンパイラがスレッドインデックスの定義・使用連鎖の上で行う解析に結びつける．
+
+\section{生存変数解析}
+\label{sec:l11-liveness}
+
+到達定義は，各プログラム点について，そこで見える値をどの代入が
+生成しえたかを問う．\source{M11，生存変数解析；Aho ら
+§9.2 Introduction to Data-Flow Analysis \cite{aho2006compilers}．}
+生存変数解析はその逆の問いを立てる．ある点に存在する値のうち，
+どれが後でまだ必要とされるか，である．
+
+\begin{definition}[生存変数]
+  \label{def:l11-live}
+  変数 $x$ がプログラム点 $p$ で
+  \term[せいぞんへんすう]{生存変数}[live variable]であるとは，
+  $p$ から始まる制御フローグラフ上のある経路に沿って，その経路上で
+  $x$ が再定義される前に，$p$ における $x$ の値が使用されうることをいう．
+  そうでなければ $x$ は $p$ で\emph{死んでいる}（dead）．各点について
+  生存変数の集合を計算するデータフロー解析が
+  \term[せいぞんへんすうかいせき]{生存変数解析}[liveness analysis]である．
+\end{definition}
+
+\margin{第6章はハードウェアについて同じ概念を用いた．生存レジスタとは，
+後でまだ読まれる値を保持するレジスタである．生存変数解析はそれを
+コンパイル時に，すべての変数とすべての点について計算する．}%
+死んだ値は無駄にレジスタを占有する．したがって生存変数解析の主な用途は
+レジスタ割り付け（\cref{sec:l11-regalloc}）である．レジスタが必要なのは
+生存変数だけであり，死んだ変数のレジスタは別の変数に渡すことができる．
+同じ情報から，どの代入が無用かもわかる．これが
+\cref{sec:l11-optimizations}の不要コード除去の基礎となる．
+
+\subsection{データフロー方程式}
+
+1つの基本ブロック $B$ が生存性に及ぼす効果は，2つの集合で要約される．
+
+\begin{definition}[def集合と use集合]
+  \label{def:l11-def-use}
+  ブロック $B$ の
+  \term[でふしゅうごう]{def集合}[def set] $\mathit{def}_B$ は，$B$ が
+  その変数を $B$ 内で使用する前に定義する変数の集合である．
+  \term[ゆーずしゅうごう]{use集合}[use set] $\mathit{use}_B$ は，$B$ が
+  その変数を $B$ 内で定義する前に使用しうる変数の集合である．
+\end{definition}
+
+\caution{\texttt{k = k - 1} のような代入は \texttt{k} を書く前に読むので，
+\texttt{k} は $\mathit{use}_B$ に属し，定義により $\mathit{def}_B$ には
+属さない．ときに行われるように両方の集合に入れても IN 集合は同じになる．
+$\mathit{use}_B$ に属する変数はいずれにせよ入口で生存しているからである．}%
+$\mathit{use}_B$ に属する変数は，$B$ の後で何が起ころうと $B$ の入口で
+生存している．$B$ 自身がそれを読むからである．$\mathit{def}_B$ に属する
+変数は，$B$ がまずそれを読むのでない限り $B$ の入口で死んでいる．
+$B$ がそれを上書きするからである．それ以外の変数は $B$ を変化なく
+通過し，出口で生存しているときに限り入口でも生存している．
+IN$[B]$ と OUT$[B]$ を $B$ の直前と直後の生存変数の集合とすると，
+次の方程式が得られる．
+\begin{align}
+  \mathrm{IN}[\mathrm{EXIT}] &= \varnothing, \label{eq:l11-boundary}\\
+  \mathrm{IN}[B] &= \mathit{use}_B \cup
+     \bigl(\mathrm{OUT}[B] - \mathit{def}_B\bigr), \label{eq:l11-in}\\
+  \mathrm{OUT}[B] &= \bigcup_{S \in \mathrm{succ}(B)} \mathrm{IN}[S].
+     \label{eq:l11-out}
+\end{align}
+\margin{記法は第10章と同じである．$\mathrm{succ}(B)$ は $B$ の後続の
+集合，IN と OUT はブロックの前後のプログラム点における値である．}%
+\cref{eq:l11-boundary}は境界条件である．プログラムの終了時に生存している
+変数はない．\cref{eq:l11-in}はブロックの伝達関数，\cref{eq:l11-out}は
+合流である．変数が $B$ の出口で生存しているのは，少なくとも1つの後続の
+入口で生存しているとき，かつそのときに限る．その後続を通って続く経路が
+あるからである．
+
+\begin{definition}[後ろ向き解析]
+  \label{def:l11-backward}
+  情報が制御フローグラフの辺に逆らって流れ，ブロックの IN 集合がその
+  OUT 集合から，OUT 集合が後続の IN 集合から計算されるデータフロー問題を
+  \term[うしろむきかいせき]{後ろ向き解析}[backward analysis]という．
+  生存性が後ろ向きなのは，値が必要かどうかがプログラムが\emph{後で}
+  何をするかに依存するからである．到達定義が前向きなのは，定義が到達するか
+  どうかが\emph{それ以前に}何が起こったかに依存するからである．
+\end{definition}
+
+方程式は到達定義と同じ反復法を逆方向に走らせて解く．すべての IN 集合を
+空から始め（\cref{eq:l11-boundary}と，その他のブロックの初期値），
+ブロックを繰り返し訪れて，そのたびに後続の現在の IN 集合から OUT$[B]$ を，
+OUT$[B]$ から IN$[B]$ を計算し，1回の走査全体でどの IN 集合も変わらなく
+なるまで続ける．\tip{後ろ向き問題ではブロックを逆順（出口から）に訪れる
+とよい．そうすれば読まれる値の多くがすでに最新になっており，走査の回数が
+減る．結果は順序に依存せず，依存するのは作業量だけである．}集合は
+増えるだけであり，変数は有限個しかないので，この方法は不動点に到達する．
+それは方程式の最小解であり，最も精密な解である．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-liveness-cfg}
+  \caption{本節の通しの例．$t$ で分岐する $k$ のループである．各ブロックには
+    コードと use集合，def集合を示す．$n$，$w$，$v$ は入力である．}
+  \label{fig:l11-liveness-cfg}
+\end{figure}
+
+\begin{example}
+  \label{ex:l11-liveness}
+  \cref{fig:l11-liveness-cfg}は，$k$ を $n$ から数え下げ，$t = k\cdot w$
+  が正であるたびにそれを $s$ に加えるループである．結果は $s + v$ である．
+  ブロックは B5，B4，B3，B2，B1 の順に訪れ，\cref{tab:l11-liveness}に
+  1回目と2回目の走査の後の集合を示す．
+  \begin{itemize}
+    \item \emph{走査1．}OUT[B5] $= \mathrm{IN}[\mathrm{EXIT}] =
+      \varnothing$ なので IN[B5] $= \{s,v\}$ である．B4 の後続は B2 と
+      B5 である．IN[B2] はまだ空なので OUT[B4] $= \{s,v\}$，
+      IN[B4] $= \{k\} \cup \{s,v\} = \{k,s,v\}$ となる．次に IN[B3] $=
+      \{s,t\} \cup \{k,s,v\} = \{k,s,t,v\}$ である．OUT[B2] は IN[B3] と
+      IN[B4] の和集合 $\{k,s,t,v\}$ であり，$\mathit{def} = \{t\}$ を
+      除いて $\mathit{use} = \{k,w\}$ を加えると IN[B2] $=
+      \{k,s,v,w\}$ となる．最後に IN[B1] $= \{n\} \cup (\{k,s,v,w\} -
+      \{s,k\}) = \{n,v,w\}$ である．
+    \item \emph{走査2．}今度は後退辺が情報を運ぶ．IN[B2] はもう空でないので
+      OUT[B4] $= \{k,s,v,w\}$ となり，$w$ が IN[B4] と IN[B3] に入る．
+      OUT[B2] には $w$ が加わるが，$w$ はすでに IN[B2] にあるので，
+      IN[B2] とそれより上はすべて変わらない．
+    \item \emph{走査3}はすべての集合を計算し直すが何も変わらない．
+      不動点に到達した．
+  \end{itemize}
+  結果はコードから予想されるとおりである．入力 $w$ と $v$ は毎回の反復と
+  最後に読まれるのでループ全体で生存している．$n$ は B1 の入口でのみ
+  生存している．$t$ は B2 から B3 への辺でのみ生存しているので，B4 では
+  そのレジスタは再び空いている．\margin{本書の数値：ループ本体で同時に
+  生存する変数は最大5個（B2$\to$B3 の辺での $k, s, t, v, w$）なので，
+  このループはスピルなしで5個のレジスタを必要とする．$n$ は B1 が $k$ に
+  コピーした後は死んでいるので，そのうちの1個を共有できる．}
+\end{example}
+
+\begin{table}[tb]
+  \centering\small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lllllll@{}}
+    \toprule
+    ブロック & $\mathit{use}_B$ & $\mathit{def}_B$ & OUT$^1$ & IN$^1$ & OUT$^2$ & IN$^2$ \\
+    \midrule
+    B5 & $\{s,v\}$ & $\varnothing$ & $\varnothing$ & $\{s,v\}$ & $\varnothing$ & $\{s,v\}$ \\
+    B4 & $\{k\}$ & $\varnothing$ & $\{s,v\}$ & $\{k,s,v\}$ & $\{k,s,v,w\}$ & $\{k,s,v,w\}$ \\
+    B3 & $\{s,t\}$ & $\varnothing$ & $\{k,s,v\}$ & $\{k,s,t,v\}$ & $\{k,s,v,w\}$ & $\{k,s,t,v,w\}$ \\
+    B2 & $\{k,w\}$ & $\{t\}$ & $\{k,s,t,v\}$ & $\{k,s,v,w\}$ & $\{k,s,t,v,w\}$ & $\{k,s,v,w\}$ \\
+    B1 & $\{n\}$ & $\{s,k\}$ & $\{k,s,v,w\}$ & $\{n,v,w\}$ & $\{k,s,v,w\}$ & $\{n,v,w\}$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{\cref{fig:l11-liveness-cfg}の生存変数．ブロックは訪れた順に並べる．
+    上付き添字は走査の番号であり，3回目の走査は2回目を繰り返す．}
+  \label{tab:l11-liveness}
+\end{table}
+
+\subsection{レジスタ割り付け}
+\label{sec:l11-regalloc}
+
+\begin{definition}[レジスタ割り付け]
+  \label{def:l11-regalloc}
+  プログラムの値を有限個の機械レジスタに対応づけるコンパイラのパスが
+  \term[れじすたわりつけ]{レジスタ割り付け}[register allocation]である．
+  2つの値は，同じ点で同時に生存することがなければ1つのレジスタを共有できる．
+  \term[かんしょうぐらふ]{干渉グラフ}[interference graph]は値ごとに
+  1つの節点を持ち，同時に生存する2つの値の間に辺を持つ．レジスタの割り当ては，
+  隣接する節点に異なる色を与えるこのグラフの彩色である．
+\end{definition}
+
+\margin{スピルを伴うグラフ彩色によるレジスタ割り付け（彩色に失敗したとき
+スピルする）は Chaitin \cite{chaitin1982coloring} にさかのぼる．Aho ら
+§8.8 \cite{aho2006compilers} はこれを標準的な大域的手法として示している．}%
+\cref{fig:l11-interference}はこれを直線的な命令列に適用したものである．
+命令2の後では $p$ も $a$ も再び読まれないので，どちらのレジスタも $b$ を
+受け取れる．命令4の後では $b$ も $c$ も再び読まれないので，どちらの
+レジスタも $d$ を受け取れる．同時に生存する値の組は $p$ と $a$，$b$ と
+$c$ の2組だけなので，2個のレジスタで5個の値をまかなえる．
+
+分岐を含むプログラムについても，ブロックの IN 集合と OUT 集合を用いて同じ
+推論を行う．\cref{fig:l11-liveness-cfg}では $t$ は OUT[B4] に属さない．
+B4 の2つの後続のうち，B2 は $t$ を読む前に再定義し，B5 は $t$ を読まないので，
+$t$ は後退辺上で死んでいる．$t$ のレジスタは，$t$ の最後の読み出しから
+B2 が再び書くまで，ほかの値のために空いている．逆に B2 と B4 は $s$ を
+読まないが，$s$ はそれらの IN 集合と OUT 集合に属する
+（\cref{tab:l11-liveness}）．B3 と B5 が後でそれを読むので，$s$ はそれらの
+読み出しに至るすべての経路で生存し続け，ループ全体を通じてレジスタを保持する．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-interference}
+  \caption{生存変数解析がレジスタ割り付けを駆動する．左：5命令の列の各値の
+    生存範囲．右：干渉グラフ．2色で足りるので，5個の値は2個のレジスタに
+    収まる．}
+  \label{fig:l11-interference}
+\end{figure}
+
+ある点で生存している値がレジスタの数より多いと彩色は失敗し，いくつかの
+値はレジスタファイルから出なければならない．
+
+\begin{definition}[スピルとフィル]
+  \label{def:l11-spill}
+  \term[れじすたすぴる]{レジスタスピル}[register spill]は，生存している
+  値をレジスタからメモリ（通常はスタックスロット）に格納してレジスタを
+  空ける操作である．その値を次の使用の前にレジスタへ戻す後のロードが
+  \term[ふぃるさいろーど]{フィル（再ロード）}[fill (reload)]である．
+\end{definition}
+
+PTX にはレジスタ割り付けがない．そのレジスタは仮想的で個数に制限がなく，
+フロントエンドが出力する PTX にはスピルが含まれない．\margin{PTX カーネルは
+必要なだけ仮想レジスタを宣言する．たとえば \texttt{.reg .b32 \%r<100>;} は
+\texttt{\%r0} から \texttt{\%r99} を宣言する（PTX ISA，Parameterized Variable
+Names \cite{nvidia2026ptx}）．}レジスタは \texttt{ptxas} が PTX を実際の
+アーキテクチャ向けの SASS に変換するときに割り付けられ，それが挿入する
+スピルはスレッドのローカルメモリ（第3章）に置かれる．CPG §5.3.2 は，
+ローカルメモリに置かれる変数の1つとして\enquote{any variable if the kernel
+uses more registers than available (this is also known as register
+spilling)}を挙げている \cite{nvidia2024cudaguide}．ローカルメモリは
+スレッドに私的だがデバイスメモリ上にあるので，L1 キャッシュで
+ミスしたフィルはグローバルメモリアクセスと同じだけのコストがかかる．
+
+GPU ではアロケータが2つのコストを比較衡量する．スレッドあたりの
+レジスタが少なければ常駐ワープが増え，したがってレイテンシ隠蔽が進む
+（第3章）．レジスタが多ければスピルが減る．1個のレジスタが効くことがある．
+65,536個のレジスタを持つ SM では，512スレッドのブロックは，スレッドあたり
+64レジスタなら2個載るが，65レジスタでは1個しか載らない（CPG §5.2.3
+Multiprocessor Level \cite{nvidia2024cudaguide}）．
+上限はスレッドあたり255レジスタであり（CPG Table~21
+\cite{nvidia2024cudaguide}），プログラマは
+\texttt{-maxrregcount} オプションまたは
+\texttt{\_\_launch\_bounds\_\_()} 修飾子でこれを下げ，占有率のために
+スピルを受け入れることができる．\tip{\mbox{\texttt{--ptxas-options=-v}} を
+付けてコンパイルすると，コンパイラはカーネルごとにレジスタ数と
+ローカルメモリ使用量（\texttt{lmem}，CPG §5.3.2 \cite{nvidia2024cudaguide}）を
+報告する．\texttt{ptxas} はスピルのストアとロードのバイト数も表示し，
+それが0でなければアロケータのレジスタが足りなかったことを意味する．}
+
+\subsection{生存変数解析と到達定義の比較}
+
+2つの解析はデータフロー問題の標準的な対である．反復解法は同じで，集合が
+異なり，方向が逆である（\cref{tab:l11-compare}）．
+
+\begin{table}[tb]
+  \centering\small
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}
+                    >{\raggedright\arraybackslash}p{42mm}
+                    >{\raggedright\arraybackslash}p{42mm}@{}}
+    \toprule
+    & 到達定義（第10章） & 生存変数 \\
+    \midrule
+    定義域 & 定義の集合 & 変数の集合 \\
+    方向 & 前向き & 後ろ向き \\
+    伝達関数 & $\mathit{gen}_B \cup (x - \mathit{kill}_B)$ &
+      $\mathit{use}_B \cup (x - \mathit{def}_B)$ \\
+    合流 & 先行の $\cup$ & 後続の $\cup$ \\
+    方程式 & OUT$[B] = f_B(\mathrm{IN}[B])$, IN$[B] = \bigcup_{P}
+      \mathrm{OUT}[P]$ & IN$[B] = f_B(\mathrm{OUT}[B])$, OUT$[B] =
+      \bigcup_{S} \mathrm{IN}[S]$ \\
+    境界条件 & OUT[ENTRY] $= \varnothing$ & IN[EXIT] $= \varnothing$ \\
+    初期化 & OUT$[B] = \varnothing$ & IN$[B] = \varnothing$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{到達定義と生存変数解析の対比．}
+  \label{tab:l11-compare}
+\end{table}
+
+\begin{keypoint}
+  生存変数解析は IN[EXIT] $= \varnothing$ から後ろ向きに，
+  IN$[B] = \mathit{use}_B \cup (\mathrm{OUT}[B] - \mathit{def}_B)$，
+  OUT$[B]$ を後続の和集合として計算する．同時に生存することのない値は
+  レジスタを共有できる．同時に生存する値が多すぎると，\texttt{ptxas} は
+  その一部をローカルメモリにスピルする．
+\end{keypoint}
+
+\section{静的単一代入}
+\label{sec:l11-ssa}
+
+通常の3番地コードでは変数が何度も代入されうるので，どの解析もまず，
+ある使用がどの代入を指すかを突き止めなければならない．これは到達定義が
+答える問いである．\source{M11，SSA；Aho ら §6.2 Three-Address Code
+\cite{aho2006compilers}；Cytron ら \cite{cytron1991ssa}．}定義からそれが
+到達する使用への結びつきが
+\term[ていぎしようれんさ]{定義・使用連鎖}[def-use chain]である．
+静的単一代入形式は，この連鎖をプログラムの名前そのものに組み込む．
+
+\begin{definition}[静的単一代入]
+  \label{def:l11-ssa}
+  すべての変数がプログラムテキストのちょうど1か所で代入されているとき，
+  プログラムは\term[えすえすえーけいしき]{SSA形式}[SSA form]である．
+  この性質を\term[せいてきたんいつだいにゅう]{静的単一代入}[static single assignment (SSA)]
+  （SSA）と呼ぶ．\emph{静的}というのは，その1つの代入がループの中で
+  何度も実行されうるからである．プログラムは，変数の各定義に新しい版
+  \texttt{a1}，\texttt{a2}，\ldots を与え，各使用をそれに到達する版に
+  名前を付け替えることで変換される．
+\end{definition}
+
+\margin{LLVM IR はすべての仮想レジスタについて SSA 形式である（LLVM
+Language Reference \cite{llvm2026langref}）．第10章の NVPTX バックエンドは
+プログラムをその形式で受け取る．}%
+SSA 形式では使用がその定義を名指すので，定義・使用連鎖は直接の結びつきであり，
+別の解析を必要としない．定数伝播，不要コード除去をはじめ多くの最適化が
+単純になる．SSA がほとんどのコンパイラの中間表現の基礎となっているのは
+そのためである．\sidenote{LLVM のフロントエンドは自分では SSA を
+構築しない．Clang はすべての局所変数をロードとストアを伴うスタックスロット
+（\texttt{alloca}）として出力し，\texttt{mem2reg} パスがそうしたスロットを
+SSA レジスタに昇格させる．その際，以下で導入する支配辺境に基づく標準的な
+アルゴリズムで $\phi$ 関数を挿入し，枝刈りされた SSA（pruned SSA）を得る
+（LLVM のパス \cite{llvm2026passes}）．}
+
+\subsection{合流と φ関数}
+
+直線的なコードでは名前の付け替えは簡単である．複数の先行を持つブロックでは
+そうはいかない．\cref{fig:l11-ssa}では，BB4 における \texttt{s} の使用に
+BB2 経由では \texttt{s1} が，BB3 経由では \texttt{s2} が到達し，両方の経路に
+ついて正しい単一の名前は存在しない．
+
+\begin{definition}[合流点と φ関数]
+  \label{def:l11-phi}
+  \term[ごうりゅうてん]{合流点}[join point]とは，2つ以上の先行を持つ
+  ブロックである．合流点の先頭に置かれる
+  \term[ふぁいかんすう]{φ関数}[phi function]
+  $x_3 = \phi(x_1, x_2)$ は先行ごとに1つの引数を持ち，制御が到着した辺に
+  対応する引数を値とする新しい版 $x_3$ を定義する．$\phi$ の後では，
+  以降のすべての使用が $x_3$ を指す．
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-ssa}
+  \caption{SSA 形式への変換．各定義は新しい版を得る．合流点 BB4 では，
+    $\phi$ 関数が BB2（第1引数）と BB3（第2引数）から到着する
+    \texttt{s} と \texttt{t} の版を合流させる．}
+  \label{fig:l11-ssa}
+\end{figure}
+
+\cref{fig:l11-ssa}の \texttt{s3 = $\phi$(s1, s2)} は，制御が BB2 から
+来たときは \texttt{s1}，BB3 から来たときは \texttt{s2} である．
+\texttt{t3} は \texttt{t2}（BB2）と \texttt{t1}（BB3）を合流させる．すると
+\mbox{\texttt{u1 = s3 + t3}} の使用は，名前ごとにちょうど1つの到達定義を持つ．
+$\phi$ はどの機械の命令でもない．プログラムが SSA 形式を抜けるとき，
+それは各入力辺上の移動命令になるか，2つの経路が短ければ，
+プレディケートによって2つのレジスタの一方を選ぶ選択命令，すなわち
+\term[じょうけんつきいどう]{条件付き移動}[conditional move]になる．\margin{条件付き
+移動の GPU における対応物は PTX の \texttt{selp} 命令であり，
+プレディケートオペランドによって2つのソースオペランドの一方を選ぶ
+（PTX ISA \cite{nvidia2026ptx}）．第6章のガード付き \texttt{@p} 実行と
+異なり，この命令自体はプレディケートされない．}
+
+LLVM は $\phi$ を，各値の横に先行のラベルを添えて書く．\texttt{mem2reg} が
+残したままの，それ以上最適化する前の SSA 形式では，関数
+\texttt{min(a, b)} は分岐を保ち，2つの結果をブロック \texttt{end} で
+合流させる．
+\begin{lstlisting}[numbers=none]
+define i32 @min(i32 %a, i32 %b) {
+entry:
+  %lt = icmp slt i32 %a, %b
+  br i1 %lt, label %ta, label %tb
+ta:
+  br label %end
+tb:
+  br label %end
+end:
+  %r = phi i32 [ %a, %ta ], [ %b, %tb ]
+  ret i32 %r
+}
+\end{lstlisting}
+\margin{SimplifyCFG はこのダイヤモンドを1つの
+\texttt{select i1 \%lt, i32 \%a, i32 \%b}，すなわち IR の条件付き移動に
+置き換える（LLVM Language Reference \cite{llvm2026langref}）．続いて
+InstCombine がこの min のパターンを \texttt{@llvm.smin.i32} に正規化する．}%
+ターゲット向けに下げられるとき，\texttt{\%r} は両方の入力辺で書かれる
+レジスタになるか，1つの条件付き移動になる．
+
+\subsection{φ関数をどこに置くか}
+
+最も単純な配置は，すべての合流点にすべての変数の $\phi$ を挿入する．これは
+正しいが無駄が多い．\cref{fig:l11-ssa}では変数 \texttt{u} は BB4 でしか
+定義されず，\texttt{x} は再定義されないので，どちらの $\phi$ も1つの値を
+それ自身と合流させるだけである．$\phi$ が必要なのは，異なる定義が実際に
+出会う場所だけである．
+
+\begin{definition}[経路収束条件]
+  \label{def:l11-path-convergence}
+  \term[けいろしゅうそくじょうけん]{経路収束条件}[path-convergence criterion]は，
+  次のすべてが成り立つとき，ブロック $z$ に変数 $a$ の $\phi$ を要求する．
+  \begin{enumerate}
+    \item あるブロック $x$ が $a$ の定義を含む．
+    \item あるブロック $y \neq x$ が $a$ の定義を含む．
+    \item $x$ から $z$ への空でない経路 $P_{xz}$ がある．
+    \item $y$ から $z$ への空でない経路 $P_{yz}$ がある．
+    \item $P_{xz}$ と $P_{yz}$ は $z$ 以外に共通の節点を持たない．
+    \item $z$ は，$P_{xz}$ と $P_{yz}$ の両方で終端より前に現れることはない．
+      ただし一方に現れることはありうる．
+  \end{enumerate}
+  開始節点はすべての変数の定義を含むものとみなす．挿入した $\phi$ は
+  それ自体が $a$ の新しい定義なので，それ以上 $\phi$ が必要なくなるまで
+  この条件を繰り返し適用する．
+\end{definition}
+
+\caution{講義 vs 論文：実用のコンパイラは経路を探索しない．Cytron らは
+定義ブロックの反復支配辺境に $\phi$ 関数を置き，その時間は実際上は線形
+（最悪の場合は2乗）である \cite{cytron1991ssa}．\texttt{mem2reg} が構築する
+\emph{枝刈りされた}（pruned）SSA は，結果が使われない $\phi$ も取り除く
+（LLVM のパス \cite{llvm2026passes}）．}%
+$\phi$ を節約するのは条件5である．経路がそれより前の合流点ですでに出会って
+いる2つの定義は，そこで合流済みである．その前の合流点の $\phi$ が先へ流れる
+唯一の定義であり，さらに下流の2つ目の $\phi$ は冗長になる．条件6はループを
+許す．経路は，後退辺に沿って2度目に $z$ に到着する前に，一度 $z$ を通過して
+よい．開始節点の規則は，一方の分岐でのみ代入される変数で効いてくる．
+\cref{fig:l11-ssa}の BB3 が \texttt{w = 7} も設定し，それ以前に \texttt{w}
+への代入がないとすると，開始節点から BB2 を通る経路と BB3 からの経路は BB4 で
+初めて出会うので，BB4 は \texttt{w2 = $\phi$(w0, w1)} を受け取る．その第1引数は
+開始節点の初期版 \texttt{w0} である．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-path-convergence}
+  \caption{数え上げループの SSA 形式．ループヘッダ B2 は入口からの経路と
+    後退辺を合流させるので，\texttt{i} と \texttt{s} はそこで，そしてそこでのみ
+    $\phi$ 関数を得る．}
+  \label{fig:l11-path-convergence}
+\end{figure}
+
+\begin{example}
+  \label{ex:l11-path-convergence}
+  \cref{fig:l11-path-convergence}は \texttt{n} 未満の整数を合計する．
+  名前の付け替え前には，\texttt{i} と \texttt{s} は B1 と B3 で定義される．
+  経路 B1$\to$B2 と B3$\to$B2 は B2 だけを共有するので，B2 で条件5と6が
+  ともに成り立ち，各変数はそこで $\phi$ を得る．その第2引数は後退辺から
+  来る．B4 では，B1 からのすべての経路と B3 からのすべての経路が B2 を通る
+  ので条件5が成り立たず，B4 は \texttt{s} の2つの定義が到達するにもかかわらず
+  \texttt{s2} を直接使う．\texttt{n} は開始時にしか定義されないので条件2が
+  成り立たず，どこにも $\phi$ は要らない．反復によっても何も加わらない．
+  B2 の新しい定義がほかの定義と出会うのは B2 自身だけであり，そこにはすでに
+  $\phi$ がある．
+\end{example}
+
+より高速なアルゴリズムは支配に基づく．これは第6章の後支配の前向き版である．
+ブロック $d$ がブロック $n$ の
+\term[しはいせってん]{支配節点}[dominator]であるとは，入口から $n$ への
+すべての経路が $d$ を通ることをいう．$d$ の
+\term[しはいへんきょう]{支配辺境}[dominance frontier]は，$d$ が $z$ の
+ある先行を支配するが $z$ 自身は狭義には支配しないようなブロック $z$ の集合，
+すなわち $d$ からの経路が $d$ を迂回する経路と最初に出会うブロックである
+\cite{cytron1991ssa}．\margin{\cref{fig:l11-path-convergence}では B2 が
+B3 と B4 を支配する．B3 の支配辺境は $\{\mathrm{B2}\}$ であり，ちょうど
+その定義に $\phi$ が必要な場所である．支配節点：Aho ら
+§9.6 \cite{aho2006compilers}．}$d$ にある定義は，ちょうど $d$ の支配辺境の
+ブロックに，次にそれらのブロックの支配辺境に，と順に $\phi$ 関数を必要と
+する．これは経路を列挙することなく経路収束条件の結果を与える．
+
+\begin{keypoint}
+  SSA はすべての代入に固有の名前を与えるので，各使用はただ1つの定義を持つ．
+  合流点では，$\phi$ 関数が異なる辺から到着する版を合流させる．$\phi$ が
+  必要なのは異なる定義が最初に出会う場所だけであり，それは経路収束条件
+  （または支配辺境）が決める．$\phi$ は移動命令か条件付き移動に下げられる．
+\end{keypoint}
+
+\section{コンパイラ最適化の例}
+\label{sec:l11-optimizations}
+
+以上の解析は変換を正当化するためにある．\source{M11，
+コンパイラ最適化；Aho ら §9.1 The Principal Sources of
+Optimization \cite{aho2006compilers}；CPG §7.39 \#pragma unroll，§7.1.5
+\cite{nvidia2024cudaguide}．}以下の各最適化はプログラムの意味を保たなければ
+ならず，それぞれがデータフロー解析または SSA 形式の与えるプログラムについての
+事実を必要とする．例は CUDA C++ または PTX で示し，
+\cref{tab:l11-optimizations}にまとめる．
+
+\subsection{ループ展開}
+
+\begin{definition}[ループ展開]
+  \label{def:l11-unroll}
+  \term[るーぷてんかい]{ループ展開}[loop unrolling]と呼ばれる変換は，
+  ループ本体を $u$ 回（\emph{展開係数}）複製し，新しいループの1回の反復が
+  元の $u$ 回の反復の仕事をするようにする．反復回数が未知であるか $u$ の
+  倍数でないときは，展開したループの後の
+  \term[えぴろーぐるーぷ]{エピローグループ}[epilogue loop]が残りの反復を
+  1回ずつ実行する．
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+// 変換前
+for (int i = 0; i < n; i++)
+  y[i] = c * x[i];
+
+// 4倍に展開し，エピローグループを付けたもの
+int i = 0;
+for (; i + 3 < n; i += 4) {
+  y[i]     = c * x[i];
+  y[i + 1] = c * x[i + 1];
+  y[i + 2] = c * x[i + 2];
+  y[i + 3] = c * x[i + 3];
+}
+for (; i < n; i++)          // 0--3回の反復
+  y[i] = c * x[i];
+\end{lstlisting}
+
+\margin{\enquote{By default, the compiler unrolls small loops with a
+known trip count}．\texttt{\#pragma unroll} は省略可能な係数とともに任意の
+ループを制御し，\texttt{\#pragma unroll 1} は展開を禁止する
+（CPG §7.39 \cite{nvidia2024cudaguide}）．}%
+展開により，比較と分岐の列，およびインクリメント命令の4つに3つが消える．
+さらに重要なのは，4つの独立な乗算とメモリアクセスが1つの基本ブロックに
+入ることである．そこではスケジューラがそれらを交互に並べてレイテンシを
+隠し，ベクトル化コンパイラはそれらを結合できる．代償はコードサイズと，
+GPU ではレジスタである．4つのロードされた値は同時に生存する．\caution{カーネルを
+レジスタ予算の上限を超えさせる展開係数は，分岐で節約する以上のコストを，
+占有率の低下やスピルによって招くことがある．}
+
+\subsection{関数のインライン展開}
+
+\begin{definition}[関数のインライン展開]
+  \label{def:l11-inlining}
+  \term[かんすうのいんらいんてんかい]{関数のインライン展開}[function inlining]と
+  呼ばれる変換は，呼び出しを，呼ばれる関数の本体のコピーで置き換え，
+  仮引数に実引数を代入する．その判断には呼び出し側と呼ばれる側の両方に
+  ついての事実が必要なので，これは前節までの手続き内解析とは対照的な
+  \term[てつづきかんかいせき]{手続き間解析}[inter-procedural analysis]
+  による判断である．
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+__device__ float sq(float v) { return v * v; }
+__device__ float norm2(float a, float b) {
+  return sq(a) + sq(b);
+}
+// 呼び出し norm2(x, y) で両方の段をインライン展開した後:
+float r = x * x + y * y;
+\end{lstlisting}
+
+インライン展開は，呼び出しと復帰，引数の受け渡し，スタックへのレジスタの
+退避を取り除く．さらに本体を呼び出し側の最適化にさらす．呼び出し地点の
+定数が本体に伝播し，これらの引数では不要となるコードが消える．代償は
+コードサイズである．各呼び出し地点が自分のコピーを受け取るからである．\margin{CUDA
+コンパイラは \texttt{\_\_device\_\_} 関数を\enquote{when deemed
+appropriate}にインライン展開する．\texttt{\_\_noinline\_\_} は展開しない
+よう求め，\texttt{\_\_forceinline\_\_} は展開を強制する（CPG §7.1.5
+\cite{nvidia2024cudaguide}）．}
+
+\subsection{不要コード除去}
+
+\begin{definition}[不要コード除去]
+  \label{def:l11-dce}
+  \term[ふようこーどじょきょ]{不要コード除去}[dead code elimination]と
+  呼ばれる最適化は，結果がプログラムの出力にまったく影響しない命令を
+  取り除く．直後に死んでいる変数への代入と，決して実行されないコードである．
+\end{definition}
+
+\begin{lstlisting}[language=PTX, numbers=none]
+ld.param.f32  %f1, [x];
+mul.f32       %f2, %f1, %f1;   // 不要: %f2 は
+add.f32       %f2, %f1, 1.0;   //   ここで上書きされる
+st.global.f32 [%rd1], %f2;
+\end{lstlisting}
+
+\texttt{mul.f32} が書いた積は，どの命令にも読まれる前に上書きされる．
+\texttt{\%f2} は \texttt{mul} の後で\cref{def:l11-live}の意味で死んでいるので，
+この命令は取り除かれる．この議論は生存変数解析による議論である．SSA 形式では
+さらに単純になる．使用のない定義は見ただけで不要とわかるからである．ある命令を
+取り除くと，それが読んでいた定義が今度は不要になることがあるので，除去は
+繰り返される．\caution{副作用を持つ命令（ストア，アトミック，バリア）は，
+結果が使われないというだけでは決して不要にならない．取り除かれるのは
+純粋な計算だけである．}
+
+\subsection{定数伝播と定数畳み込み}
+
+\begin{definition}[定数伝播と定数畳み込み]
+  \label{def:l11-constprop}
+  \term[ていすうでんぱ]{定数伝播}[constant propagation]と呼ばれる最適化は，
+  ある使用に到達するすべての定義が同じ定数を代入するとき，その変数の使用を
+  定数で置き換える．\term[ていすうたたみこみ]{定数畳み込み}[constant folding]と
+  呼ばれる最適化は，オペランドがすべて定数である演算をコンパイル時に
+  評価する．
+\end{definition}
+
+\begin{lstlisting}[language=PTX, numbers=none]
+// 変換前
+mov.f32  %f1, 2.0;
+mov.f32  %f2, 4.0;
+add.f32  %f3, %f1, %f2;
+mul.f32  %f4, %f3, %f5;
+// 伝播，畳み込み，伝播の後
+mul.f32  %f4, %f5, 6.0;
+\end{lstlisting}
+
+2つの定数を \texttt{add} に伝播すると $2.0 + 4.0$ となり，畳み込みがこれを
+定数 $6.0$ に変える．その定数を \texttt{mul} に伝播すると，2つの
+\texttt{mov} 命令と \texttt{add} は使用を持たなくなり，不要コード除去が
+それらを取り除く．こうして1つの最適化が次の最適化を可能にする．\margin{定数伝播は
+到達定義（第10章）の利用者である．ある使用に到達するすべての定義が同じ定数を
+代入するなら，その使用は定数である．同じく第10章のコピー伝播は，コピーに
+ついて同じように働く．}
+
+\subsection{強さの低減}
+
+\begin{definition}[強さの低減]
+  \label{def:l11-strength}
+  \term[つよさのていげん]{強さの低減}[strength reduction]と呼ばれる最適化は，
+  演算をそれと等価でより安価な演算で置き換える．除算を乗算に，乗算をシフト
+  または加算に，べき乗関数の呼び出しを乗算に，である．
+\end{definition}
+
+2つの古典的な例は，右シフトになる2による除算と，値とそれ自身の乗算になる
+2乗である．PTX では，2乗を \texttt{ex2.approx.f32} の形にして，次の組として
+示される．
+\begin{lstlisting}[language=PTX, numbers=none]
+div.rn.f32     %f2, %f1, 2.0;   // 次の行になる
+mul.f32        %f2, %f1, 0.5;
+ex2.approx.f32 %f3, %f1;        // 次の行になる
+mul.f32        %f3, %f1, %f1;
+\end{lstlisting}
+\caution{講義 vs ISA：どちらの組もラベルが誤っている．1つ目は浮動小数点の
+除算を乗算に変えたものでありシフトではない．右シフトが除算の代わりになるのは
+符号なし整数か非負の整数だけである．負の符号付きの値では，右シフトは
+$-\infty$ 方向に丸めるが，除算は0方向に丸めるからである．また
+\texttt{ex2} は $x^2$ ではなく $2^x$ を計算する（PTX ISA \cite{nvidia2026ptx}）
+ので，2つ目の組は等価ではない．正しい2乗の例は \texttt{pow(a, 2)}
+$\to$ \texttt{a * a} である．}%
+浮動小数点の2による除算は，$0.5$ による乗算と厳密に等しい．どちらも2の
+べき乗による拡大縮小だからである．シフトは整数のものである．
+\texttt{div.u32 \%r2, \%r1, 8} のような $2^k$ による符号なし除算は右シフト
+\texttt{shr.u32 \%r2, \%r1, 3} になるが，符号付きの除算は負の値に対する
+補正を必要とする．2乗は呼び出しから低減される．\texttt{pow(a, 2)} は
+\texttt{a * a} になる．
+2のべき乗でない定数による除算 $x/3$ は，浮動小数点では一部の結果を変えずに
+$x\cdot(1/3)$ に置き換えることはできない．したがってコンパイラがそれを
+行うのは，プログラムが近似除算を許すときだけである．単精度については
+\texttt{nvcc --prec-div=false}（\texttt{-use\_fast\_math} が含意する）が
+これを許す．実行時にのみ2のべき乗となる除数はコンパイラの手に負えない．
+第5章はその書き換えを手作業で示している．
+
+\subsection{ループ不変式の移動と誘導変数}
+
+\begin{definition}[コード移動]
+  \label{def:l11-code-motion}
+  \term[こーどいどう]{コード移動}[code motion]と呼ばれる変換は，計算を
+  プログラムの別の場所，すなわち同じ結果でより少ない回数しか実行されない
+  場所へ移す．その最も一般的な形である
+  \term[るーぷふへんしきのいどう]{ループ不変式の移動}[loop-invariant code motion]は，
+  オペランドがループ内で変化しない計算をループの外に引き上げ，毎回の反復ではなく
+  1回だけ実行されるようにする．
+\end{definition}
+
+\begin{lstlisting}[language=C++, numbers=none]
+// 変換前: scale は毎回の反復で計算し直される
+for (int i = 0; i < n; i++) {
+  float scale = alpha / beta;
+  y[i] += scale * x[i];
+}
+// 変換後: ループの前で1回だけ計算する
+float scale = alpha / beta;
+for (int i = 0; i < n; i++)
+  y[i] += scale * x[i];
+\end{lstlisting}
+
+動的命令数は反復ごとに除算1回分だけ減る．\margin{命令がループ不変であるのは，
+その各オペランドが定数であるか，ループの外で定義されるか，別のループ不変な
+命令によって定義されるときである．この判定は繰り返し適用される
+（Aho ら §9.1 \cite{aho2006compilers}）．}これが許されるには，コンパイラは
+\texttt{alpha} も \texttt{beta} もループ内で変更されないこと（到達定義の
+問題である）と，ループが0回実行されるときに除算を実行しても害がないことを
+知っていなければならない．
+
+\begin{definition}[誘導変数]
+  \label{def:l11-induction}
+  \term[ゆうどうへんすう]{誘導変数}[induction variable]とは，ループを制御する
+  カウンタ \texttt{i} のように，ループの毎回の反復で同じ量だけ変化する変数で
+  ある．PTX ではその更新は \texttt{add.s32 \%r4, \%r4, 1;} のような単一の
+  命令である．
+\end{definition}
+
+誘導変数を認識すると，さらなる最適化が可能になる．\texttt{x[i]} の
+アドレスは $\mathit{base} + 4i$ であり，それ自身が反復ごとに $4$ ずつ増える
+誘導変数なので，強さの低減によって乗算をポインタへの $4$ の加算に置き換え
+られる．展開に必要なループの反復回数は，カウンタの初期値，増分，上限から
+求まる．
+
+\begin{table}[tb]
+  \centering\small
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}
+                    >{\raggedright\arraybackslash}p{42mm}
+                    >{\raggedright\arraybackslash}p{38mm}@{}}
+    \toprule
+    最適化 & 節約するもの & 知る必要があること \\
+    \midrule
+    ループ展開 & 分岐，カウンタの更新．並列性を露出する &
+      反復回数，レジスタ予算 \\
+    関数のインライン展開 & 呼び出しのオーバーヘッド．他の最適化を可能にする &
+      呼ばれる関数の本体（手続き間） \\
+    不要コード除去 & 結果が使われない命令 & 生存変数解析
+      または SSA の使用 \\
+    定数伝播と定数畳み込み & 定数の実行時の計算
+      & 到達定義 \\
+    強さの低減 & 高価な演算 & より安価な形との厳密な
+      等価性 \\
+    ループ不変式の移動 & ループ内の繰り返しの仕事 & 到達
+      定義，ループ構造 \\
+    \bottomrule
+  \end{tabular}
+  \caption{本節の最適化とその背後にある解析．}
+  \label{tab:l11-optimizations}
+\end{table}
+
+\section{ダイバージェンス解析}
+\label{sec:l11-divergence}
+
+第6章では，ハードウェアがダイバージェント分岐をどう実行するかを示した．
+SIMT スタックは経路を部分的なマスクのもとで順に実行し，再収束点，通常は
+分岐の直接後支配節点でそれらを合流させる．\source{M11，ダイバージェンス解析；
+CPG §5.4.2 Control Flow Instructions，§4.1 SIMT Architecture
+\cite{nvidia2024cudaguide}；PMPP ch.~10 \cite{hwu2022pmpp}．}再収束の情報を
+与えるのはコンパイラであり，ワープ内で一様であると証明できた分岐については
+スタック操作を省くか，より単純なコードを出力できる．したがってコンパイラは，
+どの分岐がダイバージェントになりうるかを静的に知る必要がある．\margin{PTX は
+その結果を記録できる．\texttt{bra.uni} は，ワープのすべてのアクティブな
+スレッドが同じプレディケートと分岐先を持ち，ダイバージェントにならないことが
+保証された分岐を示す（PTX ISA，\texttt{bra} \cite{nvidia2026ptx}）．}
+
+\begin{definition}[ダイバージェンス解析]
+  \label{def:l11-divergence-analysis}
+  \term[だいばーじぇんすかいせき]{ダイバージェンス解析}[divergence analysis]と
+  呼ばれる静的解析は，カーネルの各分岐について，その条件がワープ内の
+  異なるスレッドで異なる値に評価されうるかどうかを判定する．その出力は，
+  ダイバージェントになりえて再収束の情報を必要とする分岐の集合である．
+  それ以外の分岐はすべて一様である．
+\end{definition}
+
+この問いは GPU より古い．ループをベクトル命令に変換する
+\term[べくとるか]{ベクトル化}[vectorization]を行うコンパイラは，まとめて
+詰め込むすべての反復が，ループ本体の分岐の内部も含めて，同じ命令を
+足並みをそろえて実行することを確かめなければならない．GPU のコンパイラは
+これらの判定を受け継いだ．\margin{2つの設定は同じ問題である．ベクトル化
+されたループの反復がワープのスレッドの役割を果たし，ループインデックスに
+よる分岐がスレッドインデックスによる分岐の役割を果たす．}単純な if-else
+なら判定は容易だが，複雑な制御フローと同期があると難しくなる．
+
+\subsection{スレッド依存値と一様値}
+
+\begin{definition}[スレッド依存値と一様値]
+  \label{def:l11-thread-dependent}
+  式がプログラム点 $p$ で
+  \term[すれっどいぞんち]{スレッド依存値}[thread-dependent value]であるとは，
+  $p$ において異なるスレッドで異なる値に評価されうることをいう．ワープ
+  （より強くはカーネル）のすべてのスレッドで同じ値を持つとき，それは $p$ で
+  \term[いちようち]{一様値}[uniform value]である．分岐がダイバージェントに
+  なるのは，その条件がスレッド依存であるときに限る．
+\end{definition}
+
+スレッド依存の源はスレッドインデックスである．\texttt{threadIdx} は
+レーンごとに異なる．カーネルの引数，\texttt{blockIdx}，
+\texttt{blockDim} と定数はブロック内で一様であり，それらだけから計算される
+値も一様である．依存はそこから定義・使用連鎖に沿って広がる．スレッド依存の
+オペランドから計算される値はスレッド依存である．次のカーネルは4つの分岐を持つ．
+
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void k(const int *mem, int *out, int n) {
+  int tid  = threadIdx.x;
+  int q    = tid / 2;
+  int base = blockIdx.x * n;
+  int x    = mem[base];        // 全員が同じアドレス
+  int y    = mem[base + tid];  // スレッドごとのアドレス
+  int acc  = 0;
+  if (q > 3)  acc += 1;        // ダイバージェント
+  if (y > 0)  acc += 2;        // ダイバージェント
+  if (x > 0)  acc += 4;        // 一様
+  for (int j = 0; j < n; j++)  // 一様
+    acc += j;
+  out[base + tid] = acc;
+}
+\end{lstlisting}
+
+\cref{fig:l11-divergence}に定義・使用の辺を示す．条件 \texttt{q > 3} は
+\texttt{tid} と \texttt{q} を介して \texttt{threadIdx.x} に依存する．
+間接的な依存もやはり依存である．2つのロードはアドレスが異なる．メモリから
+ロードされた値は，アドレスがスレッド依存ならスレッド依存である．異なる
+スレッドが異なるワードを読むからである．\texttt{mem[base]} はすべての
+スレッドが1つのアドレスで読むので，\texttt{x} は一様であり，それによる分岐も
+一様である．\margin{ダイバージェンスに必要なのはワープ内で一様であることだけ
+である．\texttt{blockIdx.x} と \texttt{base} はブロック間では異なるが，
+ワープが2つのブロックにまたがることはないので，1つのワープのスレッド間で
+異なることはない．}ループ条件 \texttt{j < n} は引数 \texttt{n} と一様な
+カウンタ \texttt{j} にだけ依存する．すべてのスレッドが同じ回数だけ反復する．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l11-divergence}
+  \caption{上のカーネルの定義・使用の辺（発生源から分岐条件まで）．スレッド
+    依存（赤）は \texttt{threadIdx.x} から広がる．分岐がダイバージェントに
+    なりうるかどうかは，その条件が決める．}
+  \label{fig:l11-divergence}
+\end{figure}
+
+したがって分岐の判定は，定義・使用連鎖上の到達可能性の問いになる．
+スレッドインデックスに依存する定義が条件に到達するか，である．到達定義と
+同様に，依存の事実は何も変わらなくなるまで制御フローグラフを通じて伝播される．
+ループがあるため反復が必要になる．値は自分自身の後退辺を通じてスレッド依存に
+なりうるからである．\caution{講義はデータ依存だけを追うが，それでは健全な
+解析には足りない．\texttt{b = 0; if (q >
+3) b = 1;} の後，合流点における \texttt{b} の値は，両方の代入が定数であるにも
+かかわらずスレッド間で異なる．その2つを選んだ分岐がダイバージェントだった
+からである．健全な解析は，ダイバージェント分岐のもとで定義され，その合流点で
+合流される値（SSA 形式では $\phi$）もスレッド依存とみなす．これが
+\emph{制御依存}である．}
+
+\subsection{保守的解析}
+
+\begin{definition}[保守的解析]
+  \label{def:l11-conservative}
+  静的解析は，その近似が安全側にのみ誤るとき
+  \term[ほしゅてきかいせき]{保守的解析}[conservative analysis]である．
+  ここでは，一様な分岐をダイバージェントと報告することはあっても，
+  ダイバージェントな分岐を一様と報告することは決してない．
+\end{definition}
+
+一様な分岐をダイバージェントとして扱っても，失うのは性能だけである．
+不要な再収束点とそのためのスタック操作である．\margin{CPG §5.4.2 は，
+素朴な解析がダイバージェントとみなす標準的な一様分岐を挙げている．
+\texttt{threadIdx / warpSize} だけに依存する条件はダイバージェントに
+なりえない．ワープは連続したスレッド ID からなるからである（CPG §4.1
+\cite{nvidia2024cudaguide}）．しかしこの条件は \texttt{threadIdx} から
+導かれる．}%
+ダイバージェントな分岐を一様として扱うのは誤りなので，実用的な解析はすべて
+保守的である．難しいのは精度である．\texttt{threadIdx} から導かれる値を
+すべてスレッド依存とみなす解析は，すぐにすべての分岐とすべてのループを
+ダイバージェントの可能性ありとみなし，役に立たなくなる．そこでコンパイラは
+そうした偽陽性を刈り込む規則を加える．たとえば，ブロック内のワープ間では
+異なるがワープ内では一様な値（\texttt{threadIdx.x / warpSize} など）を
+認識する．そして制御フローグラフが大きく不規則になるほど，安全かつ精密で
+あり続けることは難しくなる．\tip{分岐条件を \texttt{threadIdx.x / 32}
+（1次元のブロックの場合），\texttt{blockIdx}，またはカーネルの引数によって
+書けば，ワープ内で一様に保たれる．これが解析に対するプログラマの側の
+取り組みである（第5章）．}
+
+\begin{keypoint}[章のまとめ]
+  生存変数解析は後ろ向きのデータフロー問題である．IN$[B] = \mathit{use}_B
+  \cup (\mathrm{OUT}[B] - \mathit{def}_B)$，OUT$[B]$ は後続の IN 集合の
+  和集合，IN[EXIT] $= \varnothing$ とし，反復によって不動点まで解く．
+  レジスタ割り付けは生存範囲の干渉グラフを彩色する．レジスタが足りなく
+  なると \texttt{ptxas} はローカルメモリにスピルし，占有率とメモリ
+  トラフィックを引き換えにする．SSA 形式はすべての定義に固有の名前を与え，
+  異なる定義が最初に出会う合流点で $\phi$ 関数によって版を合流させる．
+  ループ展開，インライン展開，不要コード除去，定数伝播と定数畳み込み，
+  強さの低減，ループ不変式の移動は，それぞれそうした解析に基づく．
+  ダイバージェンス解析は，スレッド依存を \texttt{threadIdx} から
+  定義・使用連鎖に沿って（健全であるためには制御依存にも沿って）分岐条件まで
+  伝播させる．解析は保守的でなければならず，その価値は一様な分岐を刈り込む
+  ことにある．
+\end{keypoint}
+
+\end{document}
