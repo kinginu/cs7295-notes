@@ -140,13 +140,13 @@ async function runChapter(n) {
   await acquire()
   try {
     const reviews = await parallel([
-      () => agent(reviewTechPrompt(n), { label: `review-tech:${tag}`, phase: 'Review', schema: ISSUES }),
-      () => agent(reviewScopePrompt(n), { label: `review-scope:${tag}`, phase: 'Review', schema: ISSUES }),
+      () => agent(reviewTechPrompt(n), { label: `review-tech:${tag}`, phase: 'Review', schema: ISSUES, model: 'opus' }),
+      () => agent(reviewScopePrompt(n), { label: `review-scope:${tag}`, phase: 'Review', schema: ISSUES, model: 'sonnet' }),
     ])
     if (reviews.some(r => !r)) throw new Error('review failed for ' + tag)
     const issues = reviews.flatMap(r => r.issues)
     const proposals = reviews.flatMap(r => r.marginProposals)
-    const fix = await agent(fixPrompt(n, issues, proposals), { label: `fix:${tag}`, phase: 'Fix', schema: FIX })
+    const fix = await agent(fixPrompt(n, issues, proposals), { label: `fix:${tag}`, phase: 'Fix', schema: FIX, model: 'opus' })
     if (!fix) throw new Error('fix failed for ' + tag)
     log(`${tag}: ${issues.length} findings, ${fix.applied.length} applied, ${fix.rejected.length} rejected, +${fix.marginItemsAdded} margin — ${String(fix.commitOutput).slice(0, 80)}`)
     return {

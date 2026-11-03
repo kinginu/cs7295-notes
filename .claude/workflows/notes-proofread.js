@@ -69,7 +69,7 @@ const results = await pipeline(groups, async (group) => {
   await acquire()
   try {
     const tag = group.map(pad).join('+')
-    const r = await agent(prompt(group), { label: `proofread:${tag}`, phase: 'Review', schema: FINDINGS })
+    const r = await agent(prompt(group), { label: `proofread:${tag}`, phase: 'Review', schema: FINDINGS, model: 'opus' })
     if (!r) throw new Error('review failed for chapters ' + tag)
     log(`${tag}: ${r.findings.length} findings`)
     return r

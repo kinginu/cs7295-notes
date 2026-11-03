@@ -44,7 +44,7 @@ ${common}
    - concepts the glossary assigns to a chapter that never \\term's them, and terms \\term'ed in more than one chapter (only the owning chapter should).
 3. Apply the fixes. Re-run tools/chapter-check.sh for every chapter you touched, in both editions, until each is clean.
 4. Commit with tools/commit-pass.sh.
-Report what you fixed, what you deliberately left (with the reason), chapters touched, whether all rebuilt chapters are clean, and the commit output.`, { label: 'terminology', phase: 'Terminology & index', schema: RESULT })
+Report what you fixed, what you deliberately left (with the reason), chapters touched, whether all rebuilt chapters are clean, and the commit output.`, { label: 'terminology', phase: 'Terminology & index', schema: RESULT, model: 'opus' })
 if (!term) throw new Error('terminology pass failed')
 log(`terminology: ${term.fixed.length} fixed, ${term.chaptersTouched.length} chapters touched`)
 
@@ -60,7 +60,7 @@ Check every chapter of both editions for:
 - bibliography: every bib/<slug>.bib is listed in both main.tex files (tools/sync-main.py --check), no duplicate keys across bib files, no unused entries.
 - code listings: \\end{lstlisting} at column 0, lines within the body width.
 Fix what is wrong in both editions, re-run tools/chapter-check.sh for every chapter you touched until clean, and commit with tools/commit-pass.sh.
-Report fixed items, deferred items with reasons, chapters touched, build status and the commit output.`, { label: 'cross-references', phase: 'Cross-references', schema: RESULT })
+Report fixed items, deferred items with reasons, chapters touched, build status and the commit output.`, { label: 'cross-references', phase: 'Cross-references', schema: RESULT, model: 'opus' })
 if (!xref) throw new Error('cross-reference pass failed')
 log(`cross-references: ${xref.fixed.length} fixed`)
 

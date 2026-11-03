@@ -54,7 +54,7 @@ Report pages inspected, every defect (page, kind, description, fixed or not), ne
 phase('Visual QA')
 const out = []
 for (const lang of langs) {
-  const r = await agent(prompt(lang), { label: `visual-qa:${lang}`, phase: 'Visual QA', schema: QA })
+  const r = await agent(prompt(lang), { label: `visual-qa:${lang}`, phase: 'Visual QA', schema: QA, model: 'opus' })
   if (!r) { log(`visual QA ${lang} FAILED — continuing with the next edition`); out.push({ lang, failed: true }); continue }
   log(`${lang}: ${r.pagesInspected} pages, ${r.defectsFound.length} defects (${r.defectsFound.filter(d => d.fixed).length} fixed), ${r.classChangesNeeded.length} class changes suggested`)
   out.push({ lang, ...r })

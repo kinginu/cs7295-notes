@@ -36,7 +36,7 @@ en\tja\treading\tlesson\tnote
 Cover every concept the source defines, in source order within each chapter — typically 15–60 terms per chapter. Code identifiers (class and function names) are not glossary terms.
 Validate with a short script: every row has exactly 5 fields, lesson is a chapter number from the syllabus, no duplicate en keys, readings contain only hiragana, ー, Latin letters, digits and spaces. Fix and re-validate until clean.
 Commit and push with: tools/commit-pass.sh "Glossary: <N> terms for <M> chapters"
-Return the row count, a compact per-chapter count, the hard terminology choices you made, and the commit output.`, { label: 'glossary', phase: 'Glossary', schema: GLOSSARY })
+Return the row count, a compact per-chapter count, the hard terminology choices you made, and the commit output.`, { label: 'glossary', phase: 'Glossary', schema: GLOSSARY, model: 'opus' })
 if (!g) throw new Error('glossary agent failed')
 log(`glossary: ${g.rows} rows (${g.perChapter})`)
 return g

@@ -56,7 +56,7 @@ Return counts added by kind, a few of the actual notes (one line each), margin i
 const results = await pipeline(chapters, async (n) => {
   await acquire()
   try {
-    const r = await agent(prompt(n), { label: `margins:ch${pad(n)}`, phase: 'Enrich margins', schema: RESULT })
+    const r = await agent(prompt(n), { label: `margins:ch${pad(n)}`, phase: 'Enrich margins', schema: RESULT, model: 'opus' })
     if (!r) throw new Error('margin enrichment failed for chapter ' + n)
     log(`ch${pad(n)}: +${r.added.margin} margin +${r.added.tip} tip +${r.added.caution} caution +${r.added.sidenote} sidenote — ${r.densityBefore}→${r.densityAfter}/page`)
     return { chapter: n, ...r }
