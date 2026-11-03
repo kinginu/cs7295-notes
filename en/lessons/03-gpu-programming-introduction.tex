@@ -1,0 +1,988 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPU Programming Introduction}
+\lessoninfo{
+  video={M3, lessons 1--4 (Introduction of CUDA Programming; Occupancy; Host Code; Stencil Operation with CUDA)},
+  sources={\cite{harris2013sharedmem} (shared memory); NVIDIA Hopper whitepaper \cite{nvidia2022hopper} (thread block clusters)},
+  textbook={K12 \cite{kim2012gpgpu} §1.3; A18 \cite{aamodt2018gpu} ch.~2; CPG \cite{nvidia2024cudaguide} §2 Programming Model, §3.2 CUDA Runtime, §4.2 Hardware Multithreading; BPG \cite{nvidia2026cudabestpractices} §11 Execution Configuration Optimizations; PMPP \cite{hwu2022pmpp} ch.~2--4, 7--8},
+  keywords={kernel, host code, grid, thread block, thread index, execution configuration, shared memory, barrier synchronization, BSP, memory spaces, occupancy, compute capability, cudaMalloc, cudaMemcpy, stencil, tile, halo},
+}
+
+Lesson~1 introduced the GPU as a throughput machine built from streaming
+multiprocessors that execute warps of threads, and Lesson~2 showed how
+parallel work is expressed with OpenMP in shared memory and with MPI
+across distributed memories.  This lesson turns both into concrete CUDA
+programs.  It introduces the kernel and the hierarchy of threads, blocks
+and grid in which it runs, the memory spaces those threads can see, and
+the barrier with which the threads of a block synchronise; it then asks
+how many blocks fit on one multiprocessor at once (occupancy), writes the
+host code that moves data to and from the device, and ends with the
+stencil of Lesson~2 rewritten for CUDA, where the boundary exchange of
+MPI becomes the loading of a halo into shared memory.
+
+\section{Introduction of CUDA programming}
+\label{sec:l03-cuda}
+
+A CUDA program is split into two parts that run on two processors: code
+that runs on the CPU, and a function that the CPU hands to the GPU for
+execution by many threads at once.\source{M3, CUDA programming
+introduction; K12 §1.3; CPG §2.1 Kernels, §2.2 Thread Hierarchy, §2.3
+Memory Hierarchy; PMPP ch.~2--3; A18 ch.~2.}
+
+\subsection{Kernel and host code}
+
+\begin{definition}[Kernel, host code, device code]
+  A \term{kernel}[カーネル] is a function that runs on the GPU and is
+  executed by many threads in parallel.  It is declared with the
+  \texttt{\_\_global\_\_} qualifier.  The \term{host code}[ホストコード]
+  is the part of the program that runs on the CPU (the \term*{host},
+  Lesson~1): it sets up the data, manages the GPU's memory and launches
+  the kernels.  The \term{device code}[デバイスコード] is the part that
+  runs on the GPU, the \term{device}[デバイス]: the kernels and the
+  functions they call.\margin{The qualifiers: \texttt{\_\_global\_\_} marks
+  a kernel (called from the host, runs on the device);
+  \texttt{\_\_device\_\_} a function called from device code;
+  \texttt{\_\_host\_\_} an ordinary CPU function.  CPG §7.1 Function Execution Space Specifiers \cite{nvidia2024cudaguide}.}
+\end{definition}
+
+The first kernel adds two vectors.  Each thread computes one element: it
+derives its own index \texttt{i} from built-in variables, checks that the
+index is inside the array, and performs one addition.
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void vectorAdd(const float *a, const float *b,
+                          float *c, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) c[i] = a[i] + b[i];
+}
+\end{lstlisting}
+There is no loop over the elements: the loop of the serial program (the
+loop parallelism of Lesson~2) has become the set of threads, one per
+iteration.  The host code launches the kernel with the triple-angle-bracket
+syntax, naming how many threads to create and how they are grouped:
+\begin{lstlisting}[language=C++, numbers=none]
+int threads = 256;
+int blocks = (n + threads - 1) / threads;  // ceil(n / 256)
+vectorAdd<<<blocks, threads>>>(d_a, d_b, d_c, n);
+\end{lstlisting}
+
+\begin{definition}[Kernel launch, execution configuration]
+  A \term{kernel launch}[カーネル起動] is the statement
+  \texttt{kernel<<<numBlocks, threadsPerBlock>>>(args)} by which the host
+  starts a kernel on the device.  The part between the angle brackets is
+  the \term{execution configuration}[実行構成]: the number of thread
+  blocks and the number of threads per block.  The total number of
+  threads created is their product.\tip{The number of blocks is the
+  ceiling of $n$ over the block size, written in integer arithmetic as
+  \texttt{(n + threads - 1) / threads}; the last block then has idle
+  threads, which the bounds check \texttt{if (i < n)} keeps from writing
+  past the array.}
+\end{definition}
+
+\subsection{SPMD and the thread index}
+
+The threads of a kernel all run the same code: GPU programming is
+\term*{SPMD} (Lesson~1).  A kernel that only prints a message, launched
+with four threads, prints it four times, in no particular order.  To make
+the threads do different work, each must know which one it is.
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void hello() {
+  printf("hello %d\n", threadIdx.x);
+}
+// host:
+hello<<<1, 4>>>();   // prints hello 0..3 in some order
+\end{lstlisting}
+
+\begin{definition}[Thread index]
+  The \term{thread index}[スレッドインデックス] \texttt{threadIdx} is a
+  built-in variable, different in every thread, that gives the thread's
+  position within its block.  It has three components
+  \texttt{threadIdx.x}, \texttt{.y} and \texttt{.z}, so that a block can
+  be laid out as a line, a rectangle or a box of threads, matching the
+  shape of the data (a vector, an image, a volume).
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-spmd}
+  \caption{SPMD: one kernel, four threads.  Every thread runs the same
+    code; only \texttt{threadIdx.x} tells them apart, and nothing fixes
+    the order of their output.}
+  \label{fig:l03-spmd}
+\end{figure}
+
+With the index, the simplest form of the vector addition is
+\texttt{c[threadIdx.x] = a[threadIdx.x] + b[threadIdx.x]}: thread~0 adds
+element~0, thread~1 element~1, and so on (\cref{fig:l03-spmd}).  This form
+works only for a single block, which is why the kernel above uses two more
+built-in variables.
+
+\subsection{The thread hierarchy}
+
+\begin{definition}[Thread block, grid]
+  Threads are grouped into blocks and blocks into a grid.  A
+  \term{thread block}[スレッドブロック] is a group of threads that are
+  executed together on one streaming multiprocessor and can cooperate
+  through shared memory and barriers; PTX calls it a
+  \term{cooperative thread array (CTA)}[協調スレッド配列（CTA）]\index{CTA|see{cooperative thread array (CTA)}}.
+  The \term{grid}[グリッド] is the set of all blocks of one kernel
+  launch.  The \term{block index}[ブロックインデックス] \texttt{blockIdx}
+  gives a block's position in the grid, and the built-in
+  \texttt{blockDim} and \texttt{gridDim} hold the sizes of a block and of
+  the grid in each dimension.  This three-level structure, thread, block,
+  grid, is the \term{thread hierarchy}[スレッド階層]
+  (\cref{fig:l03-thread-hierarchy}).\margin{Limits, CPG Table~21
+  \cite{nvidia2024cudaguide}: 1024 threads per block; block $x, y \le
+  1024$, $z \le 64$; grid $x \le 2^{31}-1$, $y, z \le 65535$ (CC
+  5.0--9.0).}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-thread-hierarchy}
+  \caption{The thread hierarchy.  A grid of $3\times2$ blocks, each of
+    $4\times2$ threads; a thread is addressed by its \texttt{blockIdx}
+    and its \texttt{threadIdx}.}
+  \label{fig:l03-thread-hierarchy}
+\end{figure}
+
+The warp of Lesson~1 is absent from this hierarchy on purpose: a warp is a
+microarchitectural unit, the group of 32 consecutive threads of a block
+that the hardware issues together, and the programming model of early
+CUDA hid it.\margin{Later CUDA versions expose the warp through
+warp-level primitives (shuffle, vote, Lesson~5); the hardware still cuts
+every block into warps of \texttt{warpSize} = 32 consecutive threads,
+Lesson~4.}  The block is the unit the programmer reasons about, and the
+grid is the unit of a launch.
+
+\paragraph{Global index.}  To give every thread of a multi-block grid a
+distinct element, the thread index is combined with the block index.  For
+a one-dimensional grid and block,
+\begin{equation}
+  \texttt{idx} = \texttt{blockIdx.x} \times \texttt{blockDim.x} +
+  \texttt{threadIdx.x}.
+  \label{eq:l03-global-index}
+\end{equation}
+\Cref{fig:l03-global-index} shows 16 elements processed by four blocks of
+four threads: block~2 holds elements 8 to~11, and its thread~1 takes
+element~9.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-global-index}
+  \caption{Global index of 16 elements over four blocks of four threads.
+    The block index selects the group of four, the thread index the
+    element within it.}
+  \label{fig:l03-global-index}
+\end{figure}
+
+\begin{example}[Index arithmetic]
+  \label{ex:l03-index}
+  An array of 1000 floats is processed with 128 threads per block.
+  \begin{itemize}
+    \item Number of blocks: $\lceil 1000/128 \rceil = 8$, creating
+      $8 \times 128 = 1024$ threads; the last 24 threads fail the bounds
+      check and do nothing.
+    \item The thread with \texttt{blockIdx.x = 5} and
+      \texttt{threadIdx.x = 77} handles element $5 \times 128 + 77 = 717$.
+    \item Element 900 is handled by block $\lfloor 900/128 \rfloor = 7$,
+      thread $900 - 7 \times 128 = 4$.
+  \end{itemize}
+  For a two-dimensional image of width $W$ the same arithmetic is applied
+  per dimension: \texttt{x = blockIdx.x * blockDim.x + threadIdx.x},
+  \texttt{y = blockIdx.y * blockDim.y + threadIdx.y}, and the element is
+  \texttt{img[y * W + x]}.\margin{Within a block, CPG §2.2 numbers the
+  threads of a 2D block of size $(D_x, D_y)$ as $x + y D_x$: consecutive
+  \texttt{threadIdx.x} values are consecutive threads, and therefore in
+  the same warp.  \cite{nvidia2024cudaguide}.}
+\end{example}
+
+\subsection{Execution order}
+
+Nothing in the model orders the threads or the blocks.  Four threads that
+print their index may print 0, 1, 2, 3 or 3, 2, 1, 0 or 0, 2, 3, 1; the
+six blocks of \cref{fig:l03-block-order} may run one after another in
+index order, one after another in any other order, or several at a time.
+A correct kernel produces the same result under every one of these
+orders.\margin{CPG §2.2: thread blocks \enquote{are required to execute
+independently: It must be possible to execute them in any order, in
+parallel or in series.}  \cite{nvidia2024cudaguide}.  This independence is
+what lets a kernel run unchanged on a GPU with 2 or with 132 SMs.}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-block-order}
+  \caption{Three legal executions of a grid of six blocks: in index order,
+    in an arbitrary order, and three at a time.  The hardware chooses,
+    and the choice may differ from one run to the next.}
+  \label{fig:l03-block-order}
+\end{figure}
+
+The simplest mental model, used in this section, is that each block runs
+on one streaming multiprocessor and the blocks are independent of each
+other.  \Cref{sec:l03-occupancy} refines the first half: an SM usually
+holds several blocks at once.
+
+\subsection{Shared memory}
+
+Because the blocks of a grid are independent, data must be divided among
+them, and the threads of a block need a place in which to combine their
+work.
+
+\begin{definition}[Shared memory]
+  The \term{shared memory}[共有メモリ] of a multiprocessor is a small,
+  fast memory on the chip that is visible to all threads of one block and
+  to no other block.  It is a \term{scratchpad memory}[スクラッチパッドメモリ]:
+  software-managed, so the kernel itself copies data into it and out of
+  it, as opposed to a cache that the hardware fills.  A variable is placed
+  in shared memory with the \texttt{\_\_shared\_\_} qualifier, and lives
+  as long as the block.\margin{Latencies on Tesla and Fermi GPUs, K12
+  Table~1.4 \cite{kim2012gpgpu}: shared memory 4--32 cycles, global memory
+  hundreds of cycles.  \cite{harris2013sharedmem} gives roughly
+  $100\times$ lower latency for shared than for uncached global memory.}
+\end{definition}
+
+In the kernel below each thread writes one sum into shared memory, and
+then reads the sum written by another thread:
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void addReverse(const int *a, const int *b,
+                           int *c) {
+  __shared__ int s[256];          // one block of 256
+  int i = threadIdx.x;
+  s[i] = a[i] + b[i];
+  __syncthreads();                // all writes done
+  c[i] = s[255 - i];              // another thread's sum
+}
+\end{lstlisting}
+The read \texttt{s[255 - i]} is correct only if thread $255-i$ has
+already stored its value; since threads run in no fixed order, the
+kernel must wait for all of them.\caution{Lesson~2 used \enquote{shared
+memory} in the CPU sense, one address space for all threads.  CUDA shared
+memory is per block and on chip; a value written into it by one block is
+invisible to every other block, and it is gone when the block finishes.}
+
+\subsection{Synchronisation}
+
+\begin{definition}[Barrier synchronisation]
+  \texttt{\_\_syncthreads()} performs \term{barrier synchronization}[バリア同期]
+  over the threads of one block: every thread of the block waits at the
+  call until all of them have reached it, after which all continue.  It
+  also guarantees that the shared and global memory writes made before the
+  barrier are visible to the threads of the block after
+  it.\caution{Every thread of the block must reach the same
+  \texttt{\_\_syncthreads()}; a barrier inside an \texttt{if} that only
+  some threads enter is undefined (in practice a hang).  Put the barrier
+  outside the condition.}
+\end{definition}
+
+A barrier spans one block only.  Threads of different blocks cannot
+synchronise with \texttt{\_\_syncthreads()}; when a computation needs all
+blocks to have finished a phase before any block begins the next, the
+phases are written as separate kernels, since a kernel launch completes
+only after all of its blocks have.\margin{Since CUDA~9 a grid-wide
+barrier exists through cooperative groups and a cooperative launch, which
+needs every block resident at once (Lesson~5).}
+
+\begin{definition}[Bulk synchronous parallel]
+  The usual shape of a kernel that uses shared memory is three phases
+  separated by barriers (\cref{fig:l03-bsp}): load the block's data from
+  global memory into shared memory; \texttt{\_\_syncthreads()}; compute on
+  the shared copy; \texttt{\_\_syncthreads()}; store the results back to
+  global memory.  This alternation of a parallel phase and a barrier is
+  the \term{bulk synchronous parallel (BSP)}[バルク同期並列（BSP）]\index{BSP|see{bulk synchronous parallel (BSP)}}
+  pattern; the MPI stencil of Lesson~2, which alternates boundary
+  exchange and computation, is the same pattern across processes.
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-bsp}
+  \caption{Bulk synchronous use of shared memory by eight threads of one
+    block.  Threads finish each phase at different times (solid) and wait
+    at the barrier (dashed) until the slowest arrives.}
+  \label{fig:l03-bsp}
+\end{figure}
+
+The second barrier is needed when the compute phase writes its results
+into shared memory and the store phase has threads copy values produced by
+other threads, as in \cref{fig:l03-bsp}, or when the buffer is reloaded
+for another tile (the next load would overwrite values that slow threads
+are still reading).  A kernel whose compute phase writes each thread's
+result straight to global memory can omit it.
+
+\subsection{Several kernels}
+
+A program with several distinct tasks uses several kernels, each with its
+own execution configuration.  A serial step is a kernel of one block and
+one thread; a data-parallel step is a kernel of many:
+\begin{lstlisting}[language=C++, numbers=none]
+sortKernel<<<1, 1>>>(d_data, n);            // serial step
+addKernel<<<blocks, threads>>>(d_data, d_out, n);
+storeKernel<<<1, 1>>>(d_out, n);            // serial step
+\end{lstlisting}
+Kernels launched from the same host thread run one after another by
+default, so the second sees the results of the first.\margin{Running
+kernels concurrently, or overlapping a kernel with a copy, needs CUDA
+streams, Lesson~5.  A one-thread kernel uses one lane of one SM and leaves
+the rest of the GPU idle: serial steps belong on the host unless the data
+is already on the device.}
+
+\subsection{Memory spaces}
+
+A thread can address five memory spaces, distinguished by who can see
+them and where they are (\cref{tab:l03-memory-spaces},
+\cref{fig:l03-memory-spaces}).
+
+\begin{definition}[Local, global, constant, texture memory]
+  A thread's \term{local memory}[ローカルメモリ] is private to it; it
+  holds the thread's variables that do not fit in registers.  Shared
+  memory is private to one block.  The \term{global memory}[グローバルメモリ]
+  is visible to every thread of every block of a kernel, and persists
+  across kernel launches: it is where the host places the input and reads
+  the output.  The \term{constant memory}[コンスタントメモリ] is a small
+  read-only space, visible to all threads and cached, for values that do
+  not change during a kernel, such as a physical constant or a filter.
+  The \term{texture memory}[テクスチャメモリ] is a read-only space with a
+  cache optimised for two-dimensional locality.  The last two are
+  inherited from graphics, where they hold the constants of a scene and
+  its texture images, and are rarely needed in general-purpose
+  code.\margin{Sizes (CPG Table~21 \cite{nvidia2024cudaguide}): constant
+  memory \SI{64}{\kibi\byte} per device with an \SI{8}{\kibi\byte} cache
+  per SM; local memory up to \SI{512}{\kibi\byte} per thread.  Both live
+  in device memory: local memory is as slow as global memory unless it
+  hits in the L1 cache.}
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{The CUDA memory spaces: who can see them, how long they live,
+    where they are.}
+  \label{tab:l03-memory-spaces}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{18mm}
+                  >{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{16mm}
+                  >{\raggedright\arraybackslash}p{42mm}}
+    \toprule
+    Space & Scope & Lifetime & Location, note \\
+    \midrule
+    registers & one thread & thread & on chip, allocated by the compiler \\
+    local & one thread & thread & device memory (cached); spilled variables \\
+    shared & one block & block & on chip, \texttt{\_\_shared\_\_} \\
+    \addlinespace
+    global & all blocks of all kernels & application & device memory; \texttt{cudaMalloc} \\
+    constant & all blocks & application & device memory, read-only, cached; \texttt{\_\_constant\_\_} \\
+    texture & all blocks & application & device memory, read-only, 2D cache \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-memory-spaces}
+  \caption{Left: each SM has its own shared memory; one global memory
+    serves all of them.  Right: the scope of each space follows the
+    thread hierarchy.}
+  \label{fig:l03-memory-spaces}
+\end{figure}
+
+The hierarchy limits how information can be shared: data in a block's
+shared memory stays in that SM, and two blocks communicate only through
+global memory, in general across a kernel boundary.  Since Hopper, a
+\term{thread block cluster}[スレッドブロッククラスタ] groups several
+blocks that are scheduled together and can read and write each other's
+shared memory, a new level between block and grid.\sidenote{Thread block
+clusters (compute capability 9.0): the blocks of a cluster are guaranteed
+to be co-scheduled on one GPU processing cluster and access each other's
+shared memory as \emph{distributed shared memory}.  Up to 8 blocks per
+cluster is the portable size; H100 supports up to 16 (CPG §2.2.1
+\cite{nvidia2024cudaguide}; \cite{nvidia2022hopper}).  Lesson~5 returns
+to them.}
+
+\begin{keypoint}
+  A CUDA program is a host program plus kernels.  A kernel runs as a
+  grid of blocks of threads; each thread finds its data from
+  \texttt{blockIdx}, \texttt{blockDim} and \texttt{threadIdx}, blocks
+  run in no fixed order and must be independent, and threads of one
+  block share an on-chip shared memory and synchronise with
+  \texttt{\_\_syncthreads()}.
+\end{keypoint}
+
+\section{Occupancy}
+\label{sec:l03-occupancy}
+
+A streaming multiprocessor usually runs more than one block at a time.
+How many, and why it matters, is the question of
+occupancy.\source{M3, occupancy; BPG §11.1 Occupancy, §11.3 Thread and
+Block Heuristics, §11.4 Effects of Shared Memory; CPG §4.2 Hardware
+Multithreading; PMPP ch.~4.}
+
+\subsection{Three resources}
+
+\begin{definition}[Resource constraint]
+  Every block that is resident on an SM holds a share of three of the
+  SM's resources for its whole lifetime: a number of thread slots, a
+  number of registers, and an amount of shared memory.  Each is a
+  \term{resource constraint}[資源制約]: the number of blocks that can be
+  resident at once is the smallest number allowed by any of the three
+  (and by a fixed maximum count of blocks per SM).  A
+  \term{register}[レジスタ] here is one 32-bit entry of the SM's register
+  file; the registers a thread needs are fixed by the compiler, and a
+  kernel that needs many is said to have high
+  \term{register pressure}[レジスタ圧力].\margin{CC 7.0, 8.0 and 9.0 SMs:
+  \num{65536} registers (\SI{256}{\kibi\byte}), 2048 thread slots
+  (64 warps), 32 blocks, \SIrange{96}{228}{\kibi\byte} of shared
+  memory; other CCs have fewer slots and blocks, \cref{tab:l03-cc-limits}.}
+\end{definition}
+
+Who decides each quantity is summarised in
+\cref{tab:l03-who-sets}.  Threads per block is the programmer's choice at
+launch.  Registers per thread is the compiler's: unlike a CPU, whose ISA
+fixes the number of architectural registers (32 in most RISC ISAs), the
+GPU lets the compiler allocate as many as the kernel needs, up to a
+maximum, and the hardware then fits as many threads as the register file
+allows.  Shared memory per block follows from the declarations:
+\texttt{\_\_shared\_\_ int s[1000]} is $4 \times 1000 = 4000$ bytes.
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{Who sets the per-block resource demand, and how to read it.}
+  \label{tab:l03-who-sets}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{28mm}
+                  >{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{50mm}}
+    \toprule
+    Quantity & Set by & Where it is visible \\
+    \midrule
+    threads per block & host, at launch & the execution configuration \\
+    registers per thread & compiler & \texttt{nvcc --ptxas-options=-v}; capped by \texttt{\_\_launch\_bounds\_\_} or \texttt{-maxrregcount} \\
+    shared memory per block & \texttt{\_\_shared\_\_} declarations (plus the optional third launch parameter) & same compiler report \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{example}[Blocks per SM]
+  \label{ex:l03-blocks-per-sm}
+  A multiprocessor offers 1024 thread slots, \num{32768} registers and
+  \SI{48}{\kibi\byte} of shared memory.  A kernel is launched with 64
+  threads per block, the compiler reports 40 registers per thread, and
+  each block declares \SI{6}{\kibi\byte} of shared memory.
+  \begin{description}
+    \item[threads] $1024 / 64 = 16$ blocks;
+    \item[registers] $\num{32768} / (40 \times 64) = 12.8$, so 12
+      blocks;
+    \item[shared memory] $48 / 6 = 8$ blocks.
+  \end{description}
+  The SM can hold $\min(16, 12, 8) = 8$ blocks, limited by shared
+  memory.  Halving the shared memory per block would raise the limit to
+  12, after which registers bind; only then would the register count
+  matter.
+\end{example}
+
+\caution{The source's example quotes the register file as
+\enquote{64 kilobytes}; the number meant is 64\,K $=$ \num{65536} registers,
+which at 4 bytes each is \SI{256}{\kibi\byte}.  Register counts in
+occupancy calculations are always counts of 32-bit registers, not bytes.}
+
+\subsection{Why occupancy matters}
+
+More resident blocks mean more resident warps, and more warps give the
+SM more independent instructions to choose from while others wait for
+memory.  \Cref{fig:l03-occupancy-cases} compares two ways of filling four
+SMs: one block of 8 threads each (32 threads) or three blocks of 4 threads
+each (48 threads).  The second keeps more threads in flight even though
+each block is smaller, and so, usually, achieves more of the SM's
+throughput.\margin{Why more warps hide memory latency is the subject of
+Lesson~4 (multithreaded architecture); Lesson~7 shows the exception,
+where too many warps thrash the L1 cache.}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-occupancy-cases}
+  \caption{Filling four SMs.  (a)~One block of 8 threads per SM; (b)~three
+    blocks of 4 threads per SM.  The smaller blocks keep 48 threads
+    resident instead of 32.}
+  \label{fig:l03-occupancy-cases}
+\end{figure}
+
+\begin{definition}[Occupancy, active warp]
+  An \term{active warp}[アクティブワープ] is a warp that is resident on
+  a multiprocessor, with its registers and shared memory allocated, and
+  therefore a candidate for issue whenever its next instruction is ready;
+  a warp that is ready in the current cycle is called \emph{eligible}.  The
+  \term{occupancy}[占有率] of a kernel on a multiprocessor is the ratio of
+  the number of active warps to the maximum number of warps the
+  multiprocessor can hold \cite[§11.1]{nvidia2026cudabestpractices}.
+  With $T$ threads per block, $R$ registers per thread and $S$ bytes of
+  shared memory per block, on an SM with the limits of
+  \cref{tab:l03-cc-limits},
+  \begin{align}
+    \text{blocks/SM} &= \min\!\left(
+      \left\lfloor \frac{\text{Threads/SM}}{T} \right\rfloor,\;
+      \text{Blocks/SM},\;
+      \left\lfloor \frac{\text{Regs/SM}}{R\,T} \right\rfloor,\;
+      \left\lfloor \frac{\text{Smem/SM}}{S} \right\rfloor \right),
+    \label{eq:l03-blocks}\\
+    \text{occupancy} &= \frac{\text{blocks/SM} \times \lceil T/32 \rceil}
+                             {\text{Warps/SM}}.
+    \label{eq:l03-occupancy}
+  \end{align}
+  \margin{\Cref{eq:l03-occupancy} gives the \emph{theoretical}
+  occupancy; the \emph{achieved} occupancy that Nsight Compute measures
+  at run time is lower when blocks finish unevenly or the grid is too
+  small to fill every SM.}
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \caption{Per-SM limits by compute capability (CPG Table~21
+    \cite{nvidia2024cudaguide}; K = 1024, KiB binary).  The example GPUs
+    are representative, not exhaustive.}
+  \label{tab:l03-cc-limits}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{33mm}rrrrrr}
+    \toprule
+    Compute capability & 7.0 & 7.5 & 8.0 & 8.6 & 8.9 & 9.0 \\
+    (example GPU) & V100 & T4 & A100 & RTX 3090 & L40 & H100 \\
+    \midrule
+    max threads per SM & 2048 & 1024 & 2048 & 1536 & 1536 & 2048 \\
+    max warps per SM & 64 & 32 & 64 & 48 & 48 & 64 \\
+    max blocks per SM & 32 & 16 & 32 & 16 & 24 & 32 \\
+    32-bit registers per SM & 64\,K & 64\,K & 64\,K & 64\,K & 64\,K & 64\,K \\
+    max registers per thread & 255 & 255 & 255 & 255 & 255 & 255 \\
+    max shared memory per SM (KiB) & 96 & 64 & 164 & 100 & 100 & 228 \\
+    max shared memory per block (KiB) & 96 & 64 & 163 & 99 & 99 & 227 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[Compute capability]
+  The \term{compute capability}[Compute Capability] is NVIDIA's version
+  number for the features and limits of a GPU generation, written
+  \emph{major.minor}: 7.x Volta and Turing, 8.x Ampere and Ada, 9.0
+  Hopper.  The limits of \cref{tab:l03-cc-limits} are per compute
+  capability, which is why an occupancy calculation must name the
+  target: the x.0 parts (V100, A100, H100) hold 64 warps, CC 7.5, 8.6
+  and 8.9 (e.g.\ T4, RTX 3090, L40) only 32 or 48.\margin{On CC 8.x and
+  9.0 the shared memory is carved out of a unified L1/shared array, and
+  the split is configurable per kernel (CPG, Compute Capability 8.x
+  \cite{nvidia2024cudaguide}); the table gives the maximum.  The warp
+  scheduler that consumes the warps: Lesson~4.}
+\end{definition}
+
+\Needspace{14\baselineskip}
+\begin{example}[Occupancy on an A100]
+  \label{ex:l03-occupancy-a100}
+  A kernel is launched with $T = 256$ threads per block (8 warps), uses
+  $R = 64$ registers per thread and $S = \SI{48}{\kibi\byte}$ of shared
+  memory per block, on a compute capability 8.0 SM.
+  \begin{description}
+    \item[threads] $2048 / 256 = 8$ blocks;
+    \item[blocks] 32;
+    \item[registers] $\num{65536} / (64 \times 256) = 4$ blocks;
+    \item[shared memory] $\lfloor 164 / 48 \rfloor = 3$ blocks.
+  \end{description}
+  Three blocks are resident, $3 \times 8 = 24$ warps, and the occupancy is
+  $24 / 64 = \SI{37.5}{\percent}$.  Shared memory binds; cutting it to
+  \SI{32}{\kibi\byte} per block would allow 4 blocks (then registers bind)
+  and $32/64 = \SI{50}{\percent}$.  Full occupancy (8 blocks) would need
+  at most 32 registers per thread and at most about \SI{19}{\kibi\byte}
+  of shared memory per block ($164/8 = 20.5$ less the
+  \SI{1}{\kibi\byte} reservation).\margin{Granularity,
+  ignored in \cref{eq:l03-blocks}: registers are allocated per warp in
+  units of 256, and on CC 8.x and 9.0 CUDA reserves \SI{1}{\kibi\byte}
+  of shared memory per block ($\lfloor 164/49 \rfloor$ is still~3).
+  BPG §11.1.1; CPG, Compute Capability 8.x
+  \cite{nvidia2026cudabestpractices,nvidia2024cudaguide}.}
+\end{example}
+
+In practice the arithmetic is done by the occupancy calculator of Nsight
+Compute or by the runtime's occupancy API,
+\begin{lstlisting}[language=C++, numbers=none]
+cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    &blocks, kernel, T, dynSmem);
+\end{lstlisting}
+where \texttt{dynSmem} is the dynamic shared memory per block (the static
+\texttt{\_\_shared\_\_} usage is taken from the kernel itself); both tools
+apply \cref{eq:l03-blocks} with the exact granularities of the
+target device (BPG §11.1.1).
+
+Higher occupancy is not always faster.  Beyond some point extra warps add
+nothing, and a kernel limited by instruction throughput or by its own
+memory bandwidth gains nothing from them; but low occupancy always
+weakens the SM's ability to hide memory latency
+\cite[§11.1]{nvidia2026cudabestpractices}.\tip{Starting points from BPG
+§11.3: threads per block a multiple of the warp size; at least 64 per
+block, and then only with several blocks per SM; 128--256 as the first
+thing to try; several smaller blocks rather than one large block when
+latency matters.}
+
+\begin{keypoint}
+  Blocks per SM $=$ the minimum over threads, registers, shared memory
+  (and the block cap); occupancy $=$ resident warps over the maximum.
+  Threads per block is chosen at launch, registers per thread by the
+  compiler, shared memory by the declarations, and the limits by the
+  compute capability.
+\end{keypoint}
+
+\section{Host code}
+\label{sec:l03-host}
+
+Shared memory is visible within a block and global memory to all blocks,
+but neither is visible to the CPU: global memory sits in the device's own
+memory, behind an I/O interface, and the host manages it through explicit
+calls.\source{M3, host code; CPG §3.2.2 Device Memory; K12 §1.3.6.}
+
+\begin{definition}[Host memory, device memory]
+  The \term{host memory}[ホストメモリ] is the CPU's main memory, where
+  the host program's variables live.  The \term{device memory}[デバイスメモリ]
+  is the GPU's own memory (HBM or GDDR), in which global, constant,
+  texture and local memory are placed.  The two are separate address
+  spaces joined by an I/O interface (\cref{fig:l03-host-device}): a
+  pointer into one is meaningless on the other side, and data crosses
+  only by an explicit copy.\margin{The interface is the bottleneck.  H100: HBM3 reported as
+  about \SI{3}{\tera\byte\per\second} (preliminary) \cite{nvidia2022hopper}
+  against \SI{64}{\giga\byte\per\second} per direction of PCIe Gen~5 x16,
+  about $47\times$.  A100 \SI{40}{\gibi\byte}: HBM2 at
+  \SI{1555}{\giga\byte\per\second} \cite{nvidia2020ampere} against about
+  \SI{32}{\giga\byte\per\second} per direction of Gen~4, about $49\times$.}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-host-device}
+  \caption{Host and device memory.  \texttt{cudaMalloc} reserves global
+    memory; \texttt{cudaMemcpy} moves data across the I/O interface in
+    either direction.}
+  \label{fig:l03-host-device}
+\end{figure}
+
+Allocating device memory, moving data to and from it, and releasing it
+are three calls of the CUDA runtime:
+\begin{lstlisting}[language=C++, numbers=none]
+cudaMalloc((void **)&ptr, size);   // reserve size bytes
+cudaMemcpy(dst, src, size, dir);   // copy size bytes
+cudaFree(ptr);                     // release
+\end{lstlisting}
+
+\begin{definition}[Memory allocation and transfer]
+  On the device, \term{memory allocation}[メモリ確保] is done by
+  \texttt{cudaMalloc}, which reserves \texttt{size} bytes of global
+  memory and returns a device pointer in \texttt{ptr}; \texttt{cudaFree}
+  releases it.  \texttt{cudaMemcpy} copies \texttt{size} bytes in the
+  direction \texttt{dir}, host to device
+  (\texttt{cudaMemcpyHostToDevice}), device to host
+  (\texttt{cudaMemcpyDeviceToHost}) or device to device.  Every runtime
+  call returns a \texttt{cudaError\_t}; \texttt{cudaSuccess} means it
+  worked.  \texttt{cudaMemcpy} is synchronous with respect to the host:
+  a device-to-host copy returns when the data has arrived, and a copy
+  issued after a kernel launch first waits for the kernel to
+  finish.\margin{Asynchronous copies from pinned host
+  memory, overlapped with kernels: Lesson~5.}
+\end{definition}
+
+The complete vector addition, kernel and host code, is then as follows
+(the kernel is the one of \cref{sec:l03-cuda}).  The three
+memory-management steps, allocate, copy in, copy out, surround the
+launch; the host also checks the launch for an error.\caution{A kernel
+launch returns to the host immediately and reports no error of its own.
+\texttt{cudaGetLastError()} catches configuration errors (too many
+threads per block, too many resources for the SM) at launch; an error
+inside the kernel surfaces at the next synchronising call, such as the
+\texttt{cudaMemcpy} that reads the result.  Check both return values in
+real code.}
+\begin{lstlisting}[language=C++, numbers=none]
+#include <cstdio>
+#include <cstdlib>
+#include <cuda_runtime.h>
+
+__global__ void vectorAdd(const float *a, const float *b,
+                          float *c, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) c[i] = a[i] + b[i];
+}
+
+int main() {
+  const int n = 1 << 20;                 // 1,048,576
+  const size_t size = n * sizeof(float);
+  float *h_a = (float *)malloc(size);
+  float *h_b = (float *)malloc(size);
+  float *h_c = (float *)malloc(size);
+  for (int i = 0; i < n; ++i) {
+    h_a[i] = i; h_b[i] = 2.0f * i;
+  }
+
+  float *d_a, *d_b, *d_c;                // device pointers
+  cudaMalloc((void **)&d_a, size);
+  cudaMalloc((void **)&d_b, size);
+  cudaMalloc((void **)&d_c, size);
+  cudaMemcpy(d_a, h_a, size, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b, h_b, size, cudaMemcpyHostToDevice);
+
+  int threads = 256;
+  int blocks = (n + threads - 1) / threads;   // 4096
+  vectorAdd<<<blocks, threads>>>(d_a, d_b, d_c, n);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+    printf("launch: %s\n", cudaGetErrorString(err));
+
+  cudaMemcpy(h_c, d_c, size, cudaMemcpyDeviceToHost);
+  printf("%f\n", h_c[1000]);             // 3000.000000
+
+  cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+  free(h_a); free(h_b); free(h_c);
+  return 0;
+}
+\end{lstlisting}
+
+\begin{example}[Cost of the copies]
+  \label{ex:l03-copy-cost}
+  With $n = 2^{20}$ floats, each array is \SI{4}{\mebi\byte}: \SI{8}{\mebi\byte}
+  go to the device and \SI{4}{\mebi\byte} come back, \SI{12}{\mebi\byte} in
+  all, for $2^{20}$ additions.  At a sustained
+  \SI{25}{\giga\byte\per\second} over PCIe the copies take about
+  \SI{0.5}{\milli\second}; the kernel itself, reading \SI{8}{\mebi\byte}
+  and writing \SI{4}{\mebi\byte} from device memory at
+  \SI{1.5}{\tera\byte\per\second}, needs under
+  \SI{10}{\micro\second}.  The transfer dominates by a factor of about
+  60: a vector addition alone is not worth moving to the GPU, and data
+  should stay on the device across as many kernels as possible.
+\end{example}
+
+\begin{definition}[Unified memory]
+  With \term{unified memory}[ユニファイドメモリ]
+  (\texttt{cudaMallocManaged}) a single pointer is usable from both host
+  and device: the runtime
+  and the GPU's memory management move pages between host and device
+  memory on demand, and the explicit \texttt{cudaMemcpy} calls disappear.
+  The copies still happen, as page migrations triggered by page faults,
+  and their cost is the subject of Lesson~7.\margin{Lesson~7 gives the
+  numbers: a GPU page fault costs tens of microseconds and the driver
+  handles faults in batches, so unified memory simplifies the code but
+  does not remove the transfer.}
+\end{definition}
+
+\section{Stencil operation with CUDA}
+\label{sec:l03-stencil}
+
+The stencil of Lesson~2 replaces each element $C$ of a grid by the
+average of its four neighbours, $C' = (N + W + E + S)/4$.  Written for
+CUDA it brings together everything above: a grid of blocks that divide
+the data, shared memory for the values each block reuses, a barrier
+between loading and computing, and a halo at the block
+edges.\source{M3, stencil with CUDA; PMPP ch.~7 (convolution) and ch.~8
+(stencil); BPG §10.2.3 Shared Memory.}
+
+\subsection{Decomposition and reuse}
+
+The data decomposition is the one of \cref{fig:l03-stencil-tile}, left:
+each block owns one region of the image and each of its threads computes
+one output element, so all outputs are computed in parallel.  Every interior
+input element is read by four threads, those of its four neighbours
+(five, if the stencil includes the centre).
+
+\begin{definition}[Data reuse, tile, tiling]
+  The \term{data reuse}[データ再利用] of a computation is the property
+  that one value loaded from memory serves several of its operations.  A \term{tile}[タイル] is the
+  rectangular sub-array that one block works on, and
+  \term{tiling}[タイリング] is the technique of loading a tile once from
+  global memory into shared memory and serving all the reuse from there,
+  so that each global element is read about once per block instead of
+  once per use.  The reuse pattern of a stencil is known in advance, which
+  is what makes a software-managed scratchpad the right
+  cache.\margin{The same tiling turns a matrix multiplication from one
+  global load per multiply into one per $\text{tile size}$ multiplies;
+  Lesson~5 treats it, along with the bank conflicts of Lesson~4 that a
+  badly laid out tile can cause.}
+\end{definition}
+
+Each thread therefore follows the BSP shape of \cref{fig:l03-bsp}: load
+one element from global memory into the block's shared tile;
+\texttt{\_\_syncthreads()}; compute its stencil from the tile; write the
+result to global memory.
+
+\subsection{Boundaries and the halo}
+
+Shared memory is per block, but an element at the edge of a block's
+region has neighbours in the regions of other blocks: in
+\cref{fig:l03-stencil-tile}, $C$ at the corner of block (0,1) needs
+neighbour~1 from block (0,0) and neighbour~3 from block (1,1).  Those
+blocks' shared memories are unreachable, so each block loads, in addition
+to its own region, the one-element border around it, the
+\term*{halo} of Lesson~2, from global memory into its tile
+(\cref{fig:l03-stencil-tile}, right).  This is the boundary exchange of
+the MPI stencil without the messages: the halo is simply read from global
+memory, which every block can see, and no synchronisation between blocks
+is needed because the input array is read-only during the kernel and the
+outputs go to a separate array.
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-stencil-tile}
+  \caption{Left: a $10\times8$ image split among four blocks; $C$ and its
+    neighbours 1--4 lie in three of them.  Right: the shared-memory tile
+    of block (0,1): its own $5\times4$ region plus a one-cell halo.  Halo
+    cells inside the image (grey) are loaded from global memory; those
+    outside it (dotted) receive zero.}
+  \label{fig:l03-stencil-tile}
+\end{figure}
+
+\begin{definition}[Boundary condition, zero padding]
+  A \term{boundary condition}[境界条件] states what a stencil reads where
+  a neighbour lies outside the array.  The simplest is
+  \term{zero padding}[ゼロパディング]: positions outside the array are
+  treated as zero, and
+  the load phase stores \texttt{0} into the tile instead of reading
+  global memory.  Other choices (clamping to the edge value, wrapping
+  around, a one-sided formula) only change that branch of the load.
+\end{definition}
+
+\subsection{From stencil to convolution}
+
+Rather than writing the average with four reads and an \texttt{if} for
+each boundary, the kernel below is written as a small convolution: a
+$3\times3$ filter is applied around every element, and the stencil is
+expressed as the filter's coefficients.  This removes special cases and
+makes the same kernel serve any $3\times3$ stencil.
+
+\begin{definition}[Convolution, filter]
+  A two-dimensional \term{convolution}[畳み込み] computes each output as a
+  weighted sum of the input elements around the same position; the array
+  of weights is the \term{filter}[フィルタ] (or kernel, a word avoided here
+  because of its CUDA meaning).  Convolution in the signal-processing
+  sense flips the filter; with a symmetric filter the two agree, and the
+  machine-learning usage followed here does not flip.  With a filter $f$
+  of radius $r$,
+  \begin{equation}
+    \texttt{out}[y][x] = \sum_{i=-r}^{r} \sum_{j=-r}^{r}
+      \texttt{in}[y+i][x+j] \cdot f[i+r][j+r].
+    \label{eq:l03-convolution}
+  \end{equation}
+  The four-neighbour average is the $3\times3$ filter with $0.25$ at the
+  four edge-centres and $0$ elsewhere; a $3\times3$ filter is a 9-point
+  stencil, and the halo it needs is $r = 1$ wide.
+\end{definition}
+
+\subsection{The kernel}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l03-tile-threads}}
+  \caption{Thread roles in one block (drawn for $8\times8$ threads): the
+    outer ring only loads halo cells; the inner threads load and compute.}
+  \label{fig:l03-tile-threads}
+\end{marginfigure}
+
+The design below launches a block of $(\mathit{TILE}+2r)^2$ threads for
+a tile of $\mathit{TILE}^2$ outputs: every thread loads one element of
+the tile including the halo, and only the inner threads, those whose
+element is not a halo cell, compute and store an output
+(\cref{fig:l03-tile-threads}).  The filter lives in constant memory.
+
+\begin{lstlisting}[language=C++, numbers=none]
+#define TILE 14               // outputs per block side
+#define RADIUS 1              // filter radius r
+#define BLOCK (TILE + 2 * RADIUS) // 16 per side
+
+__constant__ float filter[2 * RADIUS + 1][2 * RADIUS + 1];
+
+__global__ void stencil2D(const float *in, float *out,
+                          int width, int height) {
+  __shared__ float tile[BLOCK][BLOCK];
+  int tx = threadIdx.x, ty = threadIdx.y;
+  int x = blockIdx.x * TILE + tx - RADIUS;  // image column
+  int y = blockIdx.y * TILE + ty - RADIUS;  // image row
+
+  // 1. every thread loads one cell, zero outside the image
+  if (x >= 0 && x < width && y >= 0 && y < height)
+    tile[ty][tx] = in[y * width + x];
+  else
+    tile[ty][tx] = 0.0f;
+  __syncthreads();
+
+  // 2. inner threads compute and 3. store one output each
+  bool inner = tx >= RADIUS && tx < BLOCK - RADIUS &&
+               ty >= RADIUS && ty < BLOCK - RADIUS;
+  if (inner && x < width && y < height) {
+    float acc = 0.0f;
+    for (int i = -RADIUS; i <= RADIUS; ++i)
+      for (int j = -RADIUS; j <= RADIUS; ++j)
+        acc += tile[ty + i][tx + j]
+             * filter[i + RADIUS][j + RADIUS];
+    out[y * width + x] = acc;
+  }
+}
+\end{lstlisting}
+The host sets the filter once with \texttt{cudaMemcpyToSymbol} and
+launches with a two-dimensional configuration:
+\begin{lstlisting}[language=C++, numbers=none]
+dim3 block(BLOCK, BLOCK);   // 16 x 16 threads
+dim3 grid((width + TILE - 1) / TILE,
+          (height + TILE - 1) / TILE);
+stencil2D<<<grid, block>>>(d_in, d_out, width, height);
+\end{lstlisting}
+The index arithmetic is \cref{eq:l03-global-index} shifted by $r$: thread
+$(0,0)$ of block $(0,0)$ loads image position $(-1,-1)$, which is outside
+and becomes zero, and thread $(1,1)$ loads $(0,0)$, the first output.
+The offset of one block is \texttt{TILE}, not \texttt{BLOCK}, because
+neighbouring tiles overlap by the halo.\caution{One barrier suffices
+here: the tile is loaded once and only read afterwards.  A kernel that
+reuses the shared buffer for several tiles needs a second
+\texttt{\_\_syncthreads()} after the compute phase.}
+
+\begin{example}[A $64\times64$ image]
+  \label{ex:l03-stencil-count}
+  With $\mathit{TILE}=14$ and $r=1$ on a $64\times64$ image:
+  \begin{itemize}
+    \item grid $\lceil 64/14 \rceil \times \lceil 64/14 \rceil = 5\times5
+      = 25$ blocks of $16\times16 = 256$ threads, \num{6400} threads for
+      \num{4096} outputs; in each of the 16 interior blocks 196 threads
+      compute and 60 only load;
+    \item shared memory per block $16 \times 16 \times 4 =
+      \SI{1}{\kibi\byte}$;
+    \item tile loads: $25 \times 256 = \num{6400}$, of which
+      $72^2 = \num{5184}$ read global memory (the rest are zero fills;
+      per dimension the blocks read $15+16+16+16+9 = 72$ positions),
+      against $9 \times \num{4096} = \num{36864}$ if every thread read its
+      nine inputs from global memory, a factor of about~7; the halo
+      overhead is $256/196 = 1.31$ loads per output for an interior block
+      ($\num{5184}/\num{4096} \approx 1.27$ over the whole image).
+  \end{itemize}
+  The last block in each dimension covers columns 56--69 of a 64-wide
+  image: its threads with $x \ge 64$ load zeros and skip the store.\tip{Halo fraction $1 - (\mathit{TILE}/\mathit{BLOCK})^2$: 23\,\% of
+the threads here, 12\,\% for a $32\times32$ block.  Larger tiles waste
+fewer threads but need more shared memory and leave fewer blocks per SM
+(\cref{sec:l03-occupancy}).}
+\end{example}
+
+\Needspace{16\baselineskip}
+
+The alternative design, in which the block has exactly $\mathit{TILE}^2$
+threads and the halo is loaded by extra passes of the edge threads,
+launches no idle threads but needs more conditional code; PMPP ch.~8
+shows both.\margin{All threads of a warp read the same filter
+coefficient at once; the constant cache serves one address to the whole
+warp as a broadcast, which is what constant memory is for.}
+
+\begin{keypoint}[Lesson summary]
+  A CUDA program is host code that allocates device memory
+  (\texttt{cudaMalloc}), copies data in and out (\texttt{cudaMemcpy}) and
+  launches kernels with an execution configuration
+  \texttt{<<<blocks, threads>>>}.  A kernel runs as a grid of
+  independent thread blocks; each thread computes its global index from
+  \texttt{blockIdx}, \texttt{blockDim} and \texttt{threadIdx}, blocks
+  run in no fixed order, and the threads of one block share an on-chip
+  shared memory and synchronise with \texttt{\_\_syncthreads()} in the
+  BSP pattern load, barrier, compute, store.  The five memory spaces,
+  local, shared, global, constant and texture, follow the thread
+  hierarchy in scope.  The number of blocks resident on an SM is the
+  minimum allowed by its thread slots, registers and shared memory, and
+  occupancy is the fraction of the SM's warp slots they fill; higher
+  occupancy hides latency better but is not always faster.  A stencil
+  becomes a tiled kernel: each block loads its tile plus a halo into
+  shared memory, with zero padding at the image edge, synchronises once,
+  and computes one output per inner thread.
+\end{keypoint}
+
+\end{document}

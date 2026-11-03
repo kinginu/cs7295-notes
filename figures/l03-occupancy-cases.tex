@@ -1,0 +1,36 @@
+% Two ways to fill four SMs: (a) one block of 8 threads per SM, 32 threads
+% in total; (b) three blocks of 4 threads per SM, 48 threads in total.
+% Redraws the outline figure m3l2_occupancy (with our own numbers).
+% Usage: \input{figures/l03-occupancy-cases}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  % (a)
+  \foreach \s in {0,...,3} {
+    \draw[fill=ln-box] (\s*14,0) rectangle ++(13,22);
+    \node[anchor=south, text=ln-muted] at (\s*14+6.5,22.3) {SM \s};
+    \draw[ln-accent, thick] (\s*14+1,1) rectangle ++(11,20);
+    \foreach \t in {0,...,7} {
+      \pgfmathtruncatemacro{\r}{int(\t/2)}
+      \pgfmathtruncatemacro{\c}{mod(\t,2)}
+      \fill[ln-accent!60] (\s*14+2.5+\c*4.5,2.5+\r*4.5) rectangle ++(3.5,3.5);
+    }
+  }
+  \node[anchor=north, align=center] at (27,-1.5)
+    {(a) \iflangja{SM あたり 1 ブロック × 8 スレッド}{one block of 8 threads per SM}\\
+     $4 \times 1 \times 8 = 32$ \iflangja{スレッド}{threads}};
+  % (b)
+  \begin{scope}[shift={(64,0)}]
+    \foreach \s in {0,...,3} {
+      \draw[fill=ln-box] (\s*14,0) rectangle ++(13,22);
+      \node[anchor=south, text=ln-muted] at (\s*14+6.5,22.3) {SM \s};
+      \foreach \b in {0,1,2} {
+        \draw[ln-accent, thick] (\s*14+1,1+\b*7) rectangle ++(11,6);
+        \foreach \t in {0,...,3} {
+          \fill[ln-accent!60] (\s*14+1.8+\t*2.4,2.3+\b*7) rectangle ++(1.9,3.4);
+        }
+      }
+    }
+    \node[anchor=north, align=center] at (27,-1.5)
+      {(b) \iflangja{SM あたり 3 ブロック × 4 スレッド}{three blocks of 4 threads per SM}\\
+       $4 \times 3 \times 4 = 48$ \iflangja{スレッド}{threads}};
+  \end{scope}
+\end{tikzpicture}

@@ -1,0 +1,21 @@
+% Thread roles in one stencil block of 8 x 8 threads: the outer ring
+% (grey) only loads halo cells into shared memory; the inner 6 x 6 threads
+% (blue) load and compute one output each.
+% Original (illustrates the code of the chapter, drawn at 8 x 8 instead
+% of 16 x 16 for legibility).
+% Usage: \input{figures/l03-tile-threads}   (margin width, 50 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  \def\s{5}
+  \foreach \r in {0,...,7} \foreach \c in {0,...,7} {
+    \ifnum\r=0 \def\col{gray!40}\else\ifnum\r=7 \def\col{gray!40}\else
+      \ifnum\c=0 \def\col{gray!40}\else\ifnum\c=7 \def\col{gray!40}\else
+        \def\col{blue!30}\fi\fi\fi\fi
+    \fill[\col, draw=white, line width=0.4pt] (\c*\s,-\r*\s) rectangle ++(\s,-\s);
+  }
+  \draw[ln-accent, thick] (0,0) rectangle (8*\s,-8*\s);
+  \draw[ln-muted] (\s,-\s) rectangle (7*\s,-7*\s);
+  \node[anchor=south, text=ln-accent] at (4*\s,0.5)
+    {\iflangja{ブロック：$8\times8$ スレッド}{block: $8\times8$ threads}};
+  \node[anchor=north, text=ln-muted, align=center] at (4*\s,-8*\s-0.5)
+    {\iflangja{灰色：読み込みのみ（ハロー）\\青：読み込み＋計算（$6\times6$ 出力）}{grey: load only (halo)\\blue: load and compute ($6\times6$ outputs)}};
+\end{tikzpicture}

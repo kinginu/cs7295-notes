@@ -1,0 +1,33 @@
+% Bulk synchronous use of shared memory: eight threads of one block load
+% global memory into shared memory, wait at a barrier, compute, wait again,
+% and store.  Dashed segments are threads waiting at __syncthreads().
+% Redraws the outline figure m3l1_usage_with_thread_sync.
+% Usage: \input{figures/l03-bsp}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  % phases: load 2..32, barrier 34, compute 36..70, barrier 72, store 74..110
+  \foreach \t/\a/\b/\c in {0/26/60/100, 1/31/66/104, 2/20/58/108,
+                           3/29/69/98, 4/23/55/106, 5/32/63/102,
+                           6/18/68/109, 7/27/61/97} {
+    \pgfmathsetmacro{\y}{30-\t*4}
+    \node[anchor=east, text=ln-muted] at (1,\y) {t\t};
+    \draw[ln-accent, thick] (2,\y) -- (\a,\y);
+    \draw[ln-muted, densely dashed] (\a,\y) -- (34,\y);
+    \draw[ln-accent, thick] (36,\y) -- (\b,\y);
+    \draw[ln-muted, densely dashed] (\b,\y) -- (72,\y);
+    \draw[ln-accent, thick] (74,\y) -- (\c,\y);
+  }
+  \foreach \x in {34, 72} {
+    \draw[ln-caution, line width=1.2pt] (\x,-1) -- (\x,33);
+    \node[anchor=south, text=ln-caution] at (\x,33.3)
+      {\texttt{\_\_syncthreads()}};
+  }
+  \node[anchor=south, text=ln-muted] at (\iflangja{10}{18},33.3)
+    {\iflangja{\shortstack{グローバル\\→ 共有}}{global $\to$ shared}};
+  \node[anchor=south, text=ln-muted] at (53,33.3)
+    {\iflangja{計算}{compute}};
+  \node[anchor=south, text=ln-muted] at (\iflangja{94}{92},33.3)
+    {\iflangja{\shortstack{共有 →\\グローバル}}{shared $\to$ global}};
+  \draw[->, ln-muted] (2,-3) -- (112,-3) node[below left, text=ln-muted]
+    {\iflangja{時間}{time}};
+\end{tikzpicture}

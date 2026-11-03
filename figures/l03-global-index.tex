@@ -1,0 +1,29 @@
+% Global index of 16 elements processed by 4 blocks of 4 threads:
+% idx = blockIdx.x * blockDim.x + threadIdx.x.
+% Redraws the outline figure m3l1_data_index (and m3l1_threadidx_vectoradd).
+% Usage: \input{figures/l03-global-index}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \def\w{6}
+  \foreach \b/\col in {0/orange!45, 1/yellow!60, 2/blue!30, 3/green!45} {
+    \foreach \t in {0,...,3} {
+      \pgfmathtruncatemacro{\i}{\b*4+\t}
+      \fill[\col, draw=white, line width=0.4pt]
+        ({(\i)*\w},0) rectangle ({(\i+1)*\w},6);
+      \node at ({(\i+0.5)*\w},3) {\i};
+      \node[text=ln-muted] at ({(\i+0.5)*\w},-3) {\t};
+    }
+    \draw[ln-muted, thick] ({\b*4*\w},0) rectangle ({(\b+1)*4*\w},6);
+    \node[align=center, text=ln-muted, anchor=north]
+      at ({(\b*4+2)*\w},-5.5)
+      {\iflangja{ブロック}{block} \b\\\texttt{blockIdx.x = \b}};
+  }
+  \node[anchor=east, text=ln-muted] at (-1,3) {\texttt{idx}};
+  \node[anchor=east, text=ln-muted] at (-1,-3) {\texttt{threadIdx.x}};
+  \node[anchor=east, text=ln-muted] at (-1,9.5) {\iflangja{要素}{element}};
+  \foreach \i in {0,...,15} {
+    \draw[->, ln-accent] ({(\i+0.5)*\w},12) -- ({(\i+0.5)*\w},6.6);
+  }
+  \node[anchor=north, text=ln-accent] at (48,-15.5)
+    {\texttt{idx = blockIdx.x * blockDim.x + threadIdx.x}, \texttt{blockDim.x = 4}};
+\end{tikzpicture}

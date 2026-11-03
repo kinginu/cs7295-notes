@@ -1,0 +1,40 @@
+% CUDA memory spaces.  Left: a GPU of 16 SMs, each with its own shared
+% memory, above one global memory (with the read-only constant and texture
+% spaces).  Right: the scope of each space: thread, block, grid.
+% Redraws the outline figures m3l1_sharedmemory and m3l1_memory_space.
+% Usage: \input{figures/l03-memory-spaces}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  % ---- left: SMs with shared memory, global memory
+  \node[font=\small\sffamily\bfseries, anchor=south west] at (0,39) {GPU};
+  \foreach \i in {0,...,3} \foreach \j in {0,...,3} {
+    \draw[fill=ln-box] (\i*11,\j*7+11) rectangle ++(10,6);
+    \node[anchor=west, inner sep=1pt] at (\i*11+0.5,\j*7+14.5) {SM};
+    \fill[green!60!black!60] (\i*11+5.5,\j*7+11.8) rectangle ++(4,3.6);
+  }
+  \draw[fill=ln-accent!15] (0,2) rectangle (43,8);
+  \node at (21.5,5) {\iflangja{グローバルメモリ}{global memory}};
+  \node[anchor=north, text=ln-muted, align=center] at (21.5,1.5)
+    {\iflangja{定数・テクスチャ（読み出し専用）}{constant, texture (read-only)}};
+  \draw[green!60!black, ->] (49,36) -- (43.5,33.5);
+  \node[anchor=west, text=green!60!black, align=left] at (48,36.5)
+    {\iflangja{共有メモリ\\（SM 内，\\ブロック単位）}{shared memory\\(on chip, per block)}};
+  % ---- right: scopes
+  \begin{scope}[shift={(70,0)}]
+    \draw[rounded corners=2pt, fill=ln-box] (0,0) rectangle (48,40);
+    \node[anchor=north west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+      at (1,39.5) {\iflangja{\shortstack[l]{グリッド\\（カーネル）}}{grid (kernel)}};
+    \node[anchor=north east, align=right, text=ln-muted] at (47,39.5)
+      {\iflangja{グローバル，定数，\\テクスチャメモリ}{global, constant,\\texture memory}};
+    \draw[rounded corners=2pt, fill=white] (2,2) rectangle (46,27);
+    \node[anchor=north west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+      at (3,26.5) {\iflangja{ブロック}{block}};
+    \node[anchor=north east, align=right, text=ln-muted] at (45,26.5)
+      {\iflangja{共有メモリ}{shared memory}};
+    \draw[rounded corners=2pt, fill=ln-accent!15] (4,4) rectangle (44,16);
+    \node[anchor=north west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+      at (5,15.5) {\iflangja{スレッド}{thread}};
+    \node[anchor=north east, align=right, text=ln-muted] at (43,15.5)
+      {\iflangja{レジスタ，\\ローカルメモリ}{registers,\\local memory}};
+  \end{scope}
+\end{tikzpicture}

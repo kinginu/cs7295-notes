@@ -1,0 +1,980 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPUプログラミング入門}
+\lessoninfo{
+  video={M3，レッスン 1--4（CUDA プログラミング入門；占有率；ホストコード；CUDA によるステンシル演算）},
+  sources={\cite{harris2013sharedmem}（共有メモリ）；NVIDIA Hopper ホワイトペーパー \cite{nvidia2022hopper}（スレッドブロッククラスタ）},
+  textbook={K12 \cite{kim2012gpgpu} §1.3；A18 \cite{aamodt2018gpu} ch.~2；CPG \cite{nvidia2024cudaguide} §2 Programming Model，§3.2 CUDA Runtime，§4.2 Hardware Multithreading；BPG \cite{nvidia2026cudabestpractices} §11 Execution Configuration Optimizations；PMPP \cite{hwu2022pmpp} ch.~2--4，7--8},
+  keywords={カーネル，ホストコード，グリッド，スレッドブロック，スレッドインデックス，実行構成，共有メモリ，バリア同期，BSP，メモリ空間，占有率，Compute Capability，cudaMalloc，cudaMemcpy，ステンシル，タイル，ハロー},
+}
+
+第1章では，GPU を，ワープ単位でスレッドを実行するストリーミング・
+マルチプロセッサから成るスループット機械として導入し，第2章では，並列な
+仕事を共有メモリでは OpenMP で，分散メモリ間では MPI で表現する方法を
+示した．本章はその両方を具体的な CUDA プログラムに置き換える．まず
+カーネルと，それが実行されるスレッド，ブロック，グリッドの階層，それらの
+スレッドから見えるメモリ空間，そしてブロック内のスレッドが同期に用いる
+バリアを導入する．次に，1つのマルチプロセッサに同時にいくつのブロックが
+載るか（占有率）を問い，デバイスとの間でデータを移すホストコードを書き，
+最後に第2章のステンシルを CUDA で書き直す．そこでは MPI の境界交換が，
+共有メモリへのハローの読み込みに置き換わる．
+
+\section{CUDA プログラミング入門}
+\label{sec:l03-cuda}
+
+CUDA プログラムは2つのプロセッサで実行される2つの部分に分かれる．CPU で
+動くコードと，CPU が GPU に渡して多数のスレッドに同時に実行させる関数で
+ある．\source{M3，CUDA プログラミング入門；K12 §1.3；CPG §2.1 Kernels，
+§2.2 Thread Hierarchy，§2.3 Memory Hierarchy；PMPP ch.~2--3；A18 ch.~2．}
+
+\subsection{カーネルとホストコード}
+
+\begin{definition}[カーネル，ホストコード，デバイスコード]
+  \term[かーねる]{カーネル}[kernel]とは，GPU 上で動き，多数のスレッドに
+  よって並列に実行される関数である．\texttt{\_\_global\_\_} 修飾子で宣言
+  する．\term[ほすとこーど]{ホストコード}[host code]は，プログラムの
+  うち CPU（\term*{ホスト}，第1章）で動く部分であり，データを準備し，
+  GPU のメモリを管理し，カーネルを起動する．\term[でばいすこーど]{デバイスコード}[device code]
+  は GPU，すなわち\term[でばいす]{デバイス}[device]で動く部分であり，
+  カーネルとそれが呼び出す関数から成る．\margin{修飾子：\texttt{\_\_global\_\_}
+  はカーネル（ホストから呼ばれ，デバイスで動く），\texttt{\_\_device\_\_}
+  はデバイスコードから呼ばれる関数，\texttt{\_\_host\_\_} は通常の CPU
+  関数を表す．CPG §7.1 Function Execution Space Specifiers \cite{nvidia2024cudaguide}．}
+\end{definition}
+
+最初のカーネルは2つのベクトルを加算する．各スレッドは1つの要素を計算
+する．組み込み変数から自分のインデックス \texttt{i} を求め，そのインデックス
+が配列の範囲内にあることを確かめ，加算を1回行う．
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void vectorAdd(const float *a, const float *b,
+                          float *c, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) c[i] = a[i] + b[i];
+}
+\end{lstlisting}
+要素に対するループはない．逐次プログラムのループ（第2章のループ並列性）
+は，反復1つにつき1スレッドのスレッドの集合になった．ホストコードは
+三重山括弧の構文でカーネルを起動し，生成するスレッドの数とそのまとめ方を
+指定する．
+\begin{lstlisting}[language=C++, numbers=none]
+int threads = 256;
+int blocks = (n + threads - 1) / threads;  // ceil(n / 256)
+vectorAdd<<<blocks, threads>>>(d_a, d_b, d_c, n);
+\end{lstlisting}
+
+\begin{definition}[カーネル起動，実行構成]
+  \term[かーねるきどう]{カーネル起動}[kernel launch]とは，ホストが
+  デバイス上でカーネルを開始する文
+  \texttt{kernel<<<numBlocks, threadsPerBlock>>>(args)} である．山括弧の
+  間の部分が\term[じっこうこうせい]{実行構成}[execution configuration]，
+  すなわちスレッドブロックの数とブロック当たりのスレッド数である．生成
+  されるスレッドの総数はその積である．\tip{ブロック数は $n$ をブロック
+  サイズで割った値の切り上げであり，整数演算では
+  \texttt{(n + threads - 1) / threads} と書く．このとき最後のブロックには
+  遊んでいるスレッドができるが，範囲検査 \texttt{if (i < n)} がそれらに
+  配列の外への書き込みをさせない．}
+\end{definition}
+
+\subsection{SPMD とスレッドインデックス}
+
+カーネルのスレッドはすべて同じコードを実行する．GPU プログラミングは
+\term*{SPMD}（第1章）である．メッセージを表示するだけのカーネルを
+4スレッドで起動すると，メッセージは4回，順序不定で表示される．スレッドに
+異なる仕事をさせるには，各スレッドが自分がどれであるかを知らなければ
+ならない．
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void hello() {
+  printf("hello %d\n", threadIdx.x);
+}
+// ホスト側:
+hello<<<1, 4>>>();   // hello 0..3 を順不同で表示
+\end{lstlisting}
+
+\begin{definition}[スレッドインデックス]
+  \term[すれっどいんでっくす]{スレッドインデックス}[thread index]
+  \texttt{threadIdx} は，スレッドごとに異なる組み込み変数であり，その
+  スレッドのブロック内での位置を与える．3つの成分 \texttt{threadIdx.x}，
+  \texttt{.y}，\texttt{.z} を持つので，ブロックをスレッドの線，長方形，
+  直方体として，データの形（ベクトル，画像，ボリューム）に合わせて配置
+  できる．
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-spmd}
+  \caption{SPMD：1つのカーネル，4つのスレッド．すべてのスレッドが同じ
+    コードを実行し，\texttt{threadIdx.x} だけが互いを区別する．出力の
+    順序は何も定めていない．}
+  \label{fig:l03-spmd}
+\end{figure}
+
+インデックスを使うと，ベクトル加算の最も単純な形は
+\texttt{c[threadIdx.x] = a[threadIdx.x] + b[threadIdx.x]} となる．
+スレッド~0 が要素~0 を，スレッド~1 が要素~1 を加算し，以下同様である
+（\cref{fig:l03-spmd}）．この形は1つのブロックでしか動かない．上の
+カーネルがさらに2つの組み込み変数を用いるのはそのためである．
+
+\subsection{スレッド階層}
+
+\begin{definition}[スレッドブロック，グリッド]
+  スレッドはブロックに，ブロックはグリッドにまとめられる．
+  \term[すれっどぶろっく]{スレッドブロック}[thread block]とは，1つの
+  ストリーミング・マルチプロセッサ上でまとめて実行され，共有メモリと
+  バリアを通じて協調できるスレッドの集まりである．PTX ではこれを
+  \term[きょうちょうすれっどはいれつ]{協調スレッド配列（CTA）}[cooperative thread array (CTA)]\index{CTA|see{協調スレッド配列（CTA）}}
+  と呼ぶ．\term[ぐりっど]{グリッド}[grid]は，1回のカーネル起動の全
+  ブロックの集合である．\term[ぶろっくいんでっくす]{ブロックインデックス}[block index]
+  \texttt{blockIdx} はグリッド内でのブロックの位置を与え，組み込み変数
+  \texttt{blockDim} と \texttt{gridDim} は各次元のブロックとグリッドの
+  大きさを保持する．スレッド，ブロック，グリッドというこの3段の構造が
+  \term[すれっどかいそう]{スレッド階層}[thread hierarchy]である
+  （\cref{fig:l03-thread-hierarchy}）．\margin{上限，CPG Table~21
+  \cite{nvidia2024cudaguide}：ブロック当たり1024スレッド；ブロックは
+  $x, y \le 1024$，$z \le 64$；グリッドは $x \le 2^{31}-1$，
+  $y, z \le 65535$（CC 5.0--9.0）．}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-thread-hierarchy}
+  \caption{スレッド階層．$3\times2$ ブロックのグリッドで，各ブロックは
+    $4\times2$ スレッドから成る．スレッドは \texttt{blockIdx} と
+    \texttt{threadIdx} で指定される．}
+  \label{fig:l03-thread-hierarchy}
+\end{figure}
+
+第1章のワープがこの階層にないのは意図的である．ワープはマイクロ
+アーキテクチャ上の単位，すなわちハードウェアがまとめて発行する，
+ブロック内の連続した32スレッドの集まりであり，初期の CUDA のプログラミング
+モデルはそれを隠していた．\margin{後の CUDA はワープレベルのプリミティブ
+（シャッフル，ボート，第5章）を通じてワープを露出している．ハードウェアは
+今でもすべてのブロックを \texttt{warpSize} = 32 個の連続したスレッドの
+ワープに切り分ける（第4章）．}プログラマが考える単位はブロックであり，
+グリッドは起動の単位である．
+
+\paragraph{グローバルインデックス．}複数ブロックのグリッドのすべての
+スレッドに別々の要素を与えるには，スレッドインデックスをブロック
+インデックスと組み合わせる．1次元のグリッドとブロックでは
+\begin{equation}
+  \texttt{idx} = \texttt{blockIdx.x} \times \texttt{blockDim.x} +
+  \texttt{threadIdx.x}.
+  \label{eq:l03-global-index}
+\end{equation}
+\cref{fig:l03-global-index}は，16個の要素を4スレッドずつの4ブロックで
+処理する様子を示す．ブロック~2 は要素8--11を持ち，そのスレッド~1 は
+要素~9 を受け持つ．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-global-index}
+  \caption{4スレッドずつの4ブロックにわたる16要素のグローバルインデックス．
+    ブロックインデックスが4個の組を選び，スレッドインデックスがその中の
+    要素を選ぶ．}
+  \label{fig:l03-global-index}
+\end{figure}
+
+\begin{example}[インデックスの計算]
+  \label{ex:l03-index}
+  1000個の float の配列をブロック当たり128スレッドで処理する．
+  \begin{itemize}
+    \item ブロック数：$\lceil 1000/128 \rceil = 8$ で，
+      $8 \times 128 = 1024$ スレッドが生成される．最後の24スレッドは範囲
+      検査に失敗し，何もしない．
+    \item \texttt{blockIdx.x = 5}，\texttt{threadIdx.x = 77} のスレッドは
+      要素 $5 \times 128 + 77 = 717$ を処理する．
+    \item 要素900はブロック $\lfloor 900/128 \rfloor = 7$ の
+      スレッド $900 - 7 \times 128 = 4$ が処理する．
+  \end{itemize}
+  幅 $W$ の2次元画像では，同じ計算を次元ごとに行う．すなわち\\ % JA: line breaks for the long \texttt
+  \hspace*{1em}\texttt{x = blockIdx.x * blockDim.x + threadIdx.x}，\\
+  \hspace*{1em}\texttt{y = blockIdx.y * blockDim.y + threadIdx.y}\\
+  とし，要素は \texttt{img[y * W + x]} である．\margin{ブロック内では，CPG §2.2 は
+  大きさ $(D_x, D_y)$ の2次元ブロックのスレッドを $x + y D_x$ と番号付け
+  する．連続する \texttt{threadIdx.x} の値は連続するスレッドであり，
+  したがって同じワープに入る．\cite{nvidia2024cudaguide}．}
+\end{example}
+
+\subsection{実行順序}
+
+このモデルには，スレッドやブロックの順序を定めるものは何もない．自分の
+インデックスを表示する4つのスレッドは 0，1，2，3 と表示することも，
+3，2，1，0 や 0，2，3，1 と表示することもある．\cref{fig:l03-block-order}の
+6個のブロックは，インデックス順に1つずつ実行されることも，他の任意の順に
+1つずつ実行されることも，いくつか同時に実行されることもある．正しい
+カーネルは，これらのどの順序の下でも同じ結果を出す．\margin{CPG §2.2：
+スレッドブロックは\enquote{独立に実行されることが求められる．任意の順序で，
+並列にも逐次にも実行できなければならない}\cite{nvidia2024cudaguide}．
+この独立性があるから，カーネルは SM が2個の GPU でも132個の GPU でも
+変更なしに動く．}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-block-order}
+  \caption{6個のブロックから成るグリッドの3通りの正当な実行：インデックス
+    順，任意の順，3個ずつ同時．どれを選ぶかはハードウェアが決め，その
+    選択は実行ごとに異なりうる．}
+  \label{fig:l03-block-order}
+\end{figure}
+
+本節で用いる最も単純なモデルは，各ブロックが1つのストリーミング・
+マルチプロセッサで動き，ブロックどうしは互いに独立だというものである．
+\cref{sec:l03-occupancy}はその前半を精密にする．SM は通常，同時に複数の
+ブロックを保持する．
+
+\subsection{共有メモリ}
+
+グリッドのブロックは互いに独立なので，データはブロック間で分割しなければ
+ならず，ブロック内のスレッドには自分たちの仕事を結合する場所が必要になる．
+
+\begin{definition}[共有メモリ]
+  マルチプロセッサの\term[きょうゆうめもり]{共有メモリ}[shared memory]
+  とは，チップ上の小さく高速なメモリであり，1つのブロックのすべての
+  スレッドから見え，他のブロックからは見えない．これは\term[すくらっちぱっどめもり]{スクラッチパッドメモリ}[scratchpad memory]
+  である．つまりソフトウェアが管理し，ハードウェアが満たすキャッシュとは
+  異なり，カーネル自身がデータをそこへコピーし，そこから取り出す．変数は
+  \texttt{\_\_shared\_\_} 修飾子で共有メモリに置かれ，ブロックが存在する
+  間だけ存続する．\margin{Tesla と Fermi の GPU のレイテンシ，K12
+  Table~1.4 \cite{kim2012gpgpu}：共有メモリ 4--32サイクル，グローバル
+  メモリ数百サイクル．\cite{harris2013sharedmem} は，共有メモリの
+  レイテンシをキャッシュされないグローバルメモリのおよそ $100\times$ 低い
+  としている．}
+\end{definition}
+
+次のカーネルでは，各スレッドが1つの和を共有メモリに書き，次に別の
+スレッドが書いた和を読む．
+\begin{lstlisting}[language=C++, numbers=none]
+__global__ void addReverse(const int *a, const int *b,
+                           int *c) {
+  __shared__ int s[256];          // 256スレッドの1ブロック
+  int i = threadIdx.x;
+  s[i] = a[i] + b[i];
+  __syncthreads();                // 全書き込みの完了
+  c[i] = s[255 - i];              // 別のスレッドの和
+}
+\end{lstlisting}
+読み出し \texttt{s[255 - i]} が正しいのは，スレッド $255-i$ がすでに
+その値を格納している場合だけである．スレッドの実行順序は決まっていない
+ので，カーネルは全スレッドを待たなければならない．\caution{第2章は
+\enquote{共有メモリ}を CPU の意味，すなわち全スレッドに共通の1つの
+アドレス空間の意味で用いた．CUDA の共有メモリはブロックごとでチップ上に
+あり，あるブロックが書き込んだ値は他のどのブロックからも見えず，ブロックが
+終わると消える．}
+
+\subsection{同期}
+
+\begin{definition}[バリア同期]
+  \texttt{\_\_syncthreads()} は，1つのブロックのスレッドにわたる
+  \term[ばりあどうき]{バリア同期}[barrier synchronization]を行う．
+  ブロックの各スレッドは，全スレッドがその呼び出しに到達するまでそこで
+  待ち，その後全スレッドが先へ進む．また，バリアより前に行われた共有
+  メモリとグローバルメモリへの書き込みが，バリアより後でブロックの
+  スレッドから見えることも保証する．\caution{ブロックのすべての
+  スレッドが同じ \texttt{\_\_syncthreads()} に到達しなければならない．
+  一部のスレッドだけが入る \texttt{if} の中のバリアは未定義であり（実際
+  にはハングする），バリアは条件の外に置く．}
+\end{definition}
+
+{\setlength{\emergencystretch}{2em}% JA: long \texttt line
+バリアは1つのブロックにしか及ばない．異なるブロックのスレッドは
+\texttt{\_\_syncthreads()} で同期できない．ある段階を全ブロックが
+終えてからでないと次の段階をどのブロックも始められない計算では，段階を
+別々のカーネルとして書く．カーネル起動は，その全ブロックが終わって
+はじめて完了するからである．\margin{CUDA~9 以降，cooperative groups と
+協調起動によるグリッド全体のバリアがある．ただし全ブロックが同時に常駐
+している必要がある（第5章）．}\par}
+
+\begin{definition}[バルク同期並列]
+  共有メモリを使うカーネルの通常の形は，バリアで区切られた3つの段階で
+  ある（\cref{fig:l03-bsp}）．ブロックのデータをグローバルメモリから共有
+  メモリへ読み込む；\texttt{\_\_syncthreads()}；共有のコピーに対して
+  計算する；\texttt{\_\_syncthreads()}；結果をグローバルメモリへ書き戻す．
+  並列段階とバリアを交互に繰り返すこの形が
+  \term[ばるくどうきへいれつ]{バルク同期並列（BSP）}[bulk synchronous parallel (BSP)]\index{BSP|see{バルク同期並列（BSP）}}
+  パターンである．境界交換と計算を交互に行う第2章の MPI ステンシルは，
+  プロセス間にわたる同じパターンである．
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-bsp}
+  \caption{1つのブロックの8スレッドによる，共有メモリのバルク同期的な
+    使用．スレッドは各段階を異なる時刻に終え（実線），最も遅いスレッドが
+    到着するまでバリアで待つ（破線）．}
+  \label{fig:l03-bsp}
+\end{figure}
+
+2つ目のバリアが必要になるのは，\cref{fig:l03-bsp}のように計算段階が結果を
+共有メモリに書き，格納段階でスレッドが他のスレッドの生成した値をコピー
+する場合，あるいはバッファに別のタイルを読み込み直す場合である（次の
+読み込みが，遅いスレッドがまだ読んでいる値を上書きしてしまう）．計算段階が
+各スレッドの結果を直接グローバルメモリに書くカーネルでは省略できる．
+
+\subsection{複数のカーネル}
+
+互いに異なる複数のタスクを持つプログラムは複数のカーネルを使い，それぞれ
+が独自の実行構成を持つ．逐次的な段階は1ブロック1スレッドのカーネルで
+あり，データ並列な段階は多数のスレッドのカーネルである．
+\begin{lstlisting}[language=C++, numbers=none]
+sortKernel<<<1, 1>>>(d_data, n);            // 逐次段階
+addKernel<<<blocks, threads>>>(d_data, d_out, n);
+storeKernel<<<1, 1>>>(d_out, n);            // 逐次段階
+\end{lstlisting}
+同じホストスレッドから起動されたカーネルは，既定では1つずつ順に実行
+されるので，2つ目は1つ目の結果を見る．\margin{カーネルを並行に実行
+したり，カーネルとコピーを重ねたりするには CUDA ストリームが必要である
+（第5章）．1スレッドのカーネルは1つの SM の1レーンしか使わず，GPU の
+残りを遊ばせる．データがすでにデバイス上にあるのでなければ，逐次的な
+段階はホストで行うべきである．}
+
+\subsection{メモリ空間}
+
+スレッドは5つのメモリ空間をアドレス指定できる．それらは，誰から見えるか
+と，どこにあるかで区別される（\cref{tab:l03-memory-spaces}，
+\cref{fig:l03-memory-spaces}）．
+
+\begin{definition}[ローカル，グローバル，コンスタント，テクスチャメモリ]
+  スレッドの\term[ろーかるめもり]{ローカルメモリ}[local memory]はその
+  スレッド専用であり，レジスタに収まらないスレッドの変数を保持する．共有
+  メモリは1つのブロック専用である．\term[ぐろーばるめもり]{グローバルメモリ}[global memory]
+  はカーネルの全ブロックの全スレッドから見え，カーネル起動をまたいで
+  存続する．ホストが入力を置き，出力を読む場所である．
+  \term[こんすたんとめもり]{コンスタントメモリ}[constant memory]は
+  小さな読み出し専用の空間で，全スレッドから見え，キャッシュされる．
+  物理定数やフィルタなど，カーネルの実行中に変わらない値のためのもので
+  ある．\term[てくすちゃめもり]{テクスチャメモリ}[texture memory]は，
+  2次元の局所性に最適化されたキャッシュを持つ読み出し専用の空間である．
+  後の2つはグラフィックスから受け継いだもので，そこではシーンの定数と
+  テクスチャ画像を保持する．汎用のコードで必要になることはまれで
+  ある．\margin{サイズ（CPG Table~21 \cite{nvidia2024cudaguide}）：
+  コンスタントメモリはデバイス当たり \SI{64}{\kibi\byte} で，SM 当たり
+  \SI{8}{\kibi\byte} のキャッシュを持つ．ローカルメモリはスレッド当たり
+  最大 \SI{512}{\kibi\byte}．どちらもデバイスメモリ上にあり，ローカル
+  メモリは L1 キャッシュにヒットしない限りグローバルメモリと同じく遅い．}
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \caption{CUDA のメモリ空間：誰から見えるか，どれだけ存続するか，どこに
+    あるか．}
+  \label{tab:l03-memory-spaces}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{19mm}
+                  >{\raggedright\arraybackslash}p{24mm}
+                  >{\raggedright\arraybackslash}p{25mm}
+                  >{\raggedright\arraybackslash}p{40mm}}
+    \toprule
+    空間 & 可視範囲 & 存続期間 & 場所，備考 \\
+    \midrule
+    レジスタ & 1スレッド & スレッド & チップ上，コンパイラが割り当てる \\
+    ローカル & 1スレッド & スレッド & デバイスメモリ（キャッシュあり）；退避された変数 \\
+    共有 & 1ブロック & ブロック & チップ上，\texttt{\_\_shared\_\_} \\
+    \addlinespace
+    グローバル & 全カーネルの\newline 全ブロック & アプリケーション & デバイスメモリ；\texttt{cudaMalloc} \\
+    コンスタント & 全ブロック & アプリケーション & デバイスメモリ，読み出し専用，キャッシュあり；\texttt{\_\_constant\_\_} \\
+    テクスチャ & 全ブロック & アプリケーション & デバイスメモリ，読み出し専用，2次元キャッシュ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-memory-spaces}
+  \caption{左：各 SM は自分の共有メモリを持ち，1つのグローバルメモリが
+    そのすべてに仕える．右：各空間の可視範囲はスレッド階層に従う．}
+  \label{fig:l03-memory-spaces}
+\end{figure}
+
+この階層は情報の共有のしかたを制限する．ブロックの共有メモリ内のデータは
+その SM にとどまり，2つのブロックはグローバルメモリを通じてしか通信
+できず，一般にはカーネルの境界をまたぐ．Hopper 以降，\term[すれっどぶろっくくらすた]{スレッドブロッククラスタ}[thread block cluster]
+が，まとめてスケジュールされ互いの共有メモリを読み書きできる複数の
+ブロックをまとめる．ブロックとグリッドの間の新しい階層である．\sidenote{スレッド
+ブロッククラスタ（Compute Capability 9.0）：クラスタのブロックは1つの
+GPU プロセッシングクラスタ上で同時にスケジュールされることが保証され，
+互いの共有メモリに\emph{分散共有メモリ}としてアクセスする．クラスタ
+当たり8ブロックまでが移植可能なサイズで，H100 は16ブロックまでを
+サポートする（CPG §2.2.1 \cite{nvidia2024cudaguide}；
+\cite{nvidia2022hopper}）．第5章で再び取り上げる．}
+
+\begin{keypoint}
+  CUDA プログラムはホストプログラムとカーネルから成る．カーネルはスレッド
+  のブロックのグリッドとして実行される．各スレッドは \texttt{blockIdx}，
+  \texttt{blockDim}，\texttt{threadIdx} から自分のデータを見つけ，
+  ブロックは決まった順序なしに実行されるので独立でなければならず，1つの
+  ブロックのスレッドはチップ上の共有メモリを共有し，
+  \texttt{\_\_syncthreads()} で同期する．
+\end{keypoint}
+
+\section{占有率}
+\label{sec:l03-occupancy}
+
+ストリーミング・マルチプロセッサは通常，同時に複数のブロックを実行する．
+いくつ実行するか，そしてそれがなぜ重要かが占有率の問題で
+ある．\source{M3，占有率；BPG §11.1 Occupancy，§11.3 Thread and
+Block Heuristics，§11.4 Effects of Shared Memory；CPG §4.2 Hardware
+Multithreading；PMPP ch.~4．}
+
+\subsection{3つの資源}
+
+\begin{definition}[資源制約]
+  SM に常駐する各ブロックは，その生存期間中ずっと，SM の3つの資源の
+  一部を占有する．スレッドスロットの数，レジスタの数，共有メモリの量で
+  ある．それぞれが\term[しげんせいやく]{資源制約}[resource constraint]
+  であり，同時に常駐できるブロック数は，3つのどれか（および SM 当たりの
+  ブロック数の固定上限）が許す最小の数である．ここでいう
+  \term[れじすた]{レジスタ}[register]は SM のレジスタファイルの32ビット
+  エントリ1つであり，スレッドが必要とするレジスタ数はコンパイラが決める．
+  多数のレジスタを必要とするカーネルは\term[れじすたあつりょく]{レジスタ圧力}[register pressure]
+  が高いという．\margin{CC 7.0，8.0，9.0 の SM：
+  \num{65536} レジスタ（\SI{256}{\kibi\byte}），2048スレッドスロット
+  （64ワープ），32ブロック，\SIrange{96}{228}{\kibi\byte} の共有メモリ．
+  他の CC はスロットとブロックが少ない（\cref{tab:l03-cc-limits}）．}
+\end{definition}
+
+各量を誰が決めるかを\cref{tab:l03-who-sets}にまとめる．ブロック当たりの
+スレッド数は起動時のプログラマの選択である．スレッド当たりのレジスタ数は
+コンパイラが決める．ISA がアーキテクチャレジスタの数を固定する CPU
+（多くの RISC ISA で32個）と異なり，GPU ではコンパイラが上限までカーネルの
+必要なだけレジスタを割り当て，ハードウェアはレジスタファイルが許すだけの
+スレッドを載せる．ブロック当たりの共有メモリは宣言から決まる．
+\texttt{\_\_shared\_\_ int s[1000]} は $4 \times 1000 = 4000$ バイトで
+ある．
+
+\begin{table}[tb]
+  \centering
+  \small
+  \caption{ブロック当たりの資源要求を誰が決め，どこで読み取るか．}
+  \label{tab:l03-who-sets}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{28mm}
+                  >{\raggedright\arraybackslash}p{28mm}
+                  >{\raggedright\arraybackslash}p{46mm}}
+    \toprule
+    量 & 決める者 & 確認できる場所 \\
+    \midrule
+    ブロック当たりの\newline スレッド数 & ホスト，起動時 & 実行構成 \\
+    スレッド当たりの\newline レジスタ数 & コンパイラ & \texttt{nvcc --ptxas-options=-v}；\texttt{\_\_launch\_bounds\_\_} または \texttt{-maxrregcount} で上限を設定 \\
+    ブロック当たりの\newline 共有メモリ & \texttt{\_\_shared\_\_} 宣言（と任意の第3起動パラメータ） & 同じコンパイラ報告 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{example}[SM 当たりのブロック数]
+  \label{ex:l03-blocks-per-sm}
+  あるマルチプロセッサは1024スレッドスロット，\num{32768} レジスタ，
+  \SI{48}{\kibi\byte} の共有メモリを持つ．カーネルはブロック当たり
+  64スレッドで起動され，コンパイラはスレッド当たり40レジスタと報告し，
+  各ブロックは \SI{6}{\kibi\byte} の共有メモリを宣言する．
+  \begin{description}
+    \item[スレッド] $1024 / 64 = 16$ ブロック；
+    \item[レジスタ] $\num{32768} / (40 \times 64) = 12.8$，よって12
+      ブロック；
+    \item[共有メモリ] $48 / 6 = 8$ ブロック．
+  \end{description}
+  SM は $\min(16, 12, 8) = 8$ ブロックを保持でき，共有メモリが制約と
+  なる．ブロック当たりの共有メモリを半分にすると上限は12に上がり，そこで
+  レジスタが制約となる．レジスタ数が効いてくるのはそのときになって
+  からである．
+\end{example}
+
+\caution{原典の例はレジスタファイルを\enquote{64キロバイト}としている
+が，意味しているのは 64\,K $=$ \num{65536} 個のレジスタであり，1個
+4バイトで \SI{256}{\kibi\byte} になる．占有率の計算におけるレジスタ数は
+常に32ビットレジスタの個数であり，バイト数ではない．}
+
+\subsection{占有率が重要な理由}
+
+常駐ブロックが多いほど常駐ワープが多くなり，ワープが多いほど，他の
+ワープがメモリを待つ間に SM が選べる独立な命令が増える．
+\cref{fig:l03-occupancy-cases}は4つの SM を満たす2つの方法を比べる．
+8スレッドのブロック1つずつ（32スレッド）か，4スレッドのブロック3つずつ
+（48スレッド）である．後者は各ブロックが小さいにもかかわらず実行中の
+スレッドが多く，したがって通常は SM のスループットをより多く引き
+出す．\margin{ワープが多いとなぜメモリレイテンシを隠せるかは第4章
+（マルチスレッドアーキテクチャ）の主題である．第7章は，ワープが多すぎて
+L1 キャッシュがスラッシングを起こすという例外を示す．}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-occupancy-cases}
+  \caption{4つの SM を満たす．(a)~SM 当たり8スレッドのブロック1つ；
+    (b)~SM 当たり4スレッドのブロック3つ．小さいブロックのほうが，
+    32スレッドではなく48スレッドを常駐させる．}
+  \label{fig:l03-occupancy-cases}
+\end{figure}
+
+\begin{definition}[占有率，アクティブワープ]
+  \term[あくてぃぶわーぷ]{アクティブワープ}[active warp]とは，
+  マルチプロセッサに常駐し，レジスタと共有メモリを割り当てられており，
+  したがって次の命令の準備ができればいつでも発行の候補となるワープで
+  ある．現在のサイクルで準備ができているワープは\emph{発行可能}（eligible）
+  と呼ばれる．マルチプロセッサ上のカーネルの\term[せんゆうりつ]{占有率}[occupancy]
+  とは，アクティブワープの数と，マルチプロセッサが保持できるワープの
+  最大数との比である \cite[§11.1]{nvidia2026cudabestpractices}．
+  ブロック当たり $T$ スレッド，スレッド当たり $R$ レジスタ，ブロック
+  当たり $S$ バイトの共有メモリで，\cref{tab:l03-cc-limits}の上限を持つ
+  SM 上では
+  \begin{align}
+    \text{blocks/SM} &= \min\!\left(
+      \left\lfloor \frac{\text{Threads/SM}}{T} \right\rfloor,\;
+      \text{Blocks/SM},\;
+      \left\lfloor \frac{\text{Regs/SM}}{R\,T} \right\rfloor,\;
+      \left\lfloor \frac{\text{Smem/SM}}{S} \right\rfloor \right),
+    \label{eq:l03-blocks}\\
+    \text{occupancy} &= \frac{\text{blocks/SM} \times \lceil T/32 \rceil}
+                             {\text{Warps/SM}}.
+    \label{eq:l03-occupancy}
+  \end{align}
+  \margin{\cref{eq:l03-occupancy}が与えるのは\emph{理論}占有率である．
+  Nsight Compute が実行時に測定する\emph{達成}占有率は，ブロックの終了
+  時刻がばらつく場合や，グリッドが小さすぎてすべての SM を満たせない場合
+  に，これより低くなる．}
+\end{definition}
+
+\begin{table}[tb]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \caption{Compute Capability ごとの SM 当たりの上限（CPG Table~21
+    \cite{nvidia2024cudaguide}；K = 1024，KiB は2進）．例の GPU は代表例
+    であり，すべてではない．}
+  \label{tab:l03-cc-limits}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{46mm}rrrrrr}
+    \toprule
+    Compute Capability & 7.0 & 7.5 & 8.0 & 8.6 & 8.9 & 9.0 \\
+    （例の GPU） & V100 & T4 & A100 & RTX 3090 & L40 & H100 \\
+    \midrule
+    SM 当たり最大スレッド数 & 2048 & 1024 & 2048 & 1536 & 1536 & 2048 \\
+    SM 当たり最大ワープ数 & 64 & 32 & 64 & 48 & 48 & 64 \\
+    SM 当たり最大ブロック数 & 32 & 16 & 32 & 16 & 24 & 32 \\
+    SM 当たり32ビットレジスタ数 & 64\,K & 64\,K & 64\,K & 64\,K & 64\,K & 64\,K \\
+    スレッド当たり最大レジスタ数 & 255 & 255 & 255 & 255 & 255 & 255 \\
+    SM 当たり最大\newline 共有メモリ（KiB） & 96 & 64 & 164 & 100 & 100 & 228 \\
+    ブロック当たり最大\newline 共有メモリ（KiB） & 96 & 64 & 163 & 99 & 99 & 227 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{definition}[Compute Capability]
+  \term[こんぴゅーとけいぱびりてぃ]{Compute Capability}[compute capability]
+  は，GPU 世代の機能と上限を表す NVIDIA のバージョン番号であり，
+  \emph{major.minor} と書く．7.x は Volta と Turing，8.x は Ampere と
+  Ada，9.0 は Hopper である．\cref{tab:l03-cc-limits}の上限は
+  Compute Capability ごとに決まっており，占有率の計算で対象を明示
+  しなければならないのはそのためである．x.0 の製品（V100，A100，H100）は
+  64ワープを保持するが，CC 7.5，8.6，8.9（例えば T4，RTX 3090，L40）は
+  32または48ワープしか保持しない．\margin{CC 8.x と 9.0 では，共有
+  メモリは統合された L1／共有メモリの配列から切り出され，その配分は
+  カーネルごとに設定できる（CPG，Compute Capability 8.x
+  \cite{nvidia2024cudaguide}）．表は最大値を示す．ワープを消費する
+  ワープスケジューラは第4章で扱う．}
+\end{definition}
+
+\Needspace{14\baselineskip}
+\begin{example}[A100 での占有率]
+  \label{ex:l03-occupancy-a100}
+  Compute Capability 8.0 の SM 上で，カーネルをブロック当たり
+  $T = 256$ スレッド（8ワープ）で起動し，スレッド当たり $R = 64$
+  レジスタ，ブロック当たり $S = \SI{48}{\kibi\byte}$ の共有メモリを使う．
+  \begin{description}
+    \item[スレッド] $2048 / 256 = 8$ ブロック；
+    \item[ブロック] 32；
+    \item[レジスタ] $\num{65536} / (64 \times 256) = 4$ ブロック；
+    \item[共有メモリ] $\lfloor 164 / 48 \rfloor = 3$ ブロック．
+  \end{description}
+  3ブロック，すなわち $3 \times 8 = 24$ ワープが常駐し，占有率は
+  $24 / 64 = \SI{37.5}{\percent}$ である．共有メモリが制約であり，
+  ブロック当たり \SI{32}{\kibi\byte} に減らせば4ブロック（そこで
+  レジスタが制約となる），$32/64 = \SI{50}{\percent}$ になる．完全な
+  占有率（8ブロック）には，スレッド当たり最大32レジスタ，ブロック当たり
+  最大約 \SI{19}{\kibi\byte} の共有メモリ（$164/8 = 20.5$ から
+  \SI{1}{\kibi\byte} の予約分を引く）が必要である．\margin{粒度
+  （\cref{eq:l03-blocks}では無視している）：レジスタはワープ単位で256個
+  ずつ割り当てられ，CC 8.x と 9.0 では CUDA がブロック当たり
+  \SI{1}{\kibi\byte} の共有メモリを予約する（$\lfloor 164/49 \rfloor$
+  もやはり3）．BPG §11.1.1；CPG，Compute Capability 8.x
+  \cite{nvidia2026cudabestpractices,nvidia2024cudaguide}．}
+\end{example}
+
+実際には，この計算は Nsight Compute の占有率計算機か，ランタイムの
+占有率 API で行う．
+\begin{lstlisting}[language=C++, numbers=none]
+cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    &blocks, kernel, T, dynSmem);
+\end{lstlisting}
+ここで \texttt{dynSmem} はブロック当たりの動的共有メモリである（静的な
+\texttt{\_\_shared\_\_} の使用量はカーネル自身から取られる）．どちらの
+ツールも，対象デバイスの正確な粒度で\cref{eq:l03-blocks}を適用する
+（BPG §11.1.1）．
+
+占有率が高いほど常に速いわけではない．ある点を超えるとワープを増やしても
+何も加わらず，命令スループットや自身のメモリ帯域で制限されるカーネルは
+それで何も得ない．しかし占有率が低いと，SM がメモリレイテンシを隠す能力は
+必ず弱まる \cite[§11.1]{nvidia2026cudabestpractices}．\tip{BPG §11.3 による
+出発点：ブロック当たりのスレッド数はワープサイズの倍数とする；ブロック当たり
+少なくとも64，それも SM 当たり複数ブロックがある場合に限る；最初に試すのは
+128--256；レイテンシが重要なら，大きな1ブロックより小さな複数ブロック．}
+
+\begin{keypoint}
+  SM 当たりのブロック数 $=$ スレッド，レジスタ，共有メモリ（とブロック数の
+  上限）にわたる最小値；占有率 $=$ 常駐ワープ数を最大数で割ったもの．
+  ブロック当たりのスレッド数は起動時に，スレッド当たりのレジスタ数は
+  コンパイラが，共有メモリは宣言が，上限は Compute Capability が決める．
+\end{keypoint}
+
+\section{ホストコード}
+\label{sec:l03-host}
+
+共有メモリはブロック内で，グローバルメモリは全ブロックから見えるが，
+どちらも CPU からは見えない．グローバルメモリは I/O インタフェースの
+向こうにあるデバイス自身のメモリにあり，ホストは明示的な呼び出しによって
+それを管理する．\source{M3，ホストコード；CPG §3.2.2 Device Memory；
+K12 §1.3.6．}
+
+\begin{definition}[ホストメモリ，デバイスメモリ]
+  \term[ほすとめもり]{ホストメモリ}[host memory]は CPU の主記憶であり，
+  ホストプログラムの変数が置かれる．\term[でばいすめもり]{デバイスメモリ}[device memory]
+  は GPU 自身のメモリ（HBM または GDDR）であり，グローバル，コンスタント，
+  テクスチャ，ローカルの各メモリがそこに置かれる．両者は I/O インタフェース
+  で結ばれた別々のアドレス空間である（\cref{fig:l03-host-device}）．
+  一方へのポインタは他方では意味を持たず，データは明示的なコピーによって
+  のみ行き来する．\margin{インタフェースがボトルネックである．H100：HBM3
+  は約 \SI{3}{\tera\byte\per\second}（暫定値）と報告されている
+  \cite{nvidia2022hopper}．これに対し PCIe Gen~5 x16 は片方向
+  \SI{64}{\giga\byte\per\second} で，約 $47\times$ の差がある．A100
+  \SI{40}{\gibi\byte}：HBM2 は \SI{1555}{\giga\byte\per\second}
+  \cite{nvidia2020ampere} で，Gen~4 の片方向約
+  \SI{32}{\giga\byte\per\second} の約 $49\times$．}
+\end{definition}
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-host-device}
+  \caption{ホストメモリとデバイスメモリ．\texttt{cudaMalloc} はグローバル
+    メモリを確保し，\texttt{cudaMemcpy} は I/O インタフェースを越えて
+    どちらの向きにもデータを移す．}
+  \label{fig:l03-host-device}
+\end{figure}
+
+デバイスメモリの確保，そこへの転送とそこからの転送，解放は，CUDA ランタイム
+の3つの呼び出しで行う．
+\begin{lstlisting}[language=C++, numbers=none]
+cudaMalloc((void **)&ptr, size);   // size バイトを確保
+cudaMemcpy(dst, src, size, dir);   // size バイトをコピー
+cudaFree(ptr);                     // 解放
+\end{lstlisting}
+
+\begin{definition}[メモリ確保と転送]
+  デバイス上の\term[めもりかくほ]{メモリ確保}[memory allocation]は
+  \texttt{cudaMalloc} が行う．これはグローバルメモリを \texttt{size}
+  バイト確保し，デバイスポインタを \texttt{ptr} に返す．\texttt{cudaFree}
+  はそれを解放する．\texttt{cudaMemcpy} は \texttt{size} バイトを
+  \texttt{dir} の向きにコピーする．向きはホストからデバイス
+  （\texttt{cudaMemcpyHostToDevice}），デバイスからホスト
+  （\texttt{cudaMemcpyDeviceToHost}），またはデバイスからデバイスである．
+  ランタイムの呼び出しはすべて \texttt{cudaError\_t} を返し，
+  \texttt{cudaSuccess} は成功を意味する．\texttt{cudaMemcpy} はホストに
+  対して同期的である．デバイスからホストへのコピーはデータが届いた時点で
+  戻り，カーネル起動の後に発行されたコピーはまずカーネルの終了を
+  待つ．\margin{ピン留めされたホストメモリからの非同期コピーと，
+  カーネルとの重ね合わせ：第5章．}
+\end{definition}
+
+ベクトル加算の完全なプログラム，すなわちカーネルとホストコードは次の
+とおりである（カーネルは\cref{sec:l03-cuda}のもの）．確保，コピーイン，
+コピーアウトという3つのメモリ管理の手順が起動を取り囲み，ホストは起動の
+エラーも検査する．\caution{カーネル起動はすぐにホストへ戻り，それ自身では
+エラーを報告しない．\texttt{cudaGetLastError()} は起動時の構成エラー
+（ブロック当たりのスレッドが多すぎる，SM に対して資源が多すぎる）を
+捕らえる．カーネル内部のエラーは，結果を読む \texttt{cudaMemcpy} の
+ような次の同期的な呼び出しで表面化する．実際のコードでは両方の戻り値を
+検査する．}
+\begin{lstlisting}[language=C++, numbers=none]
+#include <cstdio>
+#include <cstdlib>
+#include <cuda_runtime.h>
+
+__global__ void vectorAdd(const float *a, const float *b,
+                          float *c, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) c[i] = a[i] + b[i];
+}
+
+int main() {
+  const int n = 1 << 20;                 // 1,048,576
+  const size_t size = n * sizeof(float);
+  float *h_a = (float *)malloc(size);
+  float *h_b = (float *)malloc(size);
+  float *h_c = (float *)malloc(size);
+  for (int i = 0; i < n; ++i) {
+    h_a[i] = i; h_b[i] = 2.0f * i;
+  }
+
+  float *d_a, *d_b, *d_c;                // デバイスポインタ
+  cudaMalloc((void **)&d_a, size);
+  cudaMalloc((void **)&d_b, size);
+  cudaMalloc((void **)&d_c, size);
+  cudaMemcpy(d_a, h_a, size, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b, h_b, size, cudaMemcpyHostToDevice);
+
+  int threads = 256;
+  int blocks = (n + threads - 1) / threads;   // 4096
+  vectorAdd<<<blocks, threads>>>(d_a, d_b, d_c, n);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+    printf("launch: %s\n", cudaGetErrorString(err));
+
+  cudaMemcpy(h_c, d_c, size, cudaMemcpyDeviceToHost);
+  printf("%f\n", h_c[1000]);             // 3000.000000
+
+  cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+  free(h_a); free(h_b); free(h_c);
+  return 0;
+}
+\end{lstlisting}
+
+\begin{example}[コピーのコスト]
+  \label{ex:l03-copy-cost}
+  $n = 2^{20}$ 個の float では各配列が \SI{4}{\mebi\byte} であり，
+  \SI{8}{\mebi\byte} がデバイスへ送られ \SI{4}{\mebi\byte} が戻ってくる．
+  $2^{20}$ 回の加算のために合計 \SI{12}{\mebi\byte} である．PCIe で持続
+  \SI{25}{\giga\byte\per\second} とするとコピーには約
+  \SI{0.5}{\milli\second} かかる．カーネル自体は，デバイスメモリから
+  \SI{8}{\mebi\byte} を読み \SI{4}{\mebi\byte} を書くのに
+  \SI{1.5}{\tera\byte\per\second} で \SI{10}{\micro\second} もかからない．
+  転送が約60倍支配的である．ベクトル加算だけでは GPU へ移す価値はなく，
+  データはできるだけ多くのカーネルにわたってデバイス上にとどめるべきで
+  ある．
+\end{example}
+
+\begin{definition}[ユニファイドメモリ]
+  \term[ゆにふぁいどめもり]{ユニファイドメモリ}[unified memory]
+  （\texttt{cudaMallocManaged}）では，1つのポインタがホストからもデバイス
+  からも使える．ランタイムと GPU のメモリ管理がページを要求に応じて
+  ホストメモリとデバイスメモリの間で移動し，明示的な \texttt{cudaMemcpy}
+  の呼び出しはなくなる．コピーはページフォールトを契機とするページ移動と
+  して依然として起こり，そのコストは第7章の主題である．\margin{第7章が
+  数値を示す．GPU のページフォールトは数十マイクロ秒かかり，ドライバは
+  フォールトをバッチで処理する．したがってユニファイドメモリはコードを
+  単純にするが，転送をなくすわけではない．}
+\end{definition}
+
+\section{CUDA によるステンシル演算}
+\label{sec:l03-stencil}
+
+第2章のステンシルは格子の各要素 $C$ を4つの隣接要素の平均
+$C' = (N + W + E + S)/4$ で置き換える．CUDA で書くと，ここまでのすべてが
+組み合わさる．データを分割するブロックのグリッド，各ブロックが再利用する
+値のための共有メモリ，読み込みと計算の間のバリア，そしてブロックの端の
+ハローである．\source{M3，CUDA によるステンシル；PMPP ch.~7（畳み込み）と
+ch.~8（ステンシル）；BPG §10.2.3 Shared Memory．}
+
+\subsection{分割と再利用}
+
+データ分割は\cref{fig:l03-stencil-tile}の左のとおりである．各ブロックは
+画像の1つの領域を所有し，その各スレッドは1つの出力要素を計算するので，
+すべての出力が並列に計算される．内部の各入力要素は4つのスレッド，すなわち
+その4つの隣接要素のスレッドに読まれる（ステンシルが中心を含めば5つ）．
+
+\begin{definition}[データ再利用，タイル，タイリング]
+  計算の\term[でーたさいりよう]{データ再利用}[data reuse]とは，メモリから
+  読み込んだ1つの値がその計算の複数の演算に使われる性質である．
+  \term[たいる]{タイル}[tile]は1つのブロックが扱う長方形の部分配列であり，
+  \term[たいりんぐ]{タイリング}[tiling]は，タイルをグローバルメモリから
+  共有メモリへ一度読み込み，すべての再利用をそこから賄う技法である．
+  これにより，各グローバル要素は使用1回ごとにではなく，ブロック当たり
+  約1回読まれるだけになる．ステンシルの再利用パターンは事前にわかって
+  おり，ソフトウェア管理のスクラッチパッドが適切なキャッシュとなるのは
+  そのためである．\margin{同じタイリングは行列乗算を，乗算1回ごとに
+  グローバル読み込み1回から，$\text{tile size}$ 回の乗算ごとに1回へ
+  変える．第5章で，タイルの配置が悪いと生じる第4章のバンクコンフリクトと
+  ともに扱う．}
+\end{definition}
+
+したがって各スレッドは\cref{fig:l03-bsp}の BSP の形に従う．グローバル
+メモリからブロックの共有タイルへ1要素を読み込む；
+\texttt{\_\_syncthreads()}；タイルから自分のステンシルを計算する；結果を
+グローバルメモリへ書く．
+
+\subsection{境界とハロー}
+
+共有メモリはブロックごとだが，ブロックの領域の端にある要素は他のブロックの
+領域に隣接要素を持つ．\cref{fig:l03-stencil-tile}では，ブロック (0,1) の
+角にある $C$ は，ブロック (0,0) の隣接要素~1 とブロック (1,1) の隣接
+要素~3 を必要とする．それらのブロックの共有メモリには手が届かないので，
+各ブロックは自分の領域に加えて，その周囲の幅1要素の縁，すなわち第2章の
+\term*{ハロー領域}を，グローバルメモリから自分のタイルへ読み込む
+（\cref{fig:l03-stencil-tile}，右）．これはメッセージのない MPI
+ステンシルの境界交換である．ハローは全ブロックから見えるグローバルメモリ
+から単に読まれ，ブロック間の同期は必要ない．入力配列はカーネルの実行中
+読み出し専用であり，出力は別の配列へ書かれるからである．
+
+\begin{figure}[tb]
+  \centering
+  \input{figures/l03-stencil-tile}
+  \caption{左：4つのブロックに分けた $10\times8$ の画像．$C$ とその隣接
+    要素1--4は，そのうち3つのブロックにまたがる．右：ブロック (0,1) の
+    共有メモリのタイル．自分の $5\times4$ の領域と幅1セルのハローから
+    成る．画像内のハローセル（灰色）はグローバルメモリから読み込まれ，
+    画像外のもの（点線）には0が入る．}
+  \label{fig:l03-stencil-tile}
+\end{figure}
+
+\begin{definition}[境界条件，ゼロパディング]
+  \term[きょうかいじょうけん]{境界条件}[boundary condition]は，隣接要素が
+  配列の外にあるときにステンシルが何を読むかを定める．最も単純なのは
+  \term[ぜろぱでぃんぐ]{ゼロパディング}[zero padding]であり，配列の外の
+  位置を0とみなし，読み込み段階ではグローバルメモリを読む代わりにタイルに
+  \texttt{0} を格納する．他の選択（端の値へのクランプ，巻き戻し，片側の
+  式）は，読み込みのその分岐を変えるだけである．
+\end{definition}
+
+\subsection{ステンシルから畳み込みへ}
+
+4回の読み出しと境界ごとの \texttt{if} で平均を書く代わりに，次のカーネルは
+小さな畳み込みとして書かれている．$3\times3$ のフィルタを各要素の周りに
+適用し，ステンシルをフィルタの係数として表す．これにより特別な場合が
+なくなり，同じカーネルが任意の $3\times3$ ステンシルに使える．
+
+\begin{definition}[畳み込み，フィルタ]
+  2次元の\term[たたみこみ]{畳み込み}[convolution]は，各出力を同じ位置の
+  周りの入力要素の重み付き和として計算する．重みの配列が
+  \term[ふぃるた]{フィルタ}[filter]である（カーネルとも呼ぶが，CUDA での
+  意味と紛らわしいのでここでは避ける）．信号処理の意味での畳み込みは
+  フィルタを反転させるが，対称なフィルタでは両者は一致し，ここで従う
+  機械学習の用法は反転させない．半径 $r$ のフィルタ $f$ では
+  \begin{equation}
+    \texttt{out}[y][x] = \sum_{i=-r}^{r} \sum_{j=-r}^{r}
+      \texttt{in}[y+i][x+j] \cdot f[i+r][j+r].
+    \label{eq:l03-convolution}
+  \end{equation}
+  4近傍の平均は，4つの辺の中央に $0.25$，それ以外に $0$ を持つ $3\times3$
+  フィルタである．$3\times3$ フィルタは9点ステンシルであり，それが必要と
+  するハローの幅は $r = 1$ である．
+\end{definition}
+
+\subsection{カーネル}
+
+\begin{marginfigure}
+  \resizebox{\linewidth}{!}{\input{figures/l03-tile-threads}}
+  \caption{1つのブロック内のスレッドの役割（$8\times8$ スレッドで描画）：
+    外周のスレッドはハローセルを読み込むだけで，内側のスレッドは読み込みと
+    計算を行う．}
+  \label{fig:l03-tile-threads}
+\end{marginfigure}
+
+以下の設計は，$\mathit{TILE}^2$ 個の出力のタイルに対して
+$(\mathit{TILE}+2r)^2$ スレッドのブロックを起動する．各スレッドは
+ハローを含むタイルの1要素を読み込み，内側のスレッド，すなわち担当要素が
+ハローセルでないスレッドだけが出力を計算して格納する
+（\cref{fig:l03-tile-threads}）．フィルタはコンスタントメモリに置く．
+
+\begin{lstlisting}[language=C++, numbers=none]
+#define TILE 14               // ブロックの1辺の出力数
+#define RADIUS 1              // フィルタ半径 r
+#define BLOCK (TILE + 2 * RADIUS) // 1辺16
+
+__constant__ float filter[2 * RADIUS + 1][2 * RADIUS + 1];
+
+__global__ void stencil2D(const float *in, float *out,
+                          int width, int height) {
+  __shared__ float tile[BLOCK][BLOCK];
+  int tx = threadIdx.x, ty = threadIdx.y;
+  int x = blockIdx.x * TILE + tx - RADIUS;  // 画像の列
+  int y = blockIdx.y * TILE + ty - RADIUS;  // 画像の行
+
+  // 1. 全スレッドが1セルを読み込む．画像外は0
+  if (x >= 0 && x < width && y >= 0 && y < height)
+    tile[ty][tx] = in[y * width + x];
+  else
+    tile[ty][tx] = 0.0f;
+  __syncthreads();
+
+  // 2. 内側のスレッドが1出力ずつ計算し 3. 格納する
+  bool inner = tx >= RADIUS && tx < BLOCK - RADIUS &&
+               ty >= RADIUS && ty < BLOCK - RADIUS;
+  if (inner && x < width && y < height) {
+    float acc = 0.0f;
+    for (int i = -RADIUS; i <= RADIUS; ++i)
+      for (int j = -RADIUS; j <= RADIUS; ++j)
+        acc += tile[ty + i][tx + j]
+             * filter[i + RADIUS][j + RADIUS];
+    out[y * width + x] = acc;
+  }
+}
+\end{lstlisting}
+ホストはフィルタを \texttt{cudaMemcpyToSymbol} で一度設定し，2次元の
+構成で起動する．
+\begin{lstlisting}[language=C++, numbers=none]
+dim3 block(BLOCK, BLOCK);   // 16 x 16 スレッド
+dim3 grid((width + TILE - 1) / TILE,
+          (height + TILE - 1) / TILE);
+stencil2D<<<grid, block>>>(d_in, d_out, width, height);
+\end{lstlisting}
+インデックスの計算は\cref{eq:l03-global-index}を $r$ だけずらしたもので
+ある．ブロック $(0,0)$ のスレッド $(0,0)$ は画像の位置 $(-1,-1)$ を
+読み込むが，これは画像外なので0になり，スレッド $(1,1)$ は最初の出力で
+ある $(0,0)$ を読み込む．1ブロックのオフセットが \texttt{BLOCK} ではなく
+\texttt{TILE} なのは，隣り合うタイルがハローの分だけ重なるからで
+ある．\caution{ここではバリアは1つで足りる．タイルは一度読み込まれ，その後は
+読まれるだけだからである．共有バッファを複数のタイルに使い回すカーネルでは，
+計算段階の後に2つ目の \texttt{\_\_syncthreads()} が必要になる．}
+
+\begin{example}[$64\times64$ の画像]
+  \label{ex:l03-stencil-count}
+  $64\times64$ の画像で $\mathit{TILE}=14$，$r=1$ とすると：
+  \begin{itemize}
+    \item グリッドは $\lceil 64/14 \rceil \times \lceil 64/14 \rceil = 5\times5
+      = 25$ ブロックで，各ブロックは $16\times16 = 256$ スレッド，
+      \num{4096} 個の出力に対して \num{6400} スレッドである．16個の内部
+      ブロックのそれぞれで，196スレッドが計算し，60スレッドは読み込む
+      だけである；
+    \item ブロック当たりの共有メモリは $16 \times 16 \times 4 =
+      \SI{1}{\kibi\byte}$；
+    \item タイルの読み込みは $25 \times 256 = \num{6400}$ 回で，そのうち
+      $72^2 = \num{5184}$ 回がグローバルメモリを読む（残りは0の書き込み
+      である．次元ごとにブロックは $15+16+16+16+9 = 72$ 個の位置を読む）．
+      各スレッドが9個の入力をグローバルメモリから読む場合の
+      $9 \times \num{4096} = \num{36864}$ 回と比べて約~7分の1である．
+      ハローのオーバーヘッドは，内部ブロックで出力当たり
+      $256/196 = 1.31$ 回の読み込み（画像全体では
+      $\num{5184}/\num{4096} \approx 1.27$）である．
+  \end{itemize}
+  各次元の最後のブロックは，幅64の画像の列56--69を受け持つ．その
+  スレッドのうち $x \ge 64$ のものは0を読み込み，格納を省く．\tip{ハローの
+  割合 $1 - (\mathit{TILE}/\mathit{BLOCK})^2$：ここではスレッドの
+  23\,\%，$32\times32$ のブロックでは12\,\%．タイルを大きくすると無駄な
+  スレッドは減るが，共有メモリが多く必要になり，SM 当たりのブロック数が
+  減る（\cref{sec:l03-occupancy}）．}
+\end{example}
+
+\Needspace{16\baselineskip}
+
+別の設計として，ブロックがちょうど $\mathit{TILE}^2$ スレッドを持ち，端の
+スレッドが追加の読み込みでハローを読み込むものがある．遊ぶスレッドは
+起動しないが，条件分岐のコードが増える．PMPP ch.~8 は両方を示す．\margin{ワープ
+の全スレッドは同じフィルタ係数を同時に読む．コンスタントキャッシュは
+1つのアドレスをワープ全体へブロードキャストとして供給する．これが
+コンスタントメモリの用途である．}
+
+\begin{keypoint}[章のまとめ]
+  CUDA プログラムは，デバイスメモリを確保し（\texttt{cudaMalloc}），
+  データをコピーインおよびコピーアウトし（\texttt{cudaMemcpy}），実行構成
+  \texttt{<<<blocks, threads>>>} でカーネルを起動するホストコードである．
+  カーネルは独立なスレッドブロックのグリッドとして実行される．各スレッドは
+  \texttt{blockIdx}，\texttt{blockDim}，\texttt{threadIdx} から自分の
+  グローバルインデックスを計算し，ブロックは決まった順序なしに実行され，
+  1つのブロックのスレッドはチップ上の共有メモリを共有し，読み込み，
+  バリア，計算，格納という BSP パターンで \texttt{\_\_syncthreads()} に
+  より同期する．5つのメモリ空間，ローカル，共有，グローバル，コンスタント，
+  テクスチャは，その可視範囲がスレッド階層に従う．SM に常駐するブロック数は
+  スレッドスロット，レジスタ，共有メモリが許す最小値であり，占有率は
+  それらが埋める SM のワープスロットの割合である．占有率が高いほど
+  レイテンシをよく隠せるが，常に速いとは限らない．ステンシルはタイル化
+  されたカーネルになる．各ブロックはタイルとハローを共有メモリに読み込み，
+  画像の端ではゼロパディングを行い，1回同期し，内側のスレッド1つにつき
+  1つの出力を計算する．
+\end{keypoint}
+
+\end{document}

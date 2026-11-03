@@ -1,0 +1,37 @@
+% Host and device memory.  The CPU and its memory on the left, the GPU with
+% its SMs and global memory on the right, an I/O interface between them;
+% cudaMalloc reserves global memory, cudaMemcpy moves data across.
+% Redraws the outline figure m3l3_managing_global_mem.
+% Usage: \input{figures/l03-host-device}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]},
+                    blk/.style={draw, fill=ln-box, inner sep=2pt, align=center}]
+  % host
+  \draw[ln-accent, thick, rounded corners=1pt] (0,0) rectangle (38,34);
+  \node[anchor=south west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+    at (0,34.5) {\iflangja{ホスト}{host}};
+  \node[blk, minimum width=30mm, minimum height=9mm] at (19,26) {CPU};
+  \node[blk, minimum width=30mm, minimum height=11mm, fill=ln-accent!15]
+    (hm) at (19,10) {\iflangja{ホストメモリ}{host memory}\\\texttt{h\_a, h\_b, h\_c}};
+  % interface
+  \node[blk, minimum width=18mm, minimum height=34mm, fill=white] (io) at (54,17)
+    {\iflangja{I/O\\インタフェース\\（PCIe）\\[20mm]\mbox{}}{I/O\\interface\\(PCIe)}};
+  % device
+  \draw[ln-accent, thick, rounded corners=1pt] (70,0) rectangle (118,34);
+  \node[anchor=south west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+    at (70,34.5) {\iflangja{デバイス}{device}};
+  \foreach \i in {0,...,3} \foreach \j in {0,1} {
+    \draw[fill=ln-box] (72+\i*11.5,20+\j*6.5) rectangle ++(10.5,5.5)
+      node[midway] {SM};
+  }
+  \node[blk, minimum width=44mm, minimum height=11mm, fill=ln-accent!15]
+    (dm) at (94,10) {\iflangja{グローバルメモリ（デバイスメモリ）}{global memory (device memory)}\\\texttt{d\_a, d\_b, d\_c}};
+  % arrows
+  \draw[->, thick, ln-accent] (34.2,\iflangja{15}{13}) -- (io.west |- 0,\iflangja{15}{13}) -- (io.east |- 0,\iflangja{15}{13}) -- (72,\iflangja{15}{13});
+  \node[anchor=south, text=ln-accent] at (54,\iflangja{15.5}{13.5})
+    {\iflangja{\shortstack{\texttt{cudaMemcpy}\\（ホスト → デバイス）}}{\texttt{cudaMemcpy} host $\to$ device}};
+  \draw[<-, thick, ln-accent] (34.2,\iflangja{7.5}{6}) -- (io.west |- 0,\iflangja{7.5}{6}) -- (io.east |- 0,\iflangja{7.5}{6}) -- (72,\iflangja{7.5}{6});
+  \node[anchor=north, text=ln-accent] at (54,\iflangja{7}{5.5})
+    {\iflangja{\shortstack{\texttt{cudaMemcpy}\\（デバイス → ホスト）}}{\texttt{cudaMemcpy} device $\to$ host}};
+  \node[anchor=north, text=ln-muted] at (94,4) {\texttt{cudaMalloc} / \texttt{cudaFree}};
+\end{tikzpicture}

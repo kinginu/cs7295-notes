@@ -1,0 +1,41 @@
+% Three legal execution orders of the six blocks of a grid: in index order,
+% in an arbitrary order, and two at a time.
+% Redraws the outline figure m3l1_execution_order_blocks.
+% Usage: \input{figures/l03-block-order}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]},
+                    blk/.style={draw, fill=ln-box, minimum width=13mm,
+                                minimum height=4.5mm, inner sep=1pt}]
+  % the grid
+  \draw[ln-accent, thick, rounded corners=1pt] (0,14) rectangle (22,30);
+  \node[anchor=south, text=ln-accent] at (11,30.3) {\iflangja{グリッド}{grid}};
+  \foreach \bx in {0,1,2} \foreach \by in {0,1} {
+    \draw[fill=ln-box] (1.5+\bx*6.6,16+\by*6.5) rectangle ++(6,5.5);
+    \node[font=\scriptsize\sffamily] at (4.5+\bx*6.6,18.7+\by*6.5) {\bx,\by};
+  }
+  \draw[->, ln-muted] (23,22) -- (27,22);
+  % time axis
+  \draw[->, ln-muted] (30,-2) -- (118,-2) node[below left, text=ln-muted]
+    {\iflangja{時間}{time}};
+  % case 1
+  \node[anchor=east, text=ln-muted, align=right] at (29,33)
+    {\iflangja{順序 1}{case 1}};
+  \foreach \k/\t in {0/{0,0}, 1/{1,0}, 2/{2,0}, 3/{0,1}, 4/{1,1}, 5/{2,1}} {
+    \node[blk, anchor=west] at (30+\k*14.5,33) {\t};
+  }
+  % case 2
+  \node[anchor=east, text=ln-muted, align=right] at (29,25)
+    {\iflangja{順序 2}{case 2}};
+  \foreach \k/\t in {0/{2,1}, 1/{1,1}, 2/{1,0}, 3/{0,0}, 4/{2,0}, 5/{0,1}} {
+    \node[blk, anchor=west] at (30+\k*14.5,25) {\t};
+  }
+  % case 3: three at a time
+  \node[anchor=east, text=ln-muted, align=right] at (29,10)
+    {\iflangja{順序 3}{case 3}};
+  \foreach \k/\t in {0/{0,0}, 1/{1,0}, 2/{2,0}} {
+    \node[blk, anchor=west, minimum width=40mm] at (30,16-\k*5.5) {\t};
+  }
+  \foreach \k/\t in {0/{0,1}, 1/{1,1}, 2/{2,1}} {
+    \node[blk, anchor=west, minimum width=40mm] at (74,16-\k*5.5) {\t};
+  }
+\end{tikzpicture}

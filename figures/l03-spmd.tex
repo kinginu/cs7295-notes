@@ -1,0 +1,24 @@
+% One kernel executed by four threads (SPMD): the kernel on the left, four
+% threads, four output lines that differ only by threadIdx.x.
+% Redraws the outline figures m3l1_spmd and m3l1_threadidx (merged).
+% Usage: \input{figures/l03-spmd}   (body width, 120 mm; drawing ~85 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \node[draw, fill=ln-box, align=left, anchor=west, inner sep=3pt,
+        font=\scriptsize\ttfamily] (prog) at (0,0)
+    {\_\_global\_\_ void hello() \{\\
+     \ \ printf("hello \%d\textbackslash{}n",\\
+     \ \ \ \ \ \ \ \ \ threadIdx.x);\\
+     \}};
+  \node[above=1mm of prog, text=ln-muted]
+    {\iflangja{1つのカーネル}{one kernel}};
+  \foreach \i/\y in {0/9, 1/3, 2/-3, 3/-9} {
+    \draw[->, ln-accent, thick] (prog.east) -- (64,\y)
+      node[right, draw, fill=white, inner sep=2pt, font=\scriptsize\ttfamily]
+      {hello \i};
+    \node[text=ln-muted, anchor=east] at (63,\y+2.6)
+      {\iflangja{スレッド}{thread} \i};
+  }
+  \node[text=ln-muted, align=center, anchor=north] at (50,-13)
+    {\iflangja{4スレッド，実行順序は不定}{4 threads, order unspecified}};
+\end{tikzpicture}

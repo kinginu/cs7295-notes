@@ -1,0 +1,35 @@
+% The CUDA thread hierarchy: a grid of 3 x 2 thread blocks, each block of
+% 4 x 2 threads; one block is zoomed on the right with its thread indices.
+% Original (the course states the hierarchy in words; cf. CPG Figure 4).
+% Usage: \input{figures/l03-thread-hierarchy}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  % grid of blocks
+  \draw[ln-accent, thick, rounded corners=1pt] (0,0) rectangle (64,38);
+  \node[anchor=south west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+    at (0,38.5) {\iflangja{グリッド}{grid} \ \texttt{gridDim = (3,2)}};
+  \foreach \bx in {0,1,2} \foreach \by in {0,1} {
+    \draw[fill=ln-box] (3+\bx*20,3+\by*17) rectangle ++(18,14);
+    \node[anchor=south west, text=ln-muted, inner sep=1pt]
+      at (3+\bx*20,13.2+\by*17) {\iflangja{ブロック}{block} (\bx,\by)};
+    \foreach \tx in {0,...,3} \foreach \ty in {0,1} {
+      \fill[ln-accent!60] (4.5+\bx*20+\tx*4,4+\by*17+\ty*4) rectangle ++(3,3);
+    }
+  }
+  % zoom lines
+  \draw[ln-muted, densely dashed] (41,20) -- (74,38);
+  \draw[ln-muted, densely dashed] (41,3) -- (74,0);
+  \draw[ln-accent, thick] (23,3) rectangle (41,17);
+  % one block zoomed
+  \draw[ln-accent, thick, rounded corners=1pt] (74,0) rectangle (118,38);
+  \node[anchor=south west, text=ln-accent, font=\scriptsize\sffamily\bfseries]
+    at (74,38.5) {\iflangja{ブロック}{block} (1,0) \ \texttt{blockDim = (4,2)}};
+  \foreach \tx in {0,...,3} \foreach \ty in {0,1} {
+    \draw[fill=ln-accent!60, draw=white]
+      (\iflangja{75.5+\tx*10.5}{77+\tx*10},5+\ty*14) rectangle ++(\iflangja{10.2}{9},12);
+    \node[text=white, align=center] at (\iflangja{80.6+\tx*10.5}{81.5+\tx*10},11+\ty*14)
+      {\iflangja{スレッド}{thread}\\(\tx,\ty)};
+  }
+  \node[anchor=north, text=ln-muted] at (96,4)
+    {\texttt{threadIdx = (x,y)}};
+\end{tikzpicture}

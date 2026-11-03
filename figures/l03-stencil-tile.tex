@@ -1,0 +1,65 @@
+% A stencil on a 10 x 8 image, one thread block per quadrant (left); the
+% element C and its four neighbours straddle three blocks.  Right: the
+% tile of block (0,1) (bottom-left) with its halo: cells owned by other
+% blocks (grey) are loaded from global memory, cells outside the image are
+% zero-filled.
+% Redraws the outline figures m3l4_stencil and m3l4_stencil_boundaries.
+% Usage: \input{figures/l03-stencil-tile}   (body width, 120 mm)
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+                    >={Stealth[length=1.4mm]}]
+  \def\s{3.4}  % cell size
+  % ---- left: image split among four blocks (rows counted from the top)
+  \foreach \r in {1,...,8} {
+    \foreach \c in {1,...,10} {
+      \ifnum\r<5
+        \ifnum\c<6 \def\col{orange!45}\else \def\col{yellow!60}\fi
+      \else
+        \ifnum\c<6 \def\col{blue!30}\else \def\col{green!45}\fi
+      \fi
+      \fill[\col, draw=white, line width=0.3pt]
+        ({(\c-1)*\s},{-\r*\s}) rectangle ({\c*\s},{-(\r-1)*\s});
+    }
+  }
+  \draw[ln-muted] (0,0) rectangle (10*\s,-8*\s);
+  \draw[ln-muted, thick] (5*\s,0) -- (5*\s,-8*\s);
+  \draw[ln-muted, thick] (0,-4*\s) -- (10*\s,-4*\s);
+  \foreach \c/\r/\t in {5/5/C, 5/4/1, 4/5/2, 6/5/3, 5/6/4} {
+    \node[font=\scriptsize\sffamily\bfseries] at ({(\c-0.5)*\s},{-(\r-0.5)*\s}) {\t};
+  }
+  \node[text=ln-muted] at (2.5*\s,1.8) {\iflangja{ブロック}{block} (0,0)};
+  \node[text=ln-muted] at (7.5*\s,1.8) {\iflangja{ブロック}{block} (1,0)};
+  \node[anchor=north, text=ln-muted] at (2.5*\s,-8*\s-0.5) {\iflangja{ブロック}{block} (0,1)};
+  \node[anchor=north, text=ln-muted] at (7.5*\s,-8*\s-0.5) {\iflangja{ブロック}{block} (1,1)};
+  % ---- right: the tile of block (0,1) with its halo
+  \begin{scope}[shift={(56,0)}]
+    % outside-the-image cells: left column and bottom row (zero)
+    \foreach \r in {4,...,9} {
+      \draw[ln-muted, densely dotted, fill=white] ({-1*\s},{-\r*\s}) rectangle ({0},{-(\r-1)*\s});
+      \node[text=ln-muted] at ({-0.5*\s},{-(\r-0.5)*\s}) {0};
+    }
+    \foreach \c in {1,...,6} {
+      \draw[ln-muted, densely dotted, fill=white] ({(\c-1)*\s},{-9*\s}) rectangle ({\c*\s},{-8*\s});
+      \node[text=ln-muted] at ({(\c-0.5)*\s},{-8.5*\s}) {0};
+    }
+    % halo cells inside the image: top row from block (0,0), right column from (1,1)
+    \foreach \c in {1,...,5} {
+      \fill[gray!45, draw=white, line width=0.3pt] ({(\c-1)*\s},{-4*\s}) rectangle ({\c*\s},{-3*\s});
+    }
+    \fill[gray!45, draw=white, line width=0.3pt] ({5*\s},{-4*\s}) rectangle ({6*\s},{-3*\s});
+    \foreach \r in {5,...,8} {
+      \fill[gray!45, draw=white, line width=0.3pt] ({5*\s},{-\r*\s}) rectangle ({6*\s},{-(\r-1)*\s});
+      \foreach \c in {1,...,5} {
+        \fill[blue!30, draw=white, line width=0.3pt] ({(\c-1)*\s},{-\r*\s}) rectangle ({\c*\s},{-(\r-1)*\s});
+      }
+    }
+    \draw[ln-muted] (0,-4*\s) rectangle (5*\s,-8*\s);
+    \draw[ln-accent, thick] ({-1*\s},-3*\s) rectangle (6*\s,-9*\s);
+    \foreach \c/\r/\t in {5/5/C, 5/4/1, 4/5/2, 6/5/3, 5/6/4} {
+      \node[font=\scriptsize\sffamily\bfseries] at ({(\c-0.5)*\s},{-(\r-0.5)*\s}) {\t};
+    }
+    \node[anchor=south, text=ln-accent] at (2.5*\s,-3*\s+0.5)
+      {\iflangja{共有メモリのタイル（ハローを含む）}{shared-memory tile with halo}};
+    \node[anchor=west, text=ln-muted, align=left] at (6.5*\s,-5.5*\s)
+      {\iflangja{灰色：他ブロックの要素，\\グローバルメモリから読む\\点線：画像の外，0 を入れる}{grey: other blocks' cells,\\read from global memory\\dotted: outside the image, zero}};
+  \end{scope}
+\end{tikzpicture}
