@@ -217,26 +217,26 @@ async function runChapter(c) {
     let w = null, fix = null, ja = null
     const issues = []
     if (from <= 0) {
-      w = await agent(writeEnPrompt(c), { label: `write-en:${tag}`, phase: 'Write EN', schema: WRITE })
+      w = await agent(writeEnPrompt(c), { label: `write-en:${tag}`, phase: 'Write EN', schema: WRITE, model: 'opus' })
       if (!w) throw new Error('write-en failed for ' + tag)
     }
     if (from <= 1) {
       const reviews = await parallel([
-        () => agent(reviewTechPrompt(c, w), { label: `review-tech:${tag}`, phase: 'Review EN', schema: ISSUES }),
-        () => agent(reviewScopePrompt(c, w), { label: `review-scope:${tag}`, phase: 'Review EN', schema: ISSUES }),
+        () => agent(reviewTechPrompt(c, w), { label: `review-tech:${tag}`, phase: 'Review EN', schema: ISSUES, model: 'opus' }),
+        () => agent(reviewScopePrompt(c, w), { label: `review-scope:${tag}`, phase: 'Review EN', schema: ISSUES, model: 'sonnet' }),
       ])
       if (reviews.some(r => !r)) throw new Error('review failed for ' + tag)
       reviews.forEach(r => issues.push(...r.issues))
     }
     if (from <= 2 && (from === 2 || issues.length)) {
-      fix = await agent(fixEnPrompt(c, issues), { label: `fix-en:${tag}`, phase: 'Fix EN', schema: FIX })
+      fix = await agent(fixEnPrompt(c, issues), { label: `fix-en:${tag}`, phase: 'Fix EN', schema: FIX, model: 'opus' })
       if (!fix) throw new Error('fix-en failed for ' + tag)
     }
     if (from <= 3) {
-      ja = await agent(translatePrompt(c), { label: `write-ja:${tag}`, phase: 'Write JA', schema: TRANSLATE })
+      ja = await agent(translatePrompt(c), { label: `write-ja:${tag}`, phase: 'Write JA', schema: TRANSLATE, model: 'opus' })
       if (!ja) throw new Error('write-ja failed for ' + tag)
     }
-    const check = await agent(checkJaPrompt(c), { label: `check-ja:${tag}`, phase: 'Check JA + commit', schema: CHECK })
+    const check = await agent(checkJaPrompt(c), { label: `check-ja:${tag}`, phase: 'Check JA + commit', schema: CHECK, model: 'sonnet' })
     if (!check) throw new Error('check-ja failed for ' + tag)
     log(`${tag} done: en ${check.enPages}p, ja ${check.jaPages}p — ${String(check.commitOutput).slice(0, 80)}`)
     return {
