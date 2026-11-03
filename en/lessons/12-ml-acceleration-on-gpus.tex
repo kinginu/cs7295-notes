@@ -27,9 +27,9 @@ software as new instructions of the ISA.
 \section{GPU and ML}
 \label{sec:l12-gpu-ml}
 
-The field of \term{machine learning (ML)}[機械学習] builds models whose
+The field of \term{machine learning (ML)}[機械学習]\index{ML|see{machine learning (ML)}} builds models whose
 parameters are fitted to data, and its dominant model today is the
-\term{deep neural network (DNN)}[深層ニューラルネットワーク], a stack of
+\term{deep neural network (DNN)}[深層ニューラルネットワーク]\index{DNN|see{deep neural network (DNN)}}, a stack of
 layers that each transform a large array of numbers.\source{M12, GPU and
 ML; PMPP ch.~16; \cite{nvidia2026gemmguide}.}  This section explains why
 GPUs suit this workload, which operations it consists of, how
@@ -106,7 +106,7 @@ Libraries express the matrix multiplications of ML in one standard
 form.
 
 \begin{definition}[GEMM]
-  The operation \term{GEMM (general matrix multiplication)}[GEMM（一般行列積）]
+  The operation \term{GEMM (general matrix multiplication)}[GEMM（一般行列積）]\index{general matrix multiplication|see{GEMM (general matrix multiplication)}}
   computes
   \begin{equation}
     C \leftarrow \alpha A B + \beta C ,
@@ -144,7 +144,7 @@ which resource limits the kernel.
   arithmetic rate divided by its peak memory bandwidth, in FLOP per
   byte; it is the ridge point of the Roofline model of Lesson~8.  The
   side of the ratio on which a kernel's intensity lies makes it
-  \term{math-limited / memory-limited}[演算律速／メモリ律速]: above the
+  \term*{math-limited / memory-limited}\index{math-limited|see{compute-bound}}\index{memory-limited|see{memory-bound}}\index{compute-bound}\index{memory-bound}: above the
   ratio the arithmetic units are the bottleneck (math-limited), below it
   the memory bandwidth (memory-limited).
 \end{definition}
@@ -243,14 +243,14 @@ output element.
 \end{figure}
 
 \begin{definition}[MAC, MMA, tensor core instruction]
-  A \term{multiply-accumulate (MAC)}[積和演算（MAC）] adds a product to
+  A \term{multiply-accumulate (MAC)}[積和演算（MAC）]\index{MAC|see{multiply-accumulate (MAC)}} adds a product to
   a running sum, $c \leftarrow c + a b$; done with a single rounding it is
   the FMA.\caution{Lecture vs ISA: \texttt{HMMA.1688} names the warp-level shape
 $m16n8k8$ (a $16 \times 8$ result, $K = 8$), the PTX \texttt{mma}
 shape \texttt{.m16n8k8} \cite{nvidia2026ptx}, not a $4 \times 4$
 product.  The $4 \times 4 \times 4$ figure is the per-clock datapath of
 one Volta tensor core \cite{nvidia2020ampere}.}  A
-  \term{matrix multiply-accumulate (MMA)}[行列積和演算（MMA）] applies
+  \term{matrix multiply-accumulate (MMA)}[行列積和演算（MMA）]\index{MMA|see{matrix multiply-accumulate (MMA)}} applies
   the same idea to whole matrices, $D \leftarrow A B + C$, as one
   operation.  The tensor core (Lesson~1) is NVIDIA's MMA unit; the GPU
   has hundreds of them.  In NVIDIA's machine code (SASS) the half-precision MMA
@@ -467,7 +467,7 @@ only in the exponent; a binary format uses base~2 in the same way.
   A binary \term{floating-point format}[浮動小数点形式] stores a number
   in three fields: a \term{sign bit}[符号ビット] $s$, an
   \term{exponent}[指数部] field $e$ of $w$ bits, and a
-  \term{mantissa (fraction)}[仮数部] field $f$ of $p$ bits.\margin{\enquote{Mantissa},
+  \term{mantissa (fraction)}[仮数部]\index{fraction|see{mantissa (fraction)}} field $f$ of $p$ bits.\margin{\enquote{Mantissa},
 \enquote{fraction} and \enquote{significand} name the same field in
 practice; IEEE 754 calls the stored field the trailing significand
 \cite{ieee754-2019}.}  The total
@@ -501,12 +501,12 @@ TF32 is $1 + 8 + 10 = 19$ bits wide.
 \end{figure}
 
 \begin{definition}[ML formats]
-  The format \term{bfloat16 (BF16)}[bfloat16] \enquote{includes an 8-bit exponent,
+  The format \term{bfloat16 (BF16)}[bfloat16]\index{BF16|see{bfloat16 (BF16)}} \enquote{includes an 8-bit exponent,
   7-bit mantissa, and 1 sign-bit} \cite{nvidia2020ampere}: the range of
   FP32 with less precision than FP16.\margin{In practice E4M3 tends to be used for
 weights and activations and E5M2 for gradients, which span a wider
 range \cite{micikevicius2022fp8}.}
-  The format \term{TensorFloat-32 (TF32)}[TF32] has an \enquote{8-bit exponent
+  The format \term{TensorFloat-32 (TF32)}[TF32]\index{TF32|see{TensorFloat-32 (TF32)}} has an \enquote{8-bit exponent
   (same as FP32), 10-bit mantissa (same precision as FP16) and 1
   sign-bit} \cite{nvidia2020ampere}; the A100 tensor cores use it for
   FP32 inputs.  The 8-bit format \term{FP8}[FP8] has two encodings: \enquote{E4M3 with 4
@@ -576,7 +576,7 @@ $2^{1-b}$ leaves a gap down to zero.  The exponent field values $0$ and
 $2^w - 1$ are reserved to fill these holes.
 
 \begin{definition}[Subnormal number, underflow, overflow, NaN]
-  A \term{subnormal number}[非正規化数] has exponent field $e = 0$ and
+  A \term{subnormal number}[非正規化数]\index{denormal number|see{subnormal number}} has exponent field $e = 0$ and
   the value $(-1)^{s} \times (f / 2^{p}) \times 2^{1 - b}$, without the
   implicit leading~1; with $f = 0$ it is $\pm 0$.  Subnormals fill the
   gap between zero and the smallest normal number with evenly spaced
@@ -587,7 +587,7 @@ $2^w - 1$ are reserved to fill these holes.
   $\pm\infty$; a format without infinities, such as E4M3, saturates or
   gives NaN).  The exponent
   field $e = 2^w - 1$ encodes $\pm\infty$ ($f = 0$) and
-  \term{NaN (not a number)}[非数（NaN）] ($f \ne 0$), the result of an
+  \term{NaN (not a number)}[非数（NaN）]\index{not a number|see{NaN (not a number)}} ($f \ne 0$), the result of an
   invalid operation such as $0/0$ or $\infty - \infty$.
 \end{definition}
 
@@ -648,7 +648,7 @@ from statistics of its values, before casting it to FP8
 \cite{nvidia2022hopper}.}  The resolution near zero matters most.
 
 \begin{definition}[S2FP8]
-  The format \term{shifted and squeezed FP8 (S2FP8)}[S2FP8]
+  The format \term{shifted and squeezed FP8 (S2FP8)}[S2FP8]\index{S2FP8|see{shifted and squeezed FP8 (S2FP8)}}
   \cite{cambier2020s2fp8} stores a tensor $X$ in FP8 after a power
   transform with two per-tensor parameters $\alpha$ (squeeze) and $\beta$
   (shift):
@@ -724,7 +724,7 @@ large unit such as a systolic array, and every unit takes chip area
 from other GPU functions; programmability matters as much as the raw
 rate.  NVIDIA started with a $4 \times 4$ unit (Volta's
 $4 \times 4 \times 4$ product per clock), and other vendors have
-similar units: Intel's \term{Advanced Matrix Extensions (AMX)}[AMX]
+similar units: Intel's \term{Advanced Matrix Extensions (AMX)}[AMX]\index{AMX|see{Advanced Matrix Extensions (AMX)}}
 add $16 \times 16$ matrix tiles and tile instructions to x86
 CPUs.\caution{Lecture vs documentation: Intel documents
 eight AMX tile registers of at most 16 rows of 64 bytes each; its INT8
@@ -891,7 +891,7 @@ as two values plus two 2-bit indices: $32 + 4 = 36$ of 64 bits, about
 56\,\%.} and its sparse tensor-core rates are twice the
 dense ones (\cref{tab:l12-tensor-cores}).  Beyond
 matrix--matrix products,
-\term{sparse matrix-vector multiplication (SpMV)}[疎行列ベクトル積],
+\term{sparse matrix-vector multiplication (SpMV)}[疎行列ベクトル積]\index{SpMV|see{sparse matrix-vector multiplication (SpMV)}},
 $y = Ax$ with a sparse $A$, is the core of many HPC and graph
 algorithms, and accelerating it is an active research topic: its
 intensity is low and its accesses irregular, so it profits little from

@@ -218,7 +218,7 @@ B2 が再び書くまで，ほかの値のために空いている．逆に B2 �
   \term[れじすたすぴる]{レジスタスピル}[register spill]は，生存している
   値をレジスタからメモリ（通常はスタックスロット）に格納してレジスタを
   空ける操作である．その値を次の使用の前にレジスタへ戻す後のロードが
-  \term[ふぃるさいろーど]{フィル（再ロード）}[fill (reload)]である．
+  \term[ふぃるさいろーど]{フィル（再ロード）}[fill (reload)]\index{さいろーど@再ロード|see{フィル（再ロード）}}である．
 \end{definition}
 
 PTX にはレジスタ割り付けがない．そのレジスタは仮想的で個数に制限がなく，
@@ -302,7 +302,7 @@ Multiprocessor Level \cite{nvidia2024cudaguide}）．
   \label{def:l11-ssa}
   すべての変数がプログラムテキストのちょうど1か所で代入されているとき，
   プログラムは\term[えすえすえーけいしき]{SSA形式}[SSA form]である．
-  この性質を\term[せいてきたんいつだいにゅう]{静的単一代入}[static single assignment (SSA)]
+  この性質を\term[せいてきたんいつだいにゅう]{静的単一代入}[static single assignment (SSA)]\index{SSA|see{静的単一代入}}
   （SSA）と呼ぶ．\emph{静的}というのは，その1つの代入がループの中で
   何度も実行されうるからである．プログラムは，変数の各定義に新しい版
   \texttt{a1}，\texttt{a2}，\ldots を与え，各使用をそれに到達する版に

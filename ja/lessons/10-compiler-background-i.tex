@@ -9,20 +9,20 @@
   video={M10，レッスン 1--5（GPU Compiler Flow；PTX；IR and Basic Block；Introduction to Data Flow Analysis；Example of Reaching Definitions）},
   sources={NVCC ドキュメント \cite{nvidia2026nvcc}；PTX ISA 9.4 \cite{nvidia2026ptx}；Compiling CUDA with clang \cite{llvm2026compilecuda}；NVVM IR 仕様 \cite{nvidia2026nvvm}；Lattner と Adve \cite{lattner2004llvm}（LLVM）；LLVM Language Reference \cite{llvm2026langref}},
   textbook={K12 \cite{kim2012gpgpu} §1.3.7；CPG \cite{nvidia2024cudaguide} §3.1 Compilation with NVCC；Aho ら \cite{aho2006compilers} §8.4，§9.2},
-  keywords={コンパイラ，フロントエンド，バックエンド，中間表現，抽象構文木，nvcc，LLVM，NVPTX，PTX，SASS，仮想アーキテクチャ，ファットバイナリ，JITコンパイル，ガード述語，3番地コード，リーダ，制御フローグラフ，データフロー解析，伝達関数，到達定義，gen集合とkill集合，不動点},
+  keywords={コンパイラ，フロントエンド，バックエンド，中間表現，抽象構文木，nvcc，LLVM，NVPTX，PTX，SASS，仮想アーキテクチャ，ファットバイナリ，JITコンパイル，ガードプレディケート，3番地コード，リーダ，制御フローグラフ，データフロー解析，伝達関数，到達定義，gen集合とkill集合，不動点},
 }
 
 これまでの章では，CUDA カーネルを GPU がそのまま実行するものとして
 扱ってきた．しかしソースファイルと SM の間にはコンパイラがあり，
 前の章で見たいくつかの仕組みは実はコンパイラの仕事であった．第6章の
-述語付きコード，第3章で各スレッドが受け取るレジスタ，第4章の PTX の
+プレディケート付きコード，第3章で各スレッドが受け取るレジスタ，第4章の PTX の
 断片がそうである．本章と次章は，そうしたコードについて考えるのに必要な
 コンパイラの基礎を与える．前半では CUDA プログラムをコンパイルの流れに
 沿って追い，ソースコードから中間表現と PTX を経て GPU が実行する
 機械語に至るまでをたどり，PTX そのものを見る．後半では最適化が
 対象とする構造，すなわち3番地コード，基本ブロックと制御フローグラフ，
 そしてデータフロー解析を導入し，到達定義と呼ばれる解析で具体的に
-計算する．第11章は生存解析，SSA 形式，古典的な最適化，そしてこれらすべてを
+計算する．第11章は生存変数解析，SSA 形式，古典的な最適化，そしてこれらすべてを
 ワープに結びつけるダイバージェンス解析へと続く．
 
 \section{GPU コンパイラの流れ}
@@ -213,7 +213,7 @@ int threads = BLOCK_SIZE;
 デバイス側のバックエンドの出力は，まだ機械語ではない．
 
 \begin{definition}[PTX と SASS]
-  \term[ぴーてぃーえっくす]{PTX}[PTX (Parallel Thread Execution)]
+  \term[ぴーてぃーえっくす]{PTX}[PTX (Parallel Thread Execution)]\index{Parallel Thread Execution|see{PTX}}
   （Parallel Thread Execution）は NVIDIA の仮想 ISA である（第1章）．
   アーキテクチャに依存しない命令セットであり，そのプログラムは後で
   機械語に翻訳される．レジスタは仮想的であるため，PTX コードには
@@ -299,7 +299,7 @@ PTX の命令は，演算の名前である\term[おぺこーど]{オペコー�
 \term[おぺらんど]{オペランド}[operand]の並びからなる．PTX ISA はこれを
 次のように述べている．\enquote{PTX の命令は一般に0個から4個の
 オペランドを持ち，加えてオペコードの左側の \texttt{@} 記号の後に置く
-省略可能なガード述語を持つ} \cite[§9.2]{nvidia2026ptx}．
+省略可能なガードプレディケートを持つ} \cite[§9.2]{nvidia2026ptx}．
 \begin{lstlisting}[language=PTX, numbers=none]
 @p  opcode;
 @p  opcode a;
@@ -317,27 +317,27 @@ PTX の命令は，演算の名前である\term[おぺこーど]{オペコー�
 \texttt{add.s32} や \texttt{ld.global.f32} のように操作の対象とする型を
 指定する．
 
-\begin{definition}[ガード述語，述語レジスタ]
-  \term[じゅつごれじすた]{述語レジスタ}[predicate register]は
+\begin{definition}[ガードプレディケート，プレディケートレジスタ]
+  \term[ぷれでぃけーとれじすた]{プレディケートレジスタ}[predicate register]は
   \texttt{.pred} 型の1ビットの PTX レジスタであり，他のレジスタと同様に
   \texttt{.reg .pred p, q;} のように宣言する．命令の前に置いた
-  \term[がーどじゅつご]{ガード述語}[guard predicate] \texttt{@p} は
+  \term[がーどぷれでぃけーと]{ガードプレディケート}[guard predicate] \texttt{@p} は
   その命令を条件付きにする．命令は \texttt{p} が真であるスレッドでのみ
   効果を持つ．\texttt{@!p} はその否定を使う．ガードのない命令は
   無条件に実行される．
 \end{definition}
 
-述語レジスタはすべての PTX レジスタと同様に仮想的である．
+プレディケートレジスタはすべての PTX レジスタと同様に仮想的である．
 \texttt{.pred} 型は，1ビットで足りることを \texttt{ptxas} に
-伝える \cite[§9.3]{nvidia2026ptx}．\margin{述語は，第5章と第6章の
-if 変換と述語付き実行の背後にある仕組みである．}述語を設定するのは
+伝える \cite[§9.3]{nvidia2026ptx}．\margin{プレディケートは，第5章と第6章の
+if 変換とプレディケート実行の背後にある仕組みである．}プレディケートを設定するのは
 最も一般には \texttt{setp} であり，これは \enquote{2つの数値を関係演算子で
 比較する} \cite[§9.7.7.2]{nvidia2026ptx}．\texttt{setp} は
 \texttt{|} で区切った2つのデスティネーションに書き込むことができ
 （\texttt{shfl.sync} などいくつかの命令も同じ記法を使う），
 2つ目には比較結果の否定が入る．
 
-\begin{example}[述語による分岐の除去]
+\begin{example}[プレディケートによる分岐の除去]
   \label{ex:l10-predication}
   文 \texttt{if (a < b) c = c + 1; else c = c - 1;} は，\texttt{a}，
   \texttt{b}，\texttt{c} がそれぞれ \texttt{\%r1}，\texttt{\%r2}，
@@ -360,7 +360,7 @@ if 変換と述語付き実行の背後にある仕組みである．}述語を�
 \texttt{ne}，\texttt{lt}，\texttt{le}，\texttt{gt}，\texttt{ge} である．
 符号なし整数では \texttt{eq}，\texttt{ne}，\texttt{lo}，\texttt{ls}，
 \texttt{hi}，\texttt{hs}（lower，lower or same，higher，higher or same）を
-使う \cite[§9.3.1]{nvidia2026ptx}．}述語付きの形は，ダイバージェンス
+使う \cite[§9.3.1]{nvidia2026ptx}．}プレディケート付きの形は，ダイバージェンス
 （第6章）の危険と引き換えに両側を発行する．このような短い本体では
 コンパイラはこの形を選ぶ．
 
@@ -673,7 +673,7 @@ B3$\to$B2 のように，ループを開始するブロックへ戻る辺を
 後ろ向きの問題は逆向きに，値の使用からそれが計算された場所へと
 進む．$\mathrm{IN}[B]=f_B(\mathrm{OUT}[B])$，
 $\mathrm{OUT}[B]=\bigcup_{S\in\mathrm{succ}(B)}\mathrm{IN}[S]$
-である．\margin{レジスタ割り付けの背後にある後ろ向き解析である生存解析は
+である．\margin{レジスタ割り付けの背後にある後ろ向き解析である生存変数解析は
 第11章の主題である．本書で扱う2つの解析はどちらも和集合を合流演算とする．}
 後に示す\cref{fig:l10-rd-cfg}の CFG では，B5 の先行ブロックは B3 と
 B4 なので，前向き解析では
@@ -945,7 +945,7 @@ $d_7$ は，関数がその終わりでなお観測できる値の定義であ�
   ptxas によって SASS になる．nvcc が作るファットバイナリは両方を持つので，
   ビルド時に存在しなかった GPU 向けにドライバが PTX を JIT コンパイルできる．
   PTX は仮想 ISA であり，0個から4個のオペランドを持つ型付きの命令，
-  無制限の仮想レジスタ，\texttt{setp} で設定するガード述語を持つ．
+  無制限の仮想レジスタ，\texttt{setp} で設定するガードプレディケートを持つ．
   オプティマイザは，3つのリーダ規則で求めた基本ブロックに分割され，
   制御フローグラフで結ばれた3番地コードを対象とする．大域最適化は
   データフロー解析に基づく．ブロックごとの伝達関数，合流点での合流演算，
@@ -953,7 +953,7 @@ $d_7$ は，関数がその終わりでなお観測できる値の定義であ�
   $\mathrm{OUT}[B]=\mathrm{gen}_B\cup(\mathrm{IN}[B]-\mathrm{kill}_B)$
   と先行ブロックにわたる和集合としての $\mathrm{IN}[B]$ による前向き解析であり，
   ビットベクタで効率よく計算される．この解析は，定義域，方向，伝達関数，
-  合流演算，境界条件，初期値によって定まる．第11章は生存解析について
+  合流演算，境界条件，初期値によって定まる．第11章は生存変数解析について
   これら6項目を埋める．
 \end{keypoint}
 

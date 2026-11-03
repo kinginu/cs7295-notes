@@ -145,7 +145,7 @@ dynamic instruction count	動的命令数	どうてきめいれいすう	4
 scoreboard	スコアボード	すこあぼーど	4	
 operand collector	オペランドコレクタ	おぺらんどこれくた	4	A18 ch3 term; not named in the lecture
 operand buffer	オペランドバッファ	おぺらんどばっふぁ	4	
-lane	レーン	れーん	4	one ALU execution path
+lane	レーン	れーん	4	see: SIMT lane
 active mask	アクティブマスク	あくてぃぶますく	4	
 special register	特殊レジスタ	とくしゅれじすた	4	%tid, %ctaid
 instruction fetch	命令フェッチ	めいれいふぇっち	4	
@@ -170,7 +170,7 @@ profiler	プロファイラ	ぷろふぁいら	5
 hotspot	ホットスポット	ほっとすぽっと	5	
 data transfer	データ転送	でーたてんそう	5	
 PCI Express (PCIe)	PCI Express	ぴーしーあいえくすぷれす	5	
-pinned memory	ピン留めメモリ	ぴんどめめもり	5	page-locked memory, ページロックメモリ
+pinned memory	ピン留めメモリ	ぴんどめめもり	5	also: page-locked memory (ページロックメモリ)
 asynchronous copy	非同期コピー	ひどうきこぴー	5	cudaMemcpyAsync
 overlap of computation and transfer	計算と転送のオーバーラップ	けいさんとてんそうのおーばーらっぷ	5	
 CUDA stream	CUDAストリーム	くーだすとりーむ	5	
@@ -241,7 +241,7 @@ physical address	物理アドレス	ぶつりあどれす	7
 address translation	アドレス変換	あどれすへんかん	7	
 page	ページ	ぺーじ	7	
 virtual page number (VPN)	仮想ページ番号	かそうぺーじばんごう	7	
-physical frame number (PFN)	物理フレーム番号	ぶつりふれーむばんごう	7	also PPN
+physical frame number (PFN)	物理フレーム番号	ぶつりふれーむばんごう	7	also: PPN
 page offset	ページオフセット	ぺーじおふせっと	7	
 page table	ページテーブル	ぺーじてーぶる	7	
 page table entry (PTE)	ページテーブルエントリ	ぺーじてーぶるえんとり	7	
@@ -303,7 +303,7 @@ first-order model	一次近似モデル	いちじきんじもでる	8
 fused multiply-add (FMA)	融合積和演算（FMA）	ゆうごうせきわえんざん	8	
 Roofline model	ルーフラインモデル	るーふらいんもでる	8	
 arithmetic intensity	演算強度	えんざんきょうど	8	FLOP per byte
-operational intensity	演算強度（DRAMバイト当たり）	えんざんきょうどどらむばいとあたり	8	Williams 2009 term: FLOPs per DRAM byte
+operational intensity	演算強度（DRAMバイト当たり）	えんざんきょうどでぃーらむばいとあたり	8	Williams 2009 term: FLOPs per DRAM byte
 compute-bound	演算律速	えんざんりっそく	8	
 memory-bound	メモリ律速	めもりりっそく	8	
 ridge point	リッジポイント	りっじぽいんと	8	
@@ -370,8 +370,8 @@ fat binary	ファットバイナリ	ふぁっとばいなり	10
 JIT compilation	JITコンパイル	じっとこんぱいる	10	
 code generation	コード生成	こーどせいせい	10	
 directive	ディレクティブ	でぃれくてぃぶ	10	PTX .target, .reg, ...
-guard predicate	ガード述語	がーどじゅつご	10	@p / @!p
-predicate register	述語レジスタ	じゅつごれじすた	10	.pred
+guard predicate	ガードプレディケート	がーどぷれでぃけーと	10	@p / @!p
+predicate register	プレディケートレジスタ	ぷれでぃけーとれじすた	10	.pred
 opcode	オペコード	おぺこーど	10	
 operand	オペランド	おぺらんど	10	
 label	ラベル	らべる	10	
@@ -442,7 +442,7 @@ activation function	活性化関数	かっせいかかんすう	12
 pooling	プーリング	ぷーりんぐ	12	
 dot product	内積	ないせき	12	
 ops:byte ratio	演算／バイト比	えんざんばいとひ	12	V100: 138.9
-math-limited / memory-limited	演算律速／メモリ律速	えんざんりっそくめもりりっそく	12	GEMM guide wording; see M8
+math-limited / memory-limited	演算律速／メモリ律速	えんざんりっそくめもりりっそく	12	see: compute-bound, memory-bound (GEMM guide wording)
 tile quantization	タイル量子化	たいるりょうしか	12	GEMM guide
 wave quantization	ウェーブ量子化	うぇーぶりょうしか	12	GEMM guide
 matrix multiply-accumulate (MMA)	行列積和演算（MMA）	ぎょうれつせきわえんざん	12	
@@ -457,7 +457,7 @@ sign bit	符号ビット	ふごうびっと	12
 exponent	指数部	しすうぶ	12	
 mantissa (fraction)	仮数部	かすうぶ	12	
 exponent bias	指数バイアス	しすうばいあす	12	
-subnormal number	非正規化数	ひせいきかすう	12	also denormal
+subnormal number	非正規化数	ひせいきかすう	12	also: denormal number
 underflow	アンダーフロー	あんだーふろー	12	
 overflow	オーバーフロー	おーばーふろー	12	
 NaN (not a number)	非数（NaN）	ひすう	12	

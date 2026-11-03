@@ -78,7 +78,7 @@ rest of this book.
     \SI{8}{\giga\bit\per\second} (Gen~3)} per lane and
     \enquote{often becomes one of the biggest bottlenecks}
     \cite{kim2012gpgpu}.  Lesson~5 treats host--device transfer.}
-  \item[ISA.]  The \term{instruction set architecture (ISA)}[命令セットアーキテクチャ]
+  \item[ISA.]  The \term{instruction set architecture (ISA)}[命令セットアーキテクチャ]\index{ISA|see{instruction set architecture (ISA)}}
     of a CPU is public and stable, because compiled software must keep
     running on every later implementation.  A GPU runs in accelerator
     mode behind a driver, which translates the program into whatever
@@ -141,10 +141,12 @@ between decode and scheduling, so that false dependences through reused
 register names do not serialise instructions.}  The scheduler is where
 the two basic CPU organisations differ.
 \begin{description}
-  \item[{\term[in-order execution]{In-order execution}[インオーダ実行]}] issues instructions in
+  \item[In order.]  A core that uses
+    \term{in-order execution}[インオーダ実行] issues instructions in
     program order: an instruction waits until every earlier one has
     issued, even when its own operands are ready.
-  \item[{\term[out-of-order execution]{Out-of-order execution}[アウトオブオーダ実行]}] issues any
+  \item[Out of order.]  A core that uses
+    \term{out-of-order execution}[アウトオブオーダ実行] issues any
     instruction whose operands are ready, regardless of program order,
     so that an instruction stalled on a cache miss does not block the
     independent ones behind it.
@@ -165,12 +167,12 @@ the two basic CPU organisations differ.
 A single-issue pipeline starts at most one instruction per cycle.  A
 \term{superscalar}[スーパースカラ] processor fetches, decodes and
 executes several instructions per cycle (\cref{fig:l01-cpu-pipeline}b),
-so its \term{instructions per cycle (IPC)}[サイクル当たり命令数]
+so its \term{instructions per cycle (IPC)}[サイクル当たり命令数]\index{IPC|see{instructions per cycle (IPC)}}
 exceeds one.\margin{Width in practice: Intel's Golden Cove core (2021)
 decodes up to six x86 instructions per cycle
 \cite[§2.4.1]{intel2026optimization}.}  How many instructions can actually run
 together is bounded by the program's
-\term{instruction-level parallelism (ILP)}[命令レベル並列性]: the
+\term{instruction-level parallelism (ILP)}[命令レベル並列性]\index{ILP|see{instruction-level parallelism (ILP)}}: the
 number of instructions that are independent of each other and could
 execute at the same time.
 
@@ -324,11 +326,13 @@ distributing it.  The running example is an array $A$ over which both
 the sum and the minimum and maximum are wanted, on two cores
 (\cref{fig:l01-decomposition}).
 \begin{description}
-  \item[{\term[task decomposition]{Task decomposition}[タスク分割]}] gives different
+  \item[By task.]  The split called
+    \term{task decomposition}[タスク分割] gives different
     \emph{operations} to different cores: core~1 computes the sum, core~2
     the minimum and maximum, and the whole of $A$ must be sent to both.
-  \item[{\term[data decomposition]{Data decomposition}[データ分割]}] gives different
-    \emph{data} to the cores, each of which performs every operation on
+  \item[By data.]  The split called
+    \term{data decomposition}[データ分割] gives different \emph{data}
+    to the cores, each of which performs every operation on
     its part: core~1 sums and scans the first half of $A$, core~2 the
     second half.  The partial results then have to be combined; the
     combining step is a \term{reduction}[リダクション], an operation
@@ -425,7 +429,7 @@ Architecture.}
 \subsection{Streaming multiprocessors and lanes}
 
 NVIDIA calls the core of a GPU a
-\term{streaming multiprocessor (SM)}[ストリーミング・マルチプロセッサ],
+\term{streaming multiprocessor (SM)}[ストリーミング・マルチプロセッサ]\index{SM|see{streaming multiprocessor (SM)}},
 also a SIMT multiprocessor.\margin{K12 §1.2.1: NVIDIA calls the core an
 SM and AMD a compute unit (CU); each holds a number of SIMD units, also
 called stream processors \cite{kim2012gpgpu}.}  Inside an SM
@@ -434,7 +438,7 @@ shared memory, a set of program counters and register files for the
 threads it holds, and many execution units.  Each execution unit is a
 \term{SIMT lane}[SIMTレーン]: one ALU that executes one thread's share
 of each instruction.  NVIDIA markets a lane as a
-\term{stream processor (CUDA core)}[ストリーミングプロセッサ（CUDAコア）],
+\term{stream processor (CUDA core)}[ストリーミングプロセッサ（CUDAコア）]\index{CUDA core|see{stream processor (CUDA core)}},
 which invites confusion with a CPU core.\caution{In this course
 \emph{core} $\ne$ stream processor.  A core is the SM; a stream
 processor is one lane of it.  A \enquote{\num{16896}-core} H100 is a
@@ -617,18 +621,18 @@ needed:
 \begin{itemize}
   \item cache hierarchies (L1 and L2 caches), where the graphics pipeline
     had needed only streaming access to textures;
-  \item \term{double precision (FP64)}[倍精度] arithmetic in addition to
-    \term{single precision (FP32)}[単精度], for high-performance
+  \item \term{double precision (FP64)}[倍精度]\index{FP64|see{double precision (FP64)}} arithmetic in addition to
+    \term{single precision (FP32)}[単精度]\index{FP32|see{single precision (FP32)}}, for high-performance
     computing;\margin{FP64 at half the FP32 rate is a data-centre feature: the
     A100 delivers \num{9.7}~TFLOP/s FP64 against \num{19.5}~TFLOP/s
     FP32 \cite{nvidia2020ampere}.}
   \item atomic operations and fast integer arithmetic, for more diverse
     workloads;
-  \item \term{high bandwidth memory (HBM)}[広帯域メモリ（HBM）], DRAM dies
+  \item \term{high bandwidth memory (HBM)}[広帯域メモリ（HBM）]\index{HBM|see{high bandwidth memory (HBM)}}, DRAM dies
     stacked beside the GPU on an interposer and connected through a
     very wide interface, which raised memory bandwidth far beyond what
     a board-level memory bus provides;
-  \item \term{half precision (FP16)}[半精度], a 16-bit floating-point
+  \item \term{half precision (FP16)}[半精度]\index{FP16|see{half precision (FP16)}}, a 16-bit floating-point
     format that doubles arithmetic throughput and halves memory traffic
     for machine-learning workloads that tolerate the reduced precision;
   \item the \term{tensor core}[テンソルコア], an execution unit that
@@ -653,7 +657,7 @@ and Transformer Engine serve machine learning; its register files are
 larger;\caution{Lecture vs whitepaper: the register file per SM is
 \SI{256}{\kibi\byte} on A100 and H100 alike; only the total grows with
 the SM count, from \SI{27}{\mebi\byte} to \SI{33}{\mebi\byte} (HWP
-Table~3 \cite{nvidia2022hopper}).} a \term{Tensor Memory Accelerator (TMA)}[テンソルメモリアクセラレータ]
+Table~3 \cite{nvidia2022hopper}).} a \term{Tensor Memory Accelerator (TMA)}[テンソルメモリアクセラレータ]\index{TMA|see{Tensor Memory Accelerator (TMA)}}
 moves multidimensional blocks of data between global and shared memory
 asynchronously, relieving the threads of address generation; the number
 of SMs and of floating-point units per SM has grown again; and an

@@ -109,7 +109,7 @@ __global__ void split(float *a) {
   経路がブロック $Y$ を通るとき，$Y$ は $X$ の
   \term[こうしはいせってん]{後支配節点}[post-dominator]であり，
   $X$ の
-  \term[ちょくせつこうしはいせってん]{直接後支配節点}[immediate post-dominator (IPDOM)]（IPDOM）
+  \term[ちょくせつこうしはいせってん]{直接後支配節点}[immediate post-dominator (IPDOM)]\index{IPDOM|see{直接後支配節点}}（IPDOM）
   は $X$ 自身を除いて最も近い後支配節点である．分岐ブロックの IPDOM が
   通常の再収束点であり，\cref{fig:l06-divergent-cfg}ではそれは BB4 である．
 \end{definition}
@@ -374,7 +374,7 @@ SM の多くのワープはしばしばプログラムの同じ地点にあり�
 
 \begin{definition}[動的ワープ形成]
   \label{def:l06-dwf}
-  \term[どうてきわーぷけいせい]{動的ワープ形成}[dynamic warp formation (DWF)]（DWF）
+  \term[どうてきわーぷけいせい]{動的ワープ形成}[dynamic warp formation (DWF)]\index{DWF|see{動的ワープ形成}}（DWF）
   と呼ばれる手法は，同じ PC を実行しようとしている異なるワープの
   スレッドを，実行時に，より満たされたアクティブマスクを持つ新しい
   ワープにまとめ直す（\cref{fig:l06-dwf}）．
@@ -482,9 +482,9 @@ SM のレジスタファイルは常駐するすべてのスレッドに専用�
 2番目の観察は CPU より GPU で重い（\cref{fig:l06-live-dead}）．
 CPU では \texttt{add} と \texttt{mov} は連続するサイクルで実行され，
 \texttt{r2} が非生存なのは1サイクル以下である．GPU ではスケジューラが
-ワープをインターリーブするので，同じワープの次の命令は数十ワープ命令後に
+ワープをインタリーブするので，同じワープの次の命令は数十ワープ命令後に
 発行されることがある．その間ずっと，\texttt{r2} の非生存の値がワープの
-全スレッドのレジスタを1つずつ占有する．\margin{このインターリーブを
+全スレッドのレジスタを1つずつ占有する．\margin{このインタリーブを
 決めるワープスケジューラは第7章で論じる．貪欲なスケジューラは間隔を
 縮め，ラウンドロビンのスケジューラは間隔を準備のできたワープの数まで
 引き延ばす．}
@@ -502,7 +502,7 @@ CPU では \texttt{add} と \texttt{mov} は連続するサイクルで実行さ
 
 \begin{example}
   \label{ex:l06-live-dead}
-  SM が24ワープをラウンドロビンでインターリーブし，1巡ごとに各ワープ
+  SM が24ワープをラウンドロビンでインタリーブし，1巡ごとに各ワープ
   1命令を発行するので，1つのワープの連続する命令は24サイクル離れる．
   命令 $k$ が生成し，命令 $k+1$ が最後に読み，命令 $k+5$ が上書きする値は，
   $24$ サイクル生存し $4 \times 24 = 96$ サイクル非生存である．その
@@ -525,11 +525,11 @@ CPU では \texttt{add} と \texttt{mov} は連続するサイクルで実行さ
   \label{def:l06-hierarchical-rf}
   \term[かいそうがたれじすたふぁいる]{階層型レジスタファイル}[hierarchical register file]
   は，より小さく速いレジスタ記憶を
-  \term[しゅれじすたふぁいる]{主レジスタファイル}[main register file (MRF)]（MRF）
+  \term[しゅれじすたふぁいる]{主レジスタファイル}[main register file (MRF)]\index{MRF|see{主レジスタファイル}}（MRF）
   の前に置く．\cref{fig:l06-rf-hierarchy}の2つの形態は，最近生成された
   値を保持して MRF への読み書きをふるい分ける1段または2段の小さな階層
   （L0 と L1 RF）である
-  \term[れじすたふぁいるきゃっしゅ]{レジスタファイルキャッシュ}[register file cache (RFC)]（RFC）
+  \term[れじすたふぁいるきゃっしゅ]{レジスタファイルキャッシュ}[register file cache (RFC)]\index{RFC|see{レジスタファイルキャッシュ}}（RFC）
   と，高速部と低速部を持ち，低速で大きい部分をより高密度の技術で作れる
   \emph{分割型}レジスタファイルである．
 \end{definition}
@@ -557,7 +557,7 @@ K12 §1.4.1 が述べるように GPU は精密例外をサポートしないの
 \cite{kim2012gpgpu}，値はキャッシュの中だけに存在してよい．
 
 分割型ファイルの低速部の候補は
-\term[ふきはつせいめもり]{不揮発性メモリ}[non-volatile memory (NVM)]（NVM），
+\term[ふきはつせいめもり]{不揮発性メモリ}[non-volatile memory (NVM)]\index{NVM|see{不揮発性メモリ}}（NVM），
 すなわち電力なしで内容を保持するメモリである．NVM で作った低速で大きい
 部分はエネルギーの節約を狙ったものであり，頻繁に使われる値は高速部に
 とどまる．\margin{レジスタファイルの NVM は研究の方向であって，
@@ -567,9 +567,9 @@ K12 §1.4.1 が述べるように GPU は精密例外をサポートしないの
 キャッシュの判断は，値の生存期間を知っているコンパイラに移すこともできる．
 Gebhart，Keckler と Dally \cite{gebhart2011compile} はハードウェアの RFC を，
 コンパイラが内容を割り当てるスレッドごとの小さなファイルである
-\term[おぺらんどれじすたふぁいる]{オペランドレジスタファイル}[operand register file (ORF)]（ORF）
+\term[おぺらんどれじすたふぁいる]{オペランドレジスタファイル}[operand register file (ORF)]\index{ORF|see{オペランドレジスタファイル}}（ORF）
 と，最新の結果を即座の再利用のために保持するスレッドあたり1エントリの
-\term[らすとりざるとふぁいる]{ラストリザルトファイル}[last result file (LRF)]（LRF）
+\term[らすとりざるとふぁいる]{ラストリザルトファイル}[last result file (LRF)]\index{LRF|see{ラストリザルトファイル}}（LRF）
 で置き換える．\margin{コンパイラ管理の階層はレジスタファイルの
 エネルギーを最大 54\,\% 削減すると報告されている．ハードウェアのみの
 キャッシュでは 34\,\% である．彼らのベースラインでは，レジスタファイルは
@@ -730,7 +730,7 @@ Shared Memory．}カーネルによって後の2つの使い方は大きく異�
   比較される．満杯のキャッシュは
   \term[ちかんぽりし]{置換ポリシ}[replacement policy]が選んだブロックを
   追い出す．たとえば
-  \term[えるあーるゆー]{LRU}[LRU (least recently used)]は，最後の
+  \term[えるあーるゆー]{LRU}[LRU (least recently used)]\index{least recently used|see{LRU}}は，最後の
   アクセスが最も過去にあるブロックを追い出す．
   \term[そふとうぇあかんりきゃっしゅ]{ソフトウェア管理キャッシュ}[software-managed cache]
   （第3章のスクラッチパッドメモリ，CUDA の共有メモリ）はプログラムが

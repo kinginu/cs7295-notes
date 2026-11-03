@@ -157,7 +157,7 @@ transfer optimisations; BPG §10.1 Data Transfer Between Host and Device;
 \begin{definition}[Data transfer, PCIe]
   A \term{data transfer}[データ転送] is the copy of a buffer between host
   memory and device memory (\texttt{cudaMemcpy} and its variants).  The
-  interface it crosses is \term{PCI Express (PCIe)}[PCI Express], a
+  interface it crosses is \term{PCI Express (PCIe)}[PCI Express]\index{PCIe|see{PCI Express (PCIe)}}, a
   serial point-to-point bus of 1 to 16 lanes, whose bandwidth is one to
   two orders of magnitude below that of the device
   memory.\sidenote{K12 §1.2 quotes \SI{4}{\giga\bit\per\second} per lane
@@ -190,7 +190,7 @@ hide the two copies.
 \begin{definition}[Pinned memory]
   Host memory that the operating system has promised not to page out or
   move is called \term{pinned memory}[ピン留めメモリ] (page-locked
-  memory); it can be used
+  memory\index{page-locked memory|see{pinned memory}}); it can be used
   by the GPU's DMA engine, which reads and writes it directly by physical
   address.  It is allocated with \texttt{cudaMallocHost()} or
   \texttt{cudaHostAlloc()} and freed with \texttt{cudaFreeHost()}
@@ -384,7 +384,7 @@ memory.
 
 \begin{definition}[Unified virtual addressing]
   Under
-  \term{unified virtual addressing (UVA)}[統合仮想アドレッシング（UVA）],
+  \term{unified virtual addressing (UVA)}[統合仮想アドレッシング（UVA）]\index{UVA|see{unified virtual addressing (UVA)}},
   host memory and the memories of all devices share one virtual
   address space: a pointer value identifies its memory by itself, the
   runtime can tell from the address which memory a pointer refers to

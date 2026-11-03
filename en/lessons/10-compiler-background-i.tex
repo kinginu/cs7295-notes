@@ -219,7 +219,7 @@ the compiler proper sees only \texttt{int threads = 256;}.
 The output of the device back end is not yet machine code.
 
 \begin{definition}[PTX and SASS]
-  \term{PTX (Parallel Thread Execution)}[PTX] is NVIDIA's virtual ISA
+  \term{PTX (Parallel Thread Execution)}[PTX]\index{Parallel Thread Execution|see{PTX (Parallel Thread Execution)}} is NVIDIA's virtual ISA
   (Lesson~1): an architecture-independent instruction set whose
   programs are translated into machine code later.  Its registers are
   virtual, so PTX code has no register allocation.
@@ -322,9 +322,9 @@ instructions, a state space (\texttt{.global}, \texttt{.shared},
 instruction names the type it operates on, as in \texttt{add.s32} or \texttt{ld.global.f32}.
 
 \begin{definition}[Guard predicate, predicate register]
-  A \term{predicate register}[述語レジスタ] is a one-bit PTX register
+  A \term{predicate register}[プレディケートレジスタ] is a one-bit PTX register
   of type \texttt{.pred}, declared like any other register, e.g.\
-  \texttt{.reg .pred p, q;}.  A \term{guard predicate}[ガード述語]
+  \texttt{.reg .pred p, q;}.  A \term{guard predicate}[ガードプレディケート]
   \texttt{@p} placed before an instruction makes it conditional: the
   instruction takes effect only in threads where \texttt{p} is true;
   \texttt{@!p} uses the negation.  An instruction without a guard is

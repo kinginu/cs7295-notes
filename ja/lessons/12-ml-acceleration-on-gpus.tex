@@ -25,9 +25,9 @@ ISA の新しい命令として見える．
 \section{GPU と機械学習}
 \label{sec:l12-gpu-ml}
 
-\term[きかいがくしゅう]{機械学習}[machine learning (ML)]の分野は，
+\term[きかいがくしゅう]{機械学習}[machine learning (ML)]\index{ML|see{機械学習}}の分野は，
 パラメータをデータに合わせて調整したモデルを構築する．今日その支配的な
-モデルは\term[しんそうにゅーらるねっとわーく]{深層ニューラルネットワーク}[deep neural network (DNN)]（DNN）
+モデルは\term[しんそうにゅーらるねっとわーく]{深層ニューラルネットワーク}[deep neural network (DNN)]\index{DNN|see{深層ニューラルネットワーク}}（DNN）
 であり，それぞれが大きな数値配列を変換する層を積み重ねたものである．\source{M12，GPU と
 ML；PMPP ch.~16；\cite{nvidia2026gemmguide}．}本節では，
 GPU がなぜこのワークロードに適しているのか，それがどのような演算から
@@ -41,7 +41,7 @@ GPU の4つの性質が，ML の学習と推論の要求に合っている．
   \item[浮動小数点スループット．]  ML は高いデータ並列性をもつ非常に
     多数の浮動小数点演算を行い，GPU のトランジスタの大部分は浮動小数点
     スループットに充てられている（第1章）．
-  \item[メモリ帯域．]  GPU とそのメモリはパッケージ上で直接接続されて
+  \item[メモリ帯域幅．]  GPU とそのメモリはパッケージ上で直接接続されて
     いるので，積層された広帯域メモリ（HBM）を採用しやすい．CPU ソケットは
     標準のメモリインタフェースを維持しなければならない．\margin{GPU 当たりの
     HBM 帯域：\SI{900}{\giga\byte\per\second}（V100），
@@ -97,13 +97,13 @@ ch.~16）．\margin{要素ごとの演算とリダクションはすべての要
 ライブラリは ML の行列積を1つの標準的な形で表す．
 
 \begin{definition}[GEMM]
-  \term[じぇむいっぱんぎょうれつせき]{GEMM（一般行列積）}[GEMM (general matrix multiplication)]という演算は
+  \term[じぇむいっぱんぎょうれつせき]{GEMM（一般行列積）}[GEMM (general matrix multiplication)]\index{GEMM|see{GEMM（一般行列積）}}という演算は
   \begin{equation}
     C \leftarrow \alpha A B + \beta C ,
     \label{eq:l12-gemm}
   \end{equation}
   を計算する．ここで $A$ は $M \times K$ 行列，$B$ は $K \times N$，$C$ は
-  $M \times N$ であり，$\alpha$，$\beta$ はスカラーである．$\alpha = 1$，
+  $M \times N$ であり，$\alpha$，$\beta$ はスカラである．$\alpha = 1$，
   $\beta = 0$ のとき，これは単純な積 $C = AB$ である．
 \end{definition}
 
@@ -125,17 +125,17 @@ FP16 の入力（要素当たり2バイト）では，$A$ と $B$ を読み $C$ 
 再利用を無視している．実際のカーネルはより多くのバイト（$A$ と $B$ の
 タイルは何度も読まれる）か，より少ないバイト（L2 に留まるオペランド）を
 移動する．}%
-マシンにもそれ自身の強度があり，ピーク演算性能をメモリ帯域で割った値である．
+マシンにもそれ自身の強度があり，ピーク演算性能をメモリ帯域幅で割った値である．
 両者の比較が，どの資源がカーネルを制限するかを決める．
 
 \begin{definition}[演算／バイト比；演算律速とメモリ律速]
   プロセッサの\term[えんざんばいとひ]{演算／バイト比}[ops:byte ratio]は，
-  そのピーク演算性能をピークメモリ帯域で割ったもので，単位は FLOP/バイト
+  そのピーク演算性能をピークメモリ帯域幅で割ったもので，単位は FLOP/バイト
   である．これは第8章のルーフラインモデルのリッジポイントにあたる．
   カーネルの演算強度がこの比のどちら側にあるかで，カーネルは
-  \term[えんざんりっそくめもりりっそく]{演算律速／メモリ律速}[math-limited / memory-limited]
+  \term*{演算律速／メモリ律速}\index{えんざんりっそく@演算律速}\index{めもりりっそく@メモリ律速}
   となる．比より上なら演算ユニットがボトルネック（演算律速）であり，下なら
-  メモリ帯域がボトルネック（メモリ律速）である．
+  メモリ帯域幅がボトルネック（メモリ律速）である．
 \end{definition}
 
 \begin{example}
@@ -181,7 +181,7 @@ FP16 で8要素の倍数（A100 では64の倍数）のとき最も効率がよ�
 
 \subsection{SIMD レーンと行列ユニット}
 
-通常の SIMT レーン上では，行列積はスカラーの積和演算のループである．
+通常の SIMT レーン上では，行列積はスカラの積和演算のループである．
 \cref{lst:l12-matmul4}のカーネルは，$C$ の要素ごとに1スレッドを用いて
 $4 \times 4$ の積を計算する．各スレッドは $k$ についてのループを逐次実行し，
 累積中の和をプライベートなレジスタに保持する．
@@ -229,14 +229,14 @@ SIMD データパスは，1回の演算でせいぜい1つの要素しか計算�
 \end{figure}
 
 \begin{definition}[MAC，MMA，テンソルコア命令]
-  \term[せきわえんざん]{積和演算（MAC）}[multiply-accumulate (MAC)]は，
+  \term[せきわえんざん]{積和演算（MAC）}[multiply-accumulate (MAC)]\index{MAC|see{積和演算（MAC）}}は，
   積を累積中の和に加える演算 $c \leftarrow c + a b$ である．これを1回の丸めで
   行うものが FMA である．\caution{講義 vs ISA：\texttt{HMMA.1688} はワープ
   レベルの形状 $m16n8k8$（$16 \times 8$ の結果，$K = 8$）を表し，PTX の
   \texttt{mma} の形状 \texttt{.m16n8k8} \cite{nvidia2026ptx} にあたる．
   $4 \times 4$ の積ではない．$4 \times 4 \times 4$ という数字は Volta の
   テンソルコア1個のクロック当たりのデータパスである \cite{nvidia2020ampere}．}
-  \term[ぎょうれつせきわえんざん]{行列積和演算（MMA）}[matrix multiply-accumulate (MMA)]は
+  \term[ぎょうれつせきわえんざん]{行列積和演算（MMA）}[matrix multiply-accumulate (MMA)]\index{MMA|see{行列積和演算（MMA）}}は
   同じ考えを行列全体に適用し，$D \leftarrow A B + C$ を1つの演算として
   行う．テンソルコア（第1章）は NVIDIA の MMA ユニットであり，GPU は
   それを数百個もつ．NVIDIA の機械語（SASS）では，半精度の MMA 命令は
@@ -302,7 +302,7 @@ execute 256 FP16 FMA operations per clock}，すなわち $8 \times 4 \times 8$
   ずつ移動する．各 PE は通過する値で計算し，それを次へ渡す．\sidenote{Kung は，
   アレイの中をデータが律動的に，脈打つように流れることにちなんでこの構造を
   名付けた．メモリから取り出された各値は出ていくまでに多くの PE で
-  使われるので，メモリ帯域が制約となる場合にこの構造は魅力的である
+  使われるので，メモリ帯域幅が制約となる場合にこの構造は魅力的である
   \cite{kung1982systolic}．Google の最初の TPU は $256 \times 256$ の
   アレイ，すなわち\enquote{a 65,536 8-bit MAC matrix multiply unit}を
   中心に構成され，ピークは 92~TOPS である \cite{jouppi2017tpu}．}
@@ -380,7 +380,7 @@ FP8 演算を実用可能にする \cite{nvidia2022hopper}．\margin{狭い形�
 
 \begin{keypoint}
   SIMD/SIMT レーンは行列積を高速化でき，専用の行列ユニットはそれを
-  はるかに高速化する．どちらの場合も，メモリ帯域を使い切ることが決定的に
+  はるかに高速化する．どちらの場合も，メモリ帯域幅を使い切ることが決定的に
   重要である．演算強度が演算／バイト比を下回る GEMM は，ユニットを速く
   しても何も得られない．
 \end{keypoint}
@@ -437,7 +437,7 @@ $0.0012 = 1.2 \times 10^{-3}$ と $0.0000012 = 1.2 \times 10^{-6}$ は
   2進の\term[ふどうしょうすうてんけいしき]{浮動小数点形式}[floating-point format]は，
   数を3つのフィールドに格納する．\term[ふごうびっと]{符号ビット}[sign bit] $s$，
   $w$ ビットの\term[しすうぶ]{指数部}[exponent]フィールド $e$，
-  $p$ ビットの\term[かすうぶ]{仮数部}[mantissa (fraction)]フィールド $f$ で
+  $p$ ビットの\term[かすうぶ]{仮数部}[mantissa (fraction)]\index{しょうすうぶ@小数部|see{仮数部}}フィールド $f$ で
   ある．\margin{\enquote{mantissa}，\enquote{fraction}，\enquote{significand}
   は実際には同じフィールドを指す．IEEE 754 は格納されるフィールドを
   trailing significand と呼ぶ \cite{ieee754-2019}．}全体の幅は
@@ -469,12 +469,12 @@ $0.0012 = 1.2 \times 10^{-3}$ と $0.0000012 = 1.2 \times 10^{-6}$ は
 \end{figure}
 
 \begin{definition}[ML 向けの形式]
-  \term{bfloat16}[bfloat16 (BF16)]（BF16）という形式は\enquote{includes an 8-bit
+  \term{bfloat16}[bfloat16 (BF16)]\index{BF16|see{bfloat16}}（BF16）という形式は\enquote{includes an 8-bit
   exponent, 7-bit mantissa, and 1 sign-bit}\cite{nvidia2020ampere}である．
   FP32 の範囲を FP16 より低い精度でもつ．\margin{実際には，E4M3 は重みと
   活性化に，E5M2 はより広い範囲にわたる勾配に使われる傾向がある
   \cite{micikevicius2022fp8}．}
-  \term{TF32}[TensorFloat-32 (TF32)]（TensorFloat-32）という形式は\enquote{8-bit
+  \term{TF32}[TensorFloat-32 (TF32)]\index{TensorFloat-32|see{TF32}}（TensorFloat-32）という形式は\enquote{8-bit
   exponent (same as FP32), 10-bit mantissa (same precision as FP16) and 1
   sign-bit}\cite{nvidia2020ampere}をもつ．A100 のテンソルコアは FP32 の
   入力にこれを用いる．8ビットの形式 \term{FP8}[FP8] には2つの符号化がある．
@@ -543,7 +543,7 @@ IEEE の規則から得られる $240$ ではない．}形式の
 埋めるために予約されている．
 
 \begin{definition}[非正規化数，アンダーフロー，オーバーフロー，NaN]
-  \term[ひせいきかすう]{非正規化数}[subnormal number]は指数フィールド
+  \term[ひせいきかすう]{非正規化数}[subnormal number]\index{でのーまるすう@デノーマル数|see{非正規化数}}は指数フィールド
   $e = 0$ をもち，暗黙の先頭の1なしに値
   $(-1)^{s} \times (f / 2^{p}) \times 2^{1 - b}$ をとる．$f = 0$ なら
   $\pm 0$ である．非正規化数は，ゼロと最小の正規化数の間の隙間を等間隔の
@@ -553,7 +553,7 @@ IEEE の規則から得られる $240$ ではない．}形式の
   \term[おーばーふろー]{オーバーフロー}[overflow]を起こす（既定の丸めでは
   $\pm\infty$ になる．E4M3 のように無限大をもたない形式では飽和するか NaN に
   なる）．指数フィールド $e = 2^w - 1$ は $\pm\infty$（$f = 0$）と
-  \term[ひすう]{非数（NaN）}[NaN (not a number)]（$f \ne 0$）を符号化する．
+  \term[ひすう]{非数（NaN）}[NaN (not a number)]\index{NaN|see{非数（NaN）}}（$f \ne 0$）を符号化する．
   NaN は $0/0$ や $\infty - \infty$ のような無効な演算の結果である．
 \end{definition}
 
@@ -608,7 +608,7 @@ Transformer Engine は最も単純なそうした変換を適用する．テン�
 \cite{nvidia2022hopper}．}最も重要なのはゼロ付近の分解能である．
 
 \begin{definition}[S2FP8]
-  \term{S2FP8}[shifted and squeezed FP8 (S2FP8)]という形式
+  \term{S2FP8}[shifted and squeezed FP8 (S2FP8)]\index{shifted and squeezed FP8|see{S2FP8}}という形式
   \cite{cambier2020s2fp8} は，テンソル $X$ を，テンソルごとの2つの
   パラメータ $\alpha$（スクイーズ）と $\beta$（シフト）によるべき変換の後に
   FP8 で格納する．
@@ -681,7 +681,7 @@ GPU が MMA ユニットを選んだのは，GEMM が ML を支配し
 機能からチップ面積を奪う．生の性能と同じくらいプログラム可能性が重要である．
 NVIDIA は $4 \times 4$ のユニット（Volta のクロック当たり
 $4 \times 4 \times 4$ の積）から始め，他のベンダも同様のユニットをもつ．
-Intel の\term{AMX}[Advanced Matrix Extensions (AMX)]（Advanced Matrix
+Intel の\term{AMX}[Advanced Matrix Extensions (AMX)]\index{Advanced Matrix Extensions|see{AMX}}（Advanced Matrix
 Extensions）は，x86 CPU に $16 \times 16$ の行列タイルとタイル命令を
 追加する．\caution{講義 vs ドキュメント：Intel は，最大16行×64バイトの
 AMX タイルレジスタを8個と記述している．その INT8 の例は $16 \times 64$ の
@@ -836,7 +836,7 @@ memory storage and bandwidth by almost 2x}
 2つの2ビットインデックスとして格納する．64ビット中 $32 + 4 = 36$ ビット，
 約 56\,\% である．}そのスパースなテンソルコアの性能は密な場合の2倍である
 （\cref{tab:l12-tensor-cores}）．行列と行列の積を超えて，
-\term[そぎょうれつべくとるせき]{疎行列ベクトル積}[sparse matrix-vector multiplication (SpMV)]（SpMV），
+\term[そぎょうれつべくとるせき]{疎行列ベクトル積}[sparse matrix-vector multiplication (SpMV)]\index{SpMV|see{疎行列ベクトル積}}（SpMV），
 すなわち疎な $A$ による $y = Ax$ は，多くの HPC とグラフのアルゴリズムの
 中核であり，その高速化は活発な研究課題である．演算強度が低くアクセスが
 不規則なので，密な行列ユニットからはほとんど恩恵を受けない．

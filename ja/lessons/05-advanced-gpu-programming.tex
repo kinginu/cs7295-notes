@@ -160,7 +160,7 @@ GPU プログラムの実行時間は次のように分解される．
   （\texttt{cudaMemcpy} とその変種）を
   \term[でーたてんそう]{データ転送}[data transfer]という．それが通る
   インタフェースは
-  \term[ぴーしーあいえくすぷれす]{PCI Express}[PCI Express (PCIe)]
+  \term[ぴーしーあいえくすぷれす]{PCI Express}[PCI Express (PCIe)]\index{PCIe|see{PCI Express}}
   （PCIe）であり，1--16レーンのシリアルなポイントツーポイントバスで，
   その帯域幅はデバイスメモリより1--2桁低い．\sidenote{K12 §1.2 は PCIe
   Gen~2 で1レーン当たり \SI{4}{\giga\bit\per\second}，Gen~3 で
@@ -193,7 +193,7 @@ GPU プログラムの実行時間は次のように分解される．
 \begin{definition}[ピン留めメモリ]
   オペレーティングシステムがページアウトも移動もしないと約束した
   ホストメモリを\term[ぴんどめめもり]{ピン留めメモリ}[pinned memory]
-  （ページロックメモリ）という．これは GPU の DMA エンジンが使用でき，
+  （ページロックメモリ\index{ぺーじろっくめもり@ページロックメモリ|see{ピン留めメモリ}}）という．これは GPU の DMA エンジンが使用でき，
   DMA エンジンは物理アドレスによって直接それを読み書きする．
   \texttt{cudaMallocHost()} または \texttt{cudaHostAlloc()} で割り当て，
   \texttt{cudaFreeHost()} で解放する \cite{harris2012datatransfer}．
@@ -386,7 +386,7 @@ CPU のメモリなので，置き換えられる\enquote{コピー}は同じ DR
 ある．
 
 \begin{definition}[統合仮想アドレッシング]
-  \term[とうごうかそうあどれっしんぐ]{統合仮想アドレッシング（UVA）}[unified virtual addressing (UVA)]
+  \term[とうごうかそうあどれっしんぐ]{統合仮想アドレッシング（UVA）}[unified virtual addressing (UVA)]\index{UVA|see{統合仮想アドレッシング（UVA）}}
   の下では，ホストメモリとすべてのデバイスのメモリが1つの仮想アドレス
   空間を共有する．ポインタの値はそれだけでそのメモリを特定し，ランタイム
   はアドレスからポインタがどのメモリを指すかを判別でき
@@ -583,7 +583,7 @@ float y2 = rsqrtf(x);        // SFU の1命令
       下回る場合だけである（BPG §13.2 Branch Predication）．
     \end{definition}
     ハードウェア側は第6章が示す．SIMT スタック，アクティブマスク，
-    そして第10章の PTX のガード述語である．
+    そして第10章の PTX のガードプレディケートである．
   \item[アトミック操作を避ける．]  多数のスレッドが更新する位置への
     アトミックな読み出し--変更--書き込みは，メモリまたは L2 キャッシュで
     それらを直列化する．アトミック操作は GPU の世代を経て大幅に安価に
@@ -711,7 +711,7 @@ Reduce Functions）．}
 
 \begin{definition}[ワープ投票関数]
   \term[わーぷとうひょうかんすう]{ワープ投票関数}[warp vote function]は，
-  参加する各レーンで述語 $p$ を評価し，その結果をワープ全体で結合する
+  参加する各レーンでプレディケート $p$ を評価し，その結果をワープ全体で結合する
   （CPG §7.19 Warp Vote Functions）．
   \begin{itemize}
     \item \texttt{\_\_all\_sync(mask, p)} は，$p$ がすべてのレーンで

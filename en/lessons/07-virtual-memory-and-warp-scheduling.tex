@@ -72,9 +72,9 @@ $2^k$ bytes has a $k$-bit offset.\index{PFN|see{physical frame number (PFN)}}\in
   \label{def:l07-tlb}
   The \term{page table}[ページテーブル] is the data structure, kept in
   memory, that holds the mapping; each
-  \term{page table entry (PTE)}[ページテーブルエントリ] maps one VPN to
+  \term{page table entry (PTE)}[ページテーブルエントリ]\index{PTE|see{page table entry (PTE)}} maps one VPN to
   a PFN and carries metadata such as valid and permission bits.  A
-  \term{TLB (translation lookaside buffer)}[TLB] is a small cache of
+  \term{TLB (translation lookaside buffer)}[TLB]\index{translation lookaside buffer|see{TLB (translation lookaside buffer)}} is a small cache of
   recently used translations.  A \term{TLB miss}[TLBミス] occurs when
   the TLB does not hold the translation, so the page table must be read;
   a \term{page fault}[ページフォールト] occurs when the page table holds

@@ -232,7 +232,7 @@ colouring fails and some values must leave the register file.
   A \term{register spill}[レジスタスピル] stores a live value from a
   register to memory, usually a stack slot, to free the register; the
   later load that brings the value back into a register before its next
-  use is a \term{fill (reload)}[フィル（再ロード）].
+  use is a \term{fill (reload)}[フィル（再ロード）]\index{reload|see{fill (reload)}}.
 \end{definition}
 
 PTX has no register allocation: its registers are virtual and
@@ -319,7 +319,7 @@ builds the chains into the names of the program.
   \label{def:l11-ssa}
   A program is in \term{SSA form}[SSA形式] when every variable is
   assigned at exactly one place in the program text.  The property is
-  called \term{static single assignment (SSA)}[静的単一代入]:
+  called \term{static single assignment (SSA)}[静的単一代入]\index{SSA|see{static single assignment (SSA)}}:
   \emph{static} because the single assignment may still execute many
   times, in a loop.  A program is converted by giving every definition
   of a variable a new version, \texttt{a1}, \texttt{a2}, \ldots, and

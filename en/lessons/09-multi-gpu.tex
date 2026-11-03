@@ -76,10 +76,10 @@ last step connects whole GPU boards through PCIe.
 \end{figure}
 
 \begin{definition}[Multi-chip module, GPU module, chiplet]
-  A \term{multi-chip module (MCM)}[マルチチップモジュール] is a package
+  A \term{multi-chip module (MCM)}[マルチチップモジュール]\index{MCM|see{multi-chip module (MCM)}} is a package
   that holds several dies connected by short on-package links.  In the
   MCM-GPU of Arunkumar et al.\ each die is a
-  \term{GPU module (GPM)}[GPUモジュール], a smaller GPU with its own SMs,
+  \term{GPU module (GPM)}[GPUモジュール]\index{GPM|see{GPU module (GPM)}}, a smaller GPU with its own SMs,
   L2 slice and DRAM partition, and the package of GPMs appears to
   software as one larger logical GPU \cite{arunkumar2017mcmgpu}.  A die
   designed to be combined with others in this way is called a

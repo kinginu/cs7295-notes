@@ -314,7 +314,7 @@ int main() {
 \end{definition}
 
 POSIX システムでこれを低水準に書く方法が
-\term[ぽじっくすすれっど]{POSIX スレッド}[POSIX threads (pthreads)]であり，
+\term[ぽじっくすすれっど]{POSIXスレッド}[POSIX threads (pthreads)]\index{pthreads|see{POSIXスレッド}}であり，
 C の呼び出しからなるライブラリである．\margin{Pthreads は IEEE POSIX 1003.1c
 （1995年）で，コンパイラの支援のないライブラリである．すべてのスレッドと
 すべてのロックが明示的である．\cite{barney2026parallel}．}
@@ -605,7 +605,7 @@ CUDA プログラミングは\cref{sec:l02-openmp}の2つのモデルを組み�
 \subsection{プロセスとメッセージ}
 
 \begin{definition}[MPI]
-  \term[えむぴーあい]{MPI}[MPI (Message Passing Interface)] は
+  \term[えむぴーあい]{MPI}[MPI (Message Passing Interface)]\index{Message Passing Interface|see{MPI}} は
   \term[めっせーじぱっしんぐ]{メッセージパッシング}[message passing]の標準
   ライブラリである．それぞれが自分のアドレス空間を持つ
   \term[ぷろせす]{プロセス}[process]の集合が，同じノード上または異なる
@@ -702,7 +702,7 @@ int main(int argc, char **argv) {
 
 \begin{definition}[ハローと境界交換]
   プロセスが読むが所有しない隣接領域のセルが，そのプロセスの
-  \term[はろーりょういき]{ハロー領域}[halo (ghost cells)]をなす．半径1の
+  \term[はろーりょういき]{ハロー領域}[halo (ghost cells)]\index{ごーすとせる@ゴーストセル|see{ハロー領域}}をなす．半径1の
   ステンシルでは，共有する各辺に沿った1行または1列である
   （\cref{fig:l02-stencil-halo}，右）．更新ステップのたびに，プロセスは
   \term[きょうかいこうかん]{境界交換}[boundary exchange]を行う．各プロセス

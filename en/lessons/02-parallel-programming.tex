@@ -327,7 +327,7 @@ instance, keep \texttt{sum} in a register across the whole loop.}
 \end{definition}
 
 The low-level way to write this on a POSIX system is
-\term{POSIX threads (pthreads)}[POSIXスレッド], a C library of
+\term{POSIX threads (pthreads)}[POSIXスレッド]\index{pthreads|see{POSIX threads (pthreads)}}, a C library of
 calls:\margin{Pthreads is IEEE POSIX 1003.1c (1995), a library with no
 compiler support; every thread and every lock is explicit.
 \cite{barney2026parallel}.}
@@ -627,7 +627,7 @@ passing model; PMPP ch.~20.}
 \subsection{Processes and messages}
 
 \begin{definition}[MPI]
-  \term{MPI (Message Passing Interface)}[MPI] is the standard library for
+  \term{MPI (Message Passing Interface)}[MPI]\index{Message Passing Interface|see{MPI (Message Passing Interface)}} is the standard library for
   \term{message passing}[メッセージパッシング]: a set of
   \term{process}[プロセス]es, each with its own address space, on the
   same node or on different nodes, exchange data only by sending and
@@ -729,7 +729,7 @@ load can fetch them; they must arrive by message.
 
 \begin{definition}[Halo and boundary exchange]
   The cells of a neighbouring region that a process reads but does not
-  own form its \term{halo (ghost cells)}[ハロー領域]: for a stencil of
+  own form its \term{halo (ghost cells)}[ハロー領域]\index{ghost cells|see{halo (ghost cells)}}: for a stencil of
   radius~1, one row or column along each shared edge
   (\cref{fig:l02-stencil-halo}, right).  Before each update step the
   processes perform a \term{boundary exchange}[境界交換]: every process

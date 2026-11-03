@@ -108,7 +108,7 @@ the warp can resume with its full mask.
   In compiler terms, a block $Y$ is a
   \term{post-dominator}[後支配節点] of a block $X$ if every path from
   $X$ to the exit of the program passes through $Y$, and the
-  \term{immediate post-dominator (IPDOM)}[直接後支配節点] of $X$ is its
+  \term{immediate post-dominator (IPDOM)}[直接後支配節点]\index{IPDOM|see{immediate post-dominator (IPDOM)}} of $X$ is its
   closest post-dominator other than $X$ itself.  The IPDOM of the
   branch block is the usual reconvergence point; in
   \cref{fig:l06-divergent-cfg} it is BB4.
@@ -382,7 +382,7 @@ realistic DWF implementation \cite{fung2007dwf}.}
 
 \begin{definition}[Dynamic warp formation]
   \label{def:l06-dwf}
-  The technique of \term{dynamic warp formation (DWF)}[動的ワープ形成]
+  The technique of \term{dynamic warp formation (DWF)}[動的ワープ形成]\index{DWF|see{dynamic warp formation (DWF)}}
   regroups, at run
   time, threads of different warps that are about to execute the same PC
   into new warps with fuller active masks
@@ -543,9 +543,9 @@ write to the main register file.}
   \label{def:l06-hierarchical-rf}
   A \term{hierarchical register file}[階層型レジスタファイル] places
   smaller, faster register storage in front of the
-  \term{main register file (MRF)}[主レジスタファイル].  The two forms
+  \term{main register file (MRF)}[主レジスタファイル]\index{MRF|see{main register file (MRF)}}.  The two forms
   of \cref{fig:l06-rf-hierarchy} are a
-  \term{register file cache (RFC)}[レジスタファイルキャッシュ], one or
+  \term{register file cache (RFC)}[レジスタファイルキャッシュ]\index{RFC|see{register file cache (RFC)}}, one or
   two small levels (L0 and L1 RF) that hold recently produced values
   and filter reads and writes to the MRF, and a \emph{partitioned}
   register file with a fast and a slow segment, in which the slow,
@@ -575,7 +575,7 @@ K12 §1.4.1 notes that GPUs do not support precise exceptions, so
 \cite{kim2012gpgpu}, and a value can live only in the cache.
 
 A candidate for the slow segment of a partitioned file is
-\term{non-volatile memory (NVM)}[不揮発性メモリ], memory that keeps its
+\term{non-volatile memory (NVM)}[不揮発性メモリ]\index{NVM|see{non-volatile memory (NVM)}}, memory that keeps its
 contents without power.  Built in NVM, the slow, large segment is
 meant to save energy, while the values in frequent use stay in the
 fast segment.\margin{NVM in a register
@@ -585,9 +585,9 @@ the whole register file in SRAM.}
 The caching decision can also be moved to the compiler, which knows the
 lifetimes of values.  Gebhart, Keckler and Dally
 \cite{gebhart2011compile} replace the hardware RFC by an
-\term{operand register file (ORF)}[オペランドレジスタファイル], a small
+\term{operand register file (ORF)}[オペランドレジスタファイル]\index{ORF|see{operand register file (ORF)}}, a small
 per-thread file whose contents the compiler allocates, and a
-\term{last result file (LRF)}[ラストリザルトファイル] of one entry per
+\term{last result file (LRF)}[ラストリザルトファイル]\index{LRF|see{last result file (LRF)}} of one entry per
 thread that holds the most recent result for immediate reuse.\margin{The
 compiler-managed hierarchy is reported to cut register file energy by up
 to 54\,\%, against 34\,\% for hardware-only caching; in their baseline
@@ -751,7 +751,7 @@ they hold.
   present, and a full cache
   evicts a block chosen by its
   \term{replacement policy}[置換ポリシ], for example
-  \term{LRU (least recently used)}[LRU], which evicts the block whose
+  \term{LRU (least recently used)}[LRU]\index{least recently used|see{LRU (least recently used)}}, which evicts the block whose
   last access lies furthest in the past.  A
   \term{software-managed cache}[ソフトウェア管理キャッシュ] (the
   scratchpad memory of Lesson~3, CUDA's shared memory) holds what the

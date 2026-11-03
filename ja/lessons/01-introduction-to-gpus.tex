@@ -78,7 +78,7 @@ Using GPUs．}\term{CPU}[CPU]（central processing unit）は設計空間の
     \SI{8}{\giga\bit\per\second}（Gen~3）}を提供し，\enquote{しばしば
     最大のボトルネックの1つになる}と述べる \cite{kim2012gpgpu}．
     ホスト--デバイス間転送は第5章で扱う．}
-  \item[ISA] CPU の\term[めいれいせっとあーきてくちゃ]{命令セットアーキテクチャ}[instruction set architecture (ISA)]
+  \item[ISA] CPU の\term[めいれいせっとあーきてくちゃ]{命令セットアーキテクチャ}[instruction set architecture (ISA)]\index{ISA|see{命令セットアーキテクチャ}}
     は公開され安定している．コンパイル済みのソフトウェアが以後の
     すべての実装で動き続けなければならないからである．GPU は
     ドライバの背後でアクセラレータモードで動作し，ドライバが
@@ -166,12 +166,12 @@ ILP；PMPP ch.~1；A18 ch.~1．}
 \term[すーぱーすから]{スーパースカラ}[superscalar]プロセッサは
 1サイクルに複数の命令をフェッチ，デコード，実行し
 （\cref{fig:l01-cpu-pipeline}b），その
-\term[さいくるあたりめいれいすう]{サイクル当たり命令数}[instructions per cycle (IPC)]
+\term[さいくるあたりめいれいすう]{サイクル当たり命令数}[instructions per cycle (IPC)]\index{IPC|see{サイクル当たり命令数}}
 は1を超える．\margin{実際の幅：Intel の Golden Cove コア（2021年）は
 1サイクルに最大6個の x86 命令をデコードする
 \cite[§2.4.1]{intel2026optimization}．}実際にいくつの命令を同時に
 走らせられるかは，プログラムの
-\term[めいれいれべるへいれつせい]{命令レベル並列性}[instruction-level parallelism (ILP)]，
+\term[めいれいれべるへいれつせい]{命令レベル並列性}[instruction-level parallelism (ILP)]\index{ILP|see{命令レベル並列性}}，
 すなわち互いに独立で同時に実行できる命令の数で上から抑えられる．
 
 \begin{example}
@@ -422,7 +422,7 @@ SIMT Architecture．}
 \subsection{ストリーミング・マルチプロセッサとレーン}
 
 NVIDIA は GPU のコアを
-\term[すとりーみんぐまるちぷろせっさ]{ストリーミング・マルチプロセッサ}[streaming multiprocessor (SM)]，
+\term[すとりーみんぐまるちぷろせっさ]{ストリーミング・マルチプロセッサ}[streaming multiprocessor (SM)]\index{SM|see{ストリーミング・マルチプロセッサ}}，
 または SIMT マルチプロセッサと呼ぶ．\margin{K12 §1.2.1：NVIDIA は
 コアを SM，AMD は compute unit（CU）と呼ぶ．各々は，ストリーミング
 プロセッサとも呼ばれる複数の SIMD ユニットを保持する
@@ -432,7 +432,7 @@ NVIDIA は GPU のコアを
 ある．各実行ユニットは\term[えすあいえむてぃーれーん]{SIMTレーン}[SIMT lane]，
 すなわち各命令の1スレッド分を実行する1つの ALU である．NVIDIA は
 レーンを
-\term[すとりーみんぐぷろせっさくーだこあ]{ストリーミングプロセッサ（CUDAコア）}[stream processor (CUDA core)]
+\term[すとりーみんぐぷろせっさくーだこあ]{ストリーミングプロセッサ（CUDAコア）}[stream processor (CUDA core)]\index{くーだこあ@CUDAコア|see{ストリーミングプロセッサ（CUDAコア）}}
 として宣伝しており，CPU のコアとの混同を招く．\caution{本コースでは
 \emph{コア} $\ne$ ストリーミングプロセッサである．コアとは SM で
 あり，ストリーミングプロセッサはその1レーンである．
@@ -620,18 +620,18 @@ GPGPU とは，計算をグラフィックス演算として表現すること�
   \item キャッシュ階層（L1 と L2 キャッシュ）．グラフィックス
     パイプラインはテクスチャへのストリーミングアクセスしか必要と
     しなかった．
-  \item \term[ばいせいど]{倍精度}[double precision (FP64)]演算を
-    \term[たんせいど]{単精度}[single precision (FP32)]に加えて備える
+  \item \term[ばいせいど]{倍精度}[double precision (FP64)]\index{FP64|see{倍精度}}演算を
+    \term[たんせいど]{単精度}[single precision (FP32)]\index{FP32|see{単精度}}に加えて備える
     こと．高性能計算のためである．\margin{FP32 の半分の速度の FP64 は
     データセンタ向けの機能である．A100 は FP32 の \num{19.5}~TFLOP/s
     に対して FP64 で \num{9.7}~TFLOP/s を出す \cite{nvidia2020ampere}．}
   \item より多様なワークロードのための，アトミック操作と高速な整数
     演算．
-  \item \term[こうたいいきめもり]{広帯域メモリ（HBM）}[high bandwidth memory (HBM)]．
+  \item \term[こうたいいきめもり]{広帯域メモリ（HBM）}[high bandwidth memory (HBM)]\index{HBM|see{広帯域メモリ（HBM）}}．
     インターポーザ上で GPU の隣に積層され，非常に広いインタフェースで
-    接続された DRAM ダイであり，メモリ帯域をボードレベルのメモリバスが
+    接続された DRAM ダイであり，メモリ帯域幅をボードレベルのメモリバスが
     提供するものをはるかに超えて引き上げた．
-  \item \term[はんせいど]{半精度}[half precision (FP16)]．16ビットの
+  \item \term[はんせいど]{半精度}[half precision (FP16)]\index{FP16|see{半精度}}．16ビットの
     浮動小数点形式で，精度の低下を許容できる機械学習ワークロードに
     対して演算スループットを倍にし，メモリトラフィックを半減する．
   \item \term[てんそるこあ]{テンソルコア}[tensor core]．レーン当たり
@@ -656,7 +656,7 @@ INT8，FP8 の演算をサポートする．テンソルコアと Transformer En
 \SI{256}{\kibi\byte} であり，SM 数とともに総量だけが
 \SI{27}{\mebi\byte} から \SI{33}{\mebi\byte} へ増える（HWP Table~3
 \cite{nvidia2022hopper}）．}
-\term[てんそるめもりあくせられーた]{テンソルメモリアクセラレータ}[Tensor Memory Accelerator (TMA)]
+\term[てんそるめもりあくせられーた]{テンソルメモリアクセラレータ}[Tensor Memory Accelerator (TMA)]\index{TMA|see{テンソルメモリアクセラレータ}}
 がグローバルメモリと共有メモリの間で多次元のデータブロックを非同期に
 移動し，スレッドをアドレス生成から解放する．SM 数と SM 当たりの
 浮動小数点ユニット数は再び増えた．そして NVLink Switch System が多数の

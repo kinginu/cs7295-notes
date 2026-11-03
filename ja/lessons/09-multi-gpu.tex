@@ -76,10 +76,10 @@ Multi-Instance GPU は3つの答えであり，GPU のどこまでを分割す�
 \end{figure}
 
 \begin{definition}[マルチチップモジュール，GPUモジュール，チップレット]
-  \term[まるちちっぷもじゅーる]{マルチチップモジュール}[multi-chip module (MCM)]
+  \term[まるちちっぷもじゅーる]{マルチチップモジュール}[multi-chip module (MCM)]\index{MCM|see{マルチチップモジュール}}
   （MCM）とは，パッケージ上の短いリンクで結ばれた複数のダイを収める
   パッケージである．Arunkumar らの MCM-GPU では，各ダイは
-  \term[じーぴーゆーもじゅーる]{GPUモジュール}[GPU module (GPM)]（GPM），
+  \term[じーぴーゆーもじゅーる]{GPUモジュール}[GPU module (GPM)]\index{GPM|see{GPUモジュール}}（GPM），
   すなわち独自の SM，L2 スライス，DRAM パーティションを持つより小さな
   GPU であり，GPM のパッケージはソフトウェアからは1つのより大きな
   論理 GPU に見える \cite{arunkumar2017mcmgpu}．このように他のダイと
@@ -467,7 +467,7 @@ System；\cite{nvidia2020ampere}；\cite{nvidia2026mps}．}本節では
   \term[じーぴーゆーいんすたんす]{GPUインスタンス}[GPU instance]であり，
   独自の SM，L2 キャッシュスライス，メモリコントローラ，DRAM を持つ
   より小さな GPU として振る舞う \cite{nvidia2020ampere}．MIG はメモリ，
-  L2 キャッシュのポート，DRAM 帯域幅，オンチップのクロスバーのポートを
+  L2 キャッシュのポート，DRAM 帯域幅，オンチップのクロスバのポートを
   分割するので，各インスタンスには
   \term[さーびすひんしつ]{サービス品質（QoS）}[quality of service (QoS)]
   が保証される．すなわち，他のインスタンスが何をしていても予測可能な

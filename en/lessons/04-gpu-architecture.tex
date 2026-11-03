@@ -87,7 +87,7 @@ no instruction completes.  Three designs react differently.
   threads on chip and switching among them at every cycle, so that a
   stalled thread simply is not selected, is
   \term{fine-grained multithreading}[細粒度マルチスレッディング].  The number of memory requests a processor keeps in flight
-  at once is its \term{memory-level parallelism (MLP)}[メモリレベル並列性];
+  at once is its \term{memory-level parallelism (MLP)}[メモリレベル並列性]\index{MLP|see{memory-level parallelism (MLP)}};
   the multithreaded pipeline of \cref{fig:l04-latency-hiding}c has an
   MLP of four.
 \end{definition}
@@ -122,7 +122,7 @@ doubles the thread count; so does halving the independent work.}
 
 Multithreading changes the front end of the pipeline
 (\cref{fig:l04-warp-state}).  A single-threaded core keeps one
-\term{program counter (PC)}[プログラムカウンタ], the address of the next
+\term{program counter (PC)}[プログラムカウンタ]\index{PC|see{program counter (PC)}}, the address of the next
 instruction to fetch.  An SM keeps one PC per warp: four resident warps
 mean four PC registers, and in every cycle the fetch stage reads the PC
 of the warp it has selected and fetches one instruction for all the
@@ -609,7 +609,7 @@ The stages of \cref{fig:l04-pipeline} are, for one warp instruction:
     the instruction and its operands to the execution units.
   \item[Execute.]  The arithmetic lanes compute, one thread per lane.
     Transcendental functions (sine, reciprocal, square root) go to a
-    \term{special function unit (SFU)}[特殊関数ユニット], of which an SM
+    \term{special function unit (SFU)}[特殊関数ユニット]\index{SFU|see{special function unit (SFU)}}, of which an SM
     has a few, so that a warp's SFU instruction takes several passes;
     loads and stores go to the memory unit or to shared
     memory.\sidenote{K12 §1.4.1 gives the shape of the execution stage
@@ -751,7 +751,7 @@ shuffle functions expose the active mask to the program.}
 
 \begin{definition}[Lane and active mask]
   \label{def:l04-active-mask}
-  A \term{lane}[レーン] is one execution path through the pipeline:
+  A \term*{lane}\index{lane|see{SIMT lane}}\index{SIMT lane} is one execution path through the pipeline:
   the operand-buffer entries, ALU and write-back slot that serve one
   thread of a warp instruction (the SIMT lane of Lesson~1 seen from the
   pipeline).  The \term{active mask}[アクティブマスク] of a warp is a bit

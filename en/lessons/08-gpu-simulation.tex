@@ -508,7 +508,7 @@ each step being \lstinline[language=C++]!sum += x[i] * y[i]!.
 
 \begin{definition}[Fused multiply-add]
   \label{def:l08-fma}
-  A \term{fused multiply-add (FMA)}[融合積和演算（FMA）] computes
+  A \term{fused multiply-add (FMA)}[融合積和演算（FMA）]\index{FMA|see{fused multiply-add (FMA)}} computes
   $a \cdot b + c$ as one instruction with a single rounding.  It is
   counted as two floating-point operations (FLOPs).
 \end{definition}
@@ -733,7 +733,7 @@ instruction.
 
 \begin{definition}[CPI]
   \label{def:l08-cpi}
-  The \term{cycles per instruction (CPI)}[命令当たりサイクル数（CPI）]
+  The \term{cycles per instruction (CPI)}[命令当たりサイクル数（CPI）]\index{CPI|see{cycles per instruction (CPI)}}
   of a program on a processor is the number of cycles it takes divided
   by the number of instructions it executes, the reciprocal of the IPC
   of Lesson~1.
@@ -799,7 +799,7 @@ registers that track outstanding misses.
 
 \begin{definition}[MSHR]
   \label{def:l08-mshr}
-  An \term{MSHR (miss status holding register)}[MSHR] is an entry
+  An \term{MSHR (miss status holding register)}[MSHR]\index{miss status holding register|see{MSHR (miss status holding register)}} is an entry
   that records one outstanding cache miss (the missing block and the
   requests waiting for it), so that the cache can keep serving other
   accesses while the miss is serviced.  The number of MSHRs bounds the
@@ -883,7 +883,7 @@ contention for other shared resources.
   \label{note:l08-mwp-cwp}
   Hong and Kim's analytical model of a GPU, one of this unit's optional
   readings, rests on two quantities \cite{hong2009analytical}.
-  \term{memory warp parallelism (MWP)}[メモリワープ並列度] is the
+  \term{memory warp parallelism (MWP)}[メモリワープ並列度]\index{MWP|see{memory warp parallelism (MWP)}} is the
   maximum number of warps per SM that can access memory at the same
   time, during one warp's memory waiting period; it is limited by the
   latency, the departure delay between consecutive requests, the
@@ -897,7 +897,7 @@ contention for other shared resources.
   \textit{Mem\_L}/\textit{Departure\_delay}$ and
   $\mathrm{MWP}_{\text{peak BW}}$ is the peak bandwidth divided by the
   bandwidth one warp needs times the number of active SMs.
-  \term{computation warp parallelism (CWP)}[計算ワープ並列度] is the
+  \term{computation warp parallelism (CWP)}[計算ワープ並列度]\index{CWP|see{computation warp parallelism (CWP)}} is the
   number of warps that the SM can execute during one memory waiting
   period, plus one:
   $\mathrm{CWP} = \min\bigl((\textit{Mem\_cycles} +

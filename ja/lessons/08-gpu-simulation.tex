@@ -266,7 +266,7 @@ void Core::tick() {
 \cite{nvidia2024cudaguide}），GPU には数十の SM がある．}CPU に
 対応物のないものが3つある．ダイバージェントなワープ
 （\cref{sec:l08-divergence-memory}），ワープ，スレッドブロック，
-カーネルの階層，そして第7章のワープスケジューリングポリシーである．
+カーネルの階層，そして第7章のワープスケジューリングポリシである．
 
 この階層は，シミュレーションがいつ終わるかも決める．スレッドブロック
 全体が1つの SM に割り当てられ（第3章），シミュレータはすべての
@@ -386,7 +386,7 @@ GPU シミュレータを列挙する．
 \texttt{R2} では，従来型のキャッシュは $8 \times 4 = \SI{32}{\byte}$
 の有用なデータを届けるために $8 \times 64 = \SI{512}{\byte}$ を
 取り込み，セクタキャッシュは $8 \times 16 = \SI{128}{\byte}$ を取り込む．
-したがってセクタ化の利点は散在したアクセスに対するメモリ帯域の削減で
+したがってセクタ化の利点は散在したアクセスに対するメモリ帯域幅の削減で
 あり，複数のセクタで1つのタグを共有することで，大きなブロックの
 タグ記憶量が保たれる．代償は暗黙のプリフェッチが減ることである．
 セクタ単位で埋められるブロックは，空間的局所性によってまもなく使われた
@@ -496,7 +496,7 @@ Roofline Model，§4.2.6 Other GPGPU Performance Modeling Techniques；
 
 \begin{definition}[融合積和演算]
   \label{def:l08-fma}
-  \term[ゆうごうせきわえんざん]{融合積和演算（FMA）}[fused multiply-add (FMA)]
+  \term[ゆうごうせきわえんざん]{融合積和演算（FMA）}[fused multiply-add (FMA)]\index{FMA|see{融合積和演算（FMA）}}
   は，$a \cdot b + c$ を1回の丸めで1つの命令として計算する．これは
   2回の浮動小数点演算（FLOP）として数える．
 \end{definition}
@@ -508,7 +508,7 @@ Roofline Model，§4.2.6 Other GPGPU Performance Modeling Techniques；
     ユニットが必要であり，\SI{2}{\giga\hertz} では\num{500}個である．
   \item[メモリ．]  各ステップは \texttt{x} の要素を1つ，\texttt{y} の
     要素を1つ読む．この設計演習のように要素あたり1バイトと数えると，
-    GPU には \SI{2}{\tera\byte\per\second} のメモリ帯域が必要である．\caution{講義
+    GPU には \SI{2}{\tera\byte\per\second} のメモリ帯域幅が必要である．\caution{講義
     vs 実際：\enquote{ステップあたり2バイト}は1バイトの要素を
     前提としている．FP32 の要素ではステップは2~FLOP に対して
     \SI{8}{\byte} を読み，同じ設計には \SI{8}{\tera\byte\per\second}
@@ -614,7 +614,7 @@ NVIDIA の SM は128個の FP32 レーンを4つの区画に分割しており
 \begin{keypoint}
   一次近似設計は目標スループットから出発する．FLOP 数が（与えられた
   クロックでの）FMA ユニットの数を決め，FLOP あたりのバイト数が
-  メモリ帯域を決め，隠すべきレイテンシが $W_{\text{depth}} \approx L/n$，
+  メモリ帯域幅を決め，隠すべきレイテンシが $W_{\text{depth}} \approx L/n$，
   したがって SM あたりのレジスタとプログラムカウンタを決める．
 \end{keypoint}
 
@@ -634,7 +634,7 @@ NVIDIA の SM は128個の FP32 レーンを4つの区画に分割しており
 \begin{definition}[ルーフラインモデル]
   \label{def:l08-roofline}
   \term[るーふらいんもでる]{ルーフラインモデル}[Roofline model]は，
-  ピーク演算性能 $P_{\text{peak}}$ とピークメモリ帯域
+  ピーク演算性能 $P_{\text{peak}}$ とピークメモリ帯域幅
   $B_{\text{peak}}$ を持つマシン上で，演算強度 $I$ のカーネルが達成
   できる性能を
   \begin{equation}
@@ -664,7 +664,7 @@ NVIDIA の SM は128個の FP32 レーンを4つの区画に分割しており
 \end{figure}
 
 このモデルを導入した Williams らは，演算強度をキャッシュの後で測る．
-彼らの\term[えんざんきょうどどらむばいとあたり]{演算強度（DRAMバイト当たり）}[operational intensity]
+彼らの\term[えんざんきょうどでぃーらむばいとあたり]{演算強度（DRAMバイト当たり）}[operational intensity]
 は DRAM トラフィック1バイトあたりの演算数を数えるので，データが
 キャッシュにとどまるカーネルでは，operational intensity が
 arithmetic intensity より高くなる
@@ -718,7 +718,7 @@ $1000/3 \approx 333$（暫定値 \cite{nvidia2020ampere,nvidia2022hopper}）．}
 \begin{definition}[CPI]
   \label{def:l08-cpi}
   プロセッサ上のプログラムの
-  \term[めいれいあたりさいくるすう]{命令当たりサイクル数（CPI）}[cycles per instruction (CPI)]
+  \term[めいれいあたりさいくるすう]{命令当たりサイクル数（CPI）}[cycles per instruction (CPI)]\index{CPI|see{命令当たりサイクル数（CPI）}}
   は，それにかかるサイクル数を実行する命令数で割ったものであり，
   第1章の IPC の逆数である．
 \end{definition}
@@ -733,7 +733,7 @@ $1000/3 \approx 333$（暫定値 \cite{nvidia2020ampere,nvidia2022hopper}）．}
 ここで $f_i$ は命令あたりの種類 $i$ の事象の数，$p_i$ はその事象1回の
 ペナルティ（サイクル）である．このモデルはペナルティが重ならない，
 すなわち直列化されると仮定する．\caution{直列化された和は，ペナルティを
-互いに，また有用な仕事と重ね合わせるアウトオブオーダープロセッサや
+互いに，また有用な仕事と重ね合わせるアウトオブオーダプロセッサや
 マルチスレッドプロセッサに対しては悲観的である．}
 
 \begin{example}
@@ -783,7 +783,7 @@ $1/1.31 \approx 0.76$ である．}
 
 \begin{definition}[MSHR]
   \label{def:l08-mshr}
-  \term{MSHR}[MSHR (miss status holding register)]（miss status
+  \term{MSHR}[MSHR (miss status holding register)]\index{miss status holding register|see{MSHR}}（miss status
   holding register）は，未処理のキャッシュミス1つ（ミスしたブロックと，
   それを待つ要求）を記録するエントリであり，これによってキャッシュは
   ミスの処理中にも他のアクセスに応じ続けられる．MSHR の数が，同時に
@@ -865,7 +865,7 @@ GPU に適用するとき，素朴な方法は GPU をもう1つのマルチス�
   \label{note:l08-mwp-cwp}
   本ユニットの任意の読み物の1つである Hong と Kim の GPU の解析モデルは，
   2つの量に基づく \cite{hong2009analytical}．
-  \term[めもりわーぷへいれつど]{メモリワープ並列度}[memory warp parallelism (MWP)]
+  \term[めもりわーぷへいれつど]{メモリワープ並列度}[memory warp parallelism (MWP)]\index{MWP|see{メモリワープ並列度}}
   （MWP）は，1つのワープのメモリ待ち期間中に SM あたり同時にメモリに
   アクセスできるワープの最大数である．それはレイテンシ，連続する要求の
   間の発行間隔（departure delay），帯域，アクティブなワープ数 $N$ で
@@ -879,7 +879,7 @@ GPU に適用するとき，素朴な方法は GPU をもう1つのマルチス�
   \textit{Mem\_L}/\textit{Departure\_delay}$，
   $\mathrm{MWP}_{\text{peak BW}}$ はピーク帯域を，1ワープが必要とする
   帯域とアクティブな SM の数の積で割ったものである．
-  \term[けいさんわーぷへいれつど]{計算ワープ並列度}[computation warp parallelism (CWP)]
+  \term[けいさんわーぷへいれつど]{計算ワープ並列度}[computation warp parallelism (CWP)]\index{CWP|see{計算ワープ並列度}}
   （CWP）は，1回のメモリ待ち期間中に SM が実行できるワープの数に1を
   加えたものである．
   $\mathrm{CWP} = \min\bigl((\textit{Mem\_cycles} +
@@ -924,7 +924,7 @@ $\num{e9}/\num{e3} = \num{e6}$~s は約11.6~日であり，28~時間ではない
 \paragraph{並列シミュレーション．}  シミュレータは複数のホストスレッド，
 たとえばシミュレーションするコアごとに1スレッドで動かせる．\margin{CPU
 シミュレータの速さ：gem5，Flexus，MARSS は詳細なモデルで約200~KIPS に
-達する．zsim は詳細なアウトオブオーダーコアを20~MIPS で，1024コアの
+達する．zsim は詳細なアウトオブオーダコアを20~MIPS で，1024コアの
 チップを16コアのホスト上で最大300~MIPS でシミュレーションする
 \cite{sanchez2013zsim}．}コアはほぼ独立しているが，メモリシステムと
 ネットワークオンチップは共有されている．スレッドは相互作用のたびに
@@ -966,7 +966,7 @@ $\num{e9}/\num{e3} = \num{e6}$~s は約11.6~日であり，28~時間ではない
 スループットを使い，問いが必要とするところだけ詳細を保つことができる．
 メモリ階層を調べるなら，コアを発行幅に等しい IPC で命令を発行する
 だけのものに縮め，キャッシュとメモリだけをモデル化すればよい．
-多コア CPU の高速シミュレータである zsim は，詳細なアウトオブオーダー
+多コア CPU の高速シミュレータである zsim は，詳細なアウトオブオーダ
 モデルと並んで，そのような単純なコア（1サイクルに1命令）を提供する
 \cite{sanchez2013zsim}．コアを調べるなら，メモリに固定のレイテンシを
 与えればよい．\caution{どの単純化も相互作用を1つ取り除く．たとえば固定の
