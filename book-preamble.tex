@@ -3,3 +3,18 @@
 % builds).  Put this book's own definitions here — listing languages
 % (\lstdefinelanguage), shorthand macros, extra packages — instead of
 % editing format/lnotes.cls, which is shared by every book.
+
+% PTX fragments (Lessons 4, 10, 11): a minimal listings language.
+% Opcodes and state-space / type suffixes are keywords; %-registers are
+% plain text; "//" starts a comment.
+\lstdefinelanguage{PTX}{
+  morekeywords={ld,st,add,sub,mul,mad,mov,setp,bra,ret,cvt,shl,shr,
+                global,shared,local,param,u32,s32,f32,b32,pred,
+                reg,entry,visible,version,target},
+  sensitive=true,
+  morecomment=[l]{//},
+}
+
+% Floating-point operations as a siunitx unit (Lessons 4, 8, 12):
+% \SI{1}{\tera\flop\per\second} prints 1 TFLOP/s.
+\DeclareSIUnit{\flop}{FLOP}
