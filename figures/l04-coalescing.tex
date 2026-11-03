@@ -1,0 +1,38 @@
+% Coalesced and uncoalesced loads (Lesson 4).  Eight threads execute
+% ld.global.u32 %r3, [%r1] and ld.global.u32 %r3, [%r2].  R1 holds eight
+% consecutive words, so the eight accesses combine into one 64-byte
+% request; R2 holds addresses 128 B apart, so eight requests are needed.
+% Redraws the outline figures m4l4_coalesce and m4l4_coalesce2 (the
+% slide's address typos corrected; a uniform stride is used).
+% Usage: \input{figures/l04-coalescing}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % register table
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (0,41)
+    {\iflangja{レジスタ}{registers}};
+  \node[anchor=south] at (16,35.5) {R1};
+  \node[anchor=south] at (28,35.5) {R2};
+  \foreach \t/\a/\b [count=\i from 0] in {0/512/0, 1/516/128, 2/520/256, 3/524/384, 4/528/512, 5/532/640, 6/536/768, 7/540/896} {
+    \node[anchor=east, inner sep=1pt] at (9.5,33-\i*4.2) {T\t};
+    \draw[fill=ln-tip!20] (10,35-\i*4.2) rectangle ++(12,-4) node[midway, font=\scriptsize\ttfamily] {\a};
+    \draw[fill=ln-caution!15] (22,35-\i*4.2) rectangle ++(12,-4) node[midway, font=\scriptsize\ttfamily] {\b};
+  }
+  % one request for R1
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (46,41)
+    {\iflangja{ld [\%r1]：1 リクエスト}{ld [\%r1]: one request}};
+  \draw[fill=ln-tip!20, ln-tip, thick] (46,27) rectangle ++(26,-8)
+    node[midway, align=center, text=black] {Mem[512--575]};
+  \draw[->, ln-tip] (22,18) -- (46,23);
+  \node[anchor=north west, align=left, text=ln-muted] at (46,17)
+    {\iflangja{連続する 8 語（32 B）が\\1 回の 64 B リクエストに}{8 consecutive words (32 B)\\in one 64-B request}};
+  % eight requests for R2
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (84,41)
+    {\iflangja{ld [\%r2]：8 リクエスト}{ld [\%r2]: eight requests}};
+  \foreach \b [count=\i from 0] in {0, 128, 256, 384, 512, 640, 768, 896} {
+    \pgfmathtruncatemacro{\e}{\b+63}
+    \draw[fill=ln-caution!15, ln-caution] (84,35-\i*4.2) rectangle ++(30,-3.6)
+      node[midway, text=black] {Mem[\b--\e]};
+  }
+  \draw[->, ln-caution] (34,18) -- (84,18);
+\end{tikzpicture}

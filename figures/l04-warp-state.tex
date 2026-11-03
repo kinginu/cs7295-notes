@@ -1,0 +1,49 @@
+% Front-end state of a multithreaded SM (Lesson 4): one program counter
+% per warp (a PC table W0..W3), feeding the instruction cache and decoder,
+% and a register file with a private register set for every thread,
+% grouped by warp.  Redraws the outline figure m4l1_fe_extension.
+% Usage: \input{figures/l04-warp-state}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    blk/.style={draw, fill=ln-box, minimum height=6mm, inner sep=2pt,
+                align=center}]
+  % PC table
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (0,27)
+    {\iflangja{ワープごとの PC}{one PC per warp}};
+  \foreach \w/\pc [count=\i from 0] in {W0/0x8000, W1/0x8004, W2/0x8000, W3/0x800C} {
+    \draw[fill=ln-accent!12] (0,26-\i*6) rectangle ++(8,-5.5)
+      node[midway] {\w};
+    \draw[fill=white] (8,26-\i*6) rectangle ++(14,-5.5)
+      node[midway, font=\scriptsize\ttfamily] {\pc};
+  }
+  % fetch path
+  \node[blk, minimum width=14mm] (icache) at (36,14)
+    {\iflangja{命令\\キャッシュ}{I-cache}};
+  \node[blk, minimum width=14mm, right=3mm of icache] (dec)
+    {\iflangja{デコーダ}{Decoder}};
+  \draw[->] (22,14) -- (icache);
+  \draw[->] (icache) -- (dec);
+  \node[anchor=north, text=ln-muted, align=center] at (36,8.5)
+    {\iflangja{選ばれたワープの\\PC で1命令をフェッチ}{one instruction fetched\\at the selected warp's PC}};
+  % register file: 4 warps x 4 threads, registers R0..R3
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (66,27)
+    {\iflangja{スレッドごとのレジスタ}{a register set per thread}};
+  \foreach \w in {0,...,3} {
+    \draw[fill=ln-accent!12] (66+\w*13,26) rectangle ++(12.6,-4)
+      node[midway] {W\w};
+    \foreach \t in {0,...,3} {
+      \node[font=\scriptsize\sffamily] at (66+\w*13+\t*3.2+1.6,20.2) {T\t};
+    }
+  }
+  \foreach \r in {0,...,3} {
+    \node[anchor=east, inner sep=1pt] at (65.5,16.6-\r*3.4) {R\r};
+    \foreach \w in {0,...,3} {
+      \foreach \t in {0,...,3} {
+        \draw[fill=white] (66+\w*13+\t*3.2,18.3-\r*3.4) rectangle ++(3.2,-3.4);
+      }
+    }
+  }
+  \node[anchor=north west, text=ln-muted, align=left] at (66,3)
+    {\iflangja{W0 の R1 読み出し = T0--T3 の R1 を同時に読む}{reading R1 for W0 = R1 of T0--T3 at once}};
+\end{tikzpicture}

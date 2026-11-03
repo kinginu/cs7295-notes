@@ -1,0 +1,40 @@
+% A CPU context switch (Lesson 4): the core holds one thread's PC and
+% registers; switching from T1 to T2 stores T1's state to memory and loads
+% T2's.  Redraws the outline figures m4l1_cpu_context, _1 and _2.
+% Usage: \input{figures/l04-context-switch}
+% Width: body (120 mm); the drawing is about 100 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    blk/.style={draw, fill=ln-box, minimum height=5mm, inner sep=2pt,
+                align=center}]
+  % CPU core
+  \draw[ln-accent, thick, rounded corners=1pt] (0,0) rectangle (44,34);
+  \node[anchor=north west, font=\scriptsize\sffamily\bfseries, text=ln-accent]
+    at (1,34) {\iflangja{CPU コア（1スレッド分の状態）}{CPU core (state of one thread)}};
+  \node[blk, anchor=west, minimum width=12mm] at (2,25) {\iflangja{命令\\キャッシュ}{I-cache}};
+  \node[blk, anchor=west, minimum width=12mm] at (16,25) {\iflangja{デコーダ}{Decoder}};
+  \node[blk, anchor=west, minimum width=12mm] at (30,25) {\iflangja{スケジューラ}{Sched.}};
+  \foreach \k in {0,...,3} {
+    \draw[fill=ln-accent!15] (2+\k*7,14) rectangle ++(6,-5) node[midway] {ALU};
+  }
+  % one register set, coloured for the resident thread
+  \node[anchor=south west, inner sep=1pt] at (31,16.5) {\iflangja{レジスタ}{registers}};
+  \foreach \r/\lbl [count=\i from 0] in {PC/PC, R0/R0, R1/R1, R2/R2} {
+    \draw[fill=ln-tip!25] (31,16-\i*3) rectangle ++(11,-3) node[midway] {\lbl};
+  }
+  \node[anchor=north west, text=ln-tip, font=\scriptsize\sffamily\bfseries] at (30,3.5)
+    {\iflangja{= T1 の値}{= T1's values}};
+  % memory with saved contexts
+  \draw[ln-accent, thick, rounded corners=1pt] (70,0) rectangle (100,34);
+  \node[anchor=north west, font=\scriptsize\sffamily\bfseries, text=ln-accent]
+    at (71,34) {\iflangja{メモリ}{Memory}};
+  \foreach \t/\c [count=\i from 0] in {T0/ln-accent!25, T1/ln-tip!25, T2/ln-caution!20, T3/ln-source!20} {
+    \draw[fill=\c] (72,28-\i*7) rectangle ++(26,-6)
+      node[midway] {\iflangja{\t のコンテキスト}{context of \t}};
+  }
+  % switch arrows
+  \draw[->, thick, ln-tip] (42,10) -- (72,18.5)
+    node[pos=0.45, above, sloped, inner sep=1pt] {\iflangja{1. T1 を退避}{1. save T1}};
+  \draw[->, thick, ln-caution] (72,11) -- (42,5)
+    node[pos=0.55, below, sloped, inner sep=1pt] {\iflangja{2. T2 を復元}{2. restore T2}};
+\end{tikzpicture}

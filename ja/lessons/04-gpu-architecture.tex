@@ -1,0 +1,1046 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPUアーキテクチャ}
+\lessoninfo{
+  video={M4，レッスン 1--4（Multi-threaded Architecture；Bank Conflicts；GPU Architecture Pipeline；Global Memory Coalescing）},
+  sources={PTX ISA \cite{nvidia2026ptx}（特殊レジスタ）；Harris，\emph{Using Shared Memory in CUDA C/C++} \cite{harris2013sharedmem}；NVIDIA A100 \cite{nvidia2020ampere} および H100 \cite{nvidia2022hopper} ホワイトペーパー（HBM の数値）},
+  textbook={A18 \cite{aamodt2018gpu} ch.~3（指定），ch.~4；K12 \cite{kim2012gpgpu} §1.4.1 GPU Pipeline，§1.4.3 GPU Memory Systems；CPG \cite{nvidia2024cudaguide} §4.2 Hardware Multithreading，§5.3.2 Device Memory Accesses；BPG \cite{nvidia2026cudabestpractices} §10.2.1 Coalesced Access to Global Memory，§10.2.3 Shared Memory；PMPP \cite{hwu2022pmpp} ch.~4--6},
+  keywords={レイテンシ隠蔽，細粒度マルチスレッディング，コンテキストスイッチ，ワープごとのプログラムカウンタ，レジスタファイル，ポート，バンク，バンク競合，オペランドコレクタ，スコアボード，アクティブマスク，特殊レジスタ，メモリコアレッシング，メモリトランザクション，SRAM，DRAM，HBM},
+}
+
+第1章ではストリーミング・マルチプロセッサの構成要素を挙げ，第3章では
+カーネルのスレッドがブロックとワープにどうまとめられ，SM がそれを
+いくつ保持できるかを示した．本章は SM の内部を開き，ワープの命令が
+そこをどう通るかをたどる．まず，そもそも SM がなぜマルチスレッド化
+されているのかから始める．キャッシュでミスしたロードは，そのままでは
+パイプラインをストールさせる．GPU は，プログラムカウンタとレジスタを
+すべてチップ上に保持したワープの間で切り替えることで，そのレイテンシを
+隠す．これを可能にするレジスタファイルは非常に幅が広いので，バンクに
+分割しなければならず，そこからバンク競合，オペランドコレクタ，そして
+準備のできたワープを選ぶスコアボードが生じる．続いて小さな例で
+パイプライン全体をたどり，ワープのフェッチ，デコード，レジスタ読み出し，
+実行，ライトバックを，レーンを無効にするマスクビットも含めて示す．
+最後にメモリ側を扱う．1つの命令からワープがなぜ32個のメモリ要求を
+生成しうるのか，SRAM，DRAM，HBM とは何か，そしてコアレッシングが
+それらの要求をどのように少数の幅広いトランザクションに変えるかである．
+第5章ではこれらの機構を最適化の規則に置き換え，第6章と第7章では
+レジスタファイルとワープスケジューラに戻る．
+
+\section{マルチスレッドアーキテクチャ}
+\label{sec:l04-multithreading}
+
+GPU は多数の SM から成り，各 SM はマルチスレッディングによって
+そのワープを実行し，共有メモリとハードウェアキャッシュを持つ
+（第1章の\cref{fig:l01-sm}）．\source{M4，マルチスレッディング；K12 §1.2.1；
+A18 ch.~3；CPG §4.2 Hardware Multithreading．}本節では，
+マルチスレッディングが何をもたらし，どのような状態を必要とし，その状態が
+CPU のものとどう違うかを説明する．
+
+\subsection{キャッシュミスを乗り切る3つの方法}
+
+\cref{fig:l04-latency-hiding}の4命令のプログラムを，第1章の5段
+パイプライン（フロントエンド，デコードとリネーム，スケジュール，実行，
+ライトバック）で考える．最初の命令 \texttt{I1} はメモリから1語を
+ロードする．\texttt{I4} はロードした値を必要とするが，\texttt{I2} と
+\texttt{I3} はそれとは独立である．このロードが
+\term[きゃっしゅみす]{キャッシュミス}[cache miss]を起こしたとする．
+すなわちその語はキャッシュになく DRAM から取ってこなければならないので，
+\texttt{I1} の実行ステージは多くのサイクルの間終わらない．\margin{レイテンシの
+規模：K12 Table~1.4 \cite{kim2012gpgpu} の Tesla と Fermi の GPU では，
+グローバルメモリへのアクセスは\enquote{数百サイクル}かかる．同じ表で
+チップ上の共有メモリへのアクセスは4--32サイクルである．}パイプラインは
+\emph{ストール}する．すなわち，どの命令も完了しないサイクルが過ぎていく．
+3つの設計はそれぞれ異なる反応をする．
+\begin{description}
+  \item[インオーダ実行] （\cref{fig:l04-latency-hiding}a）は命令を
+    プログラム順に発行するので，\texttt{I2}，\texttt{I3}，\texttt{I4}
+    はすべてミスの後ろで待つ．ミスに依存するのは \texttt{I4} だけで
+    あるにもかかわらずである．
+  \item[アウトオブオーダ実行] （\cref{fig:l04-latency-hiding}b）は
+    ミスの間に \texttt{I2} と \texttt{I3} を完了させる．待つのは
+    \texttt{I4} だけである．得られる利益は，ハードウェアが1つの
+    スレッドの中で見つけられる独立な命令の数で制限される．
+  \item[マルチスレッディング] （\cref{fig:l04-latency-hiding}c）は，
+    4つの異なるスレッドの \texttt{I1} を連続する4サイクルで発行する．
+    異なるスレッドの命令は構成上互いに独立なので，独立性を探す必要は
+    なく，4つのミスは同時に未処理となる．4つのメモリ要求は1つずつ
+    順に処理されるのではなく重なり合う．
+\end{description}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-latency-hiding}
+  \caption{最初の命令がキャッシュでミスするプログラム：
+    (a) インオーダでは後続のすべての命令が待つ．(b) アウトオブオーダでは
+    依存する \texttt{I4} だけが待つ．(c) マルチスレッディングでは4つの
+    スレッドがそれぞれロードを発行し，4つのミスが重なる．}
+  \label{fig:l04-latency-hiding}
+\end{figure}
+
+\begin{definition}[マルチスレッディングによるレイテンシ隠蔽]
+  \label{def:l04-latency-hiding}
+  長いレイテンシの操作（キャッシュミス，長い ALU 演算，分岐の解決）が
+  進行している間も，パイプラインを有用な命令で埋め続けることを
+  \term[れいてんしいんぺい]{レイテンシ隠蔽}[latency hiding]という．
+  多数のスレッドの状態をチップ上に保持し，毎サイクルそれらの間で
+  切り替えることで，ストールしたスレッドを単に選ばないようにする方式が
+  \term[さいりゅうどまるちすれっでぃんぐ]{細粒度マルチスレッディング}[fine-grained multithreading]
+  である．プロセッサが同時に処理中に保てるメモリ要求の数が，その
+  \term[めもりれべるへいれつせい]{メモリレベル並列性}[memory-level parallelism (MLP)]（MLP）
+  である．\cref{fig:l04-latency-hiding}c のマルチスレッドパイプラインの
+  MLP は4である．
+\end{definition}
+
+CPU がその面積をアウトオブオーダ論理，大きなキャッシュ，ILP の探索に
+費やすのに対し，GPU はそれをスレッドに費やす．キャッシュミス，分岐，
+長いレイテンシの演算によるストールは，SM の他のワープが覆い隠す．その
+代償は1つの規則で表される．メモリレイテンシが長いほど，それを隠すために
+多くのスレッドが必要になる．\tip{必要なスレッド数 $\approx$ レイテンシ
+$\div$ 2つの長レイテンシ操作の間に各スレッドが供給する独立な仕事の
+サイクル数．レイテンシが2倍になればスレッド数も2倍になり，独立な仕事が
+半分になっても同じである．}
+
+\begin{example}
+  \label{ex:l04-threads-needed}
+  ある SM は1サイクルに1つのワープ命令を発行する．各ワープはロードを
+  発行した後，ロードした値が必要になるまでにさらに2つの命令を発行
+  できる．ロードには \num{400} サイクルかかる．\num{400} サイクルの間
+  ずっと発行スロットを埋めるには，それぞれ3命令ずつを供給できるワープが
+  約 $400 / 3 \approx 134$ 個必要である．レイテンシが \num{800}
+  サイクルなら約 \num{267} 個になる．これほど多くのワープを保持する
+  実際の SM はない（上限は \num{64}）．GPU がキャッシュ，ワープ内の
+  独立な命令，そして\cref{sec:l04-coalescing}で示すようにメモリ要求の
+  削減にも頼るのはこのためである．\margin{SM 当たりの最大常駐ワープ数：
+  Compute Capability 7.0，8.0，9.0 で64，8.6 と 8.9 で48，7.5 で32：
+  CPG Table~21 \cite{nvidia2024cudaguide}．第3章の占有率はこの上限に
+  対して測る．}
+\end{example}
+
+\subsection{スレッドごとのプログラムカウンタとレジスタ}
+
+マルチスレッディングはパイプラインのフロントエンドを変える
+（\cref{fig:l04-warp-state}）．シングルスレッドのコアは，次にフェッチする
+命令のアドレスである
+\term[ぷろぐらむかうんた]{プログラムカウンタ}[program counter (PC)]（PC）
+を1つ持つ．SM はワープごとに1つの PC を持つ．常駐ワープが4つなら PC
+レジスタも4つであり，フェッチステージは毎サイクル選んだワープの PC を
+読み，そのワープの全スレッドのために1つの命令をフェッチする．こうして
+1つの静的な命令がワープ全体に役立つ．これは第1章の SPMD モデルを
+ハードウェアで実現したものである．フロントエンドの後ろでは，
+\term[れじすたふぁいる]{レジスタファイル}[register file]が，すべての
+常駐ワープのすべてのスレッドについて専用のレジスタの組を保持する．その
+ため，あるワープから別のワープへの切り替えにコピーは要らない．次の
+ワープのレジスタはすでにそこにある．\margin{SM 当たりのレジスタファイルは
+32ビットレジスタ \num{65536} 個，\SI{256}{\kibi\byte} を保持する．
+Compute Capability 5.0 から 9.0 まですべて同じである：CPG Table~21
+\cite{nvidia2024cudaguide}．Fermi（2010年）は SM 当たり
+\SI{128}{\kibi\byte} であった：K12 §1.4.1 \cite{kim2012gpgpu}．}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-warp-state}
+  \caption{マルチスレッド SM のフロントエンド：ワープごとの1つの
+    プログラムカウンタがフェッチする命令を選び，レジスタファイルは
+    ワープ単位にまとめてスレッドごとのレジスタの組を保持する．そのため
+    ワープ~0 の \texttt{R1} を読むと，その4スレッドの \texttt{R1} が
+    一度に読まれる．}
+  \label{fig:l04-warp-state}
+\end{figure}
+
+\begin{definition}[コンテキストスイッチ]
+  \label{def:l04-context-switch}
+  \term[こんてきすとすいっち]{コンテキストスイッチ}[context switch]とは，
+  パイプラインが実行しているスレッドの状態（PC，レジスタ）を，別の
+  スレッドのものに置き換えることである．CPU ではパイプライン，PC，
+  レジスタは一度に1つのスレッドに属するので，切り替えでは実行中の
+  スレッドの状態をメモリに格納し，次のスレッドの状態を読み込む
+  （\cref{fig:l04-context-switch}）．これには多くのサイクルがかかる．
+  GPU では常駐するすべてのワープの PC とレジスタがすでにチップ上に
+  ある．切り替えはパイプラインが使う PC とレジスタの組を変えるだけで
+  あり，コストはかからない．\margin{CPG §4.2 Hardware Multithreading：
+  各ワープの実行コンテキストは\enquote{ワープの全生存期間にわたって
+  チップ上に保持される．したがって，ある実行コンテキストから別の
+  実行コンテキストへの切り替えにはコストがかからない}
+  \cite{nvidia2024cudaguide}．}
+\end{definition}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-context-switch}
+  \caption{CPU のコンテキストスイッチ：コアは1つのスレッドの PC と
+    レジスタを保持するので，\texttt{T1} から \texttt{T2} への切り替えでは
+    \texttt{T1} の状態をメモリに退避し，\texttt{T2} の状態を復元する．}
+  \label{fig:l04-context-switch}
+\end{figure}
+
+\begin{note}
+  \emph{コンテキストスイッチ}という語は2つの意味で使われる．
+  オペレーティングシステムのコンテキストスイッチはプロセスやスレッドを
+  メモリに退避するもので，コストが高い．ワープ間の GPU の
+  \enquote{コンテキストスイッチ}は，すべてが常駐している状態の中からの
+  選択であり，コストはかからない．\caution{コストのかからない GPU の
+  切り替えが当てはまるのは，SM に常駐しているワープだけである．終了した
+  スレッドブロックを新しいブロックに置き換えるときにはレジスタと共有
+  メモリを割り当てるので，コストがかからないわけではない．ワープの
+  スケジューリングは第7章で扱う．}同時マルチスレッディングを備えた
+  CPU はコア当たり2つのスレッドコンテキストを保持する．SM は数百の
+  スレッドを保持する．\margin{K12 §1.2.1 は，CPU コアの2つの
+  ハイパースレッドと SM の数百のスレッドを対比している
+  \cite{kim2012gpgpu}．}
+\end{note}
+
+\subsection{必要な資源}
+
+マルチスレッディングがチップ上に保持する状態は，2つの量で数えられる．
+\begin{itemize}
+  \item \emph{プログラムカウンタ．}ワープごとに1つであり，PC の数は
+    常駐スレッド数をワープサイズで割ったものである．後の GPU はこれより
+    多くのフロントエンド状態を持つが，本書のモデルではワープごとに1つの
+    PC を仮定する．\margin{Volta 以降，独立スレッドスケジューリングは
+    \emph{スレッド}ごとにプログラムカウンタとコールスタックを持ち，
+    分岐したスレッドをインタリーブできるようにしている：CPG §4.1
+    SIMT Architecture \cite{nvidia2024cudaguide}．第5章でこれを論じ，
+    第6章はワープごとのモデルを保つ．}
+  \item \emph{レジスタ．}スレッド当たり $K$ 個のレジスタに常駐スレッド
+    数を掛けたものである．$K$ はコンパイラがカーネルごとに選び，
+    アプリケーションによって異なる．$K$ が大きいほど，固定の
+    レジスタファイルに常駐できるスレッドは少なくなる．これが第3章の
+    占有率の計算におけるレジスタの制約である．
+\end{itemize}
+
+\begin{example}
+  \label{ex:l04-resources}
+  ある SM は，ワープサイズ32で \num{512} 個の常駐スレッドを保持する．
+  したがって $512 / 32 = 16$ 個のプログラムカウンタを持つ．全スレッドが
+  実行する \num{12} 命令のカーネルは $16 \times 12 = 192$ 回の
+  ワープ命令フェッチで済むが，同じ仕事をシングルスレッドのコアで行うと
+  $512 \times 12 = \num{6144}$ 回の命令フェッチが必要である．1回の
+  フェッチが32スレッドに役立つのである．コンパイラがスレッド当たり
+  $K = 40$ 個のレジスタを割り当てると，常駐スレッドは
+  $40 \times 512 = \num{20480}$ 個のレジスタを占め，1個
+  \SI{4}{\byte} で \SI{80}{\kibi\byte} となる．\tip{SM 当たり：
+  PC 数 = スレッド数 $\div$ ワープサイズ；レジスタ数 = $K \times$
+  スレッド数．GPU はその両方をすべての SM で繰り返す．どちらも
+  スレッド数に比例するので，上のレイテンシ隠蔽の規則はチップ上の
+  記憶容量についての命題である．}
+\end{example}
+
+\begin{keypoint}
+  GPU はメモリレイテンシを，アウトオブオーダ実行ではなく細粒度
+  マルチスレッディングで隠す．常駐するすべてのワープの PC とレジスタは
+  チップ上にとどまるので，ワープの切り替えにコストはかからず，SM が
+  保持できるワープ数は記憶容量の問題になる（ワープごとに1つの PC，
+  スレッドごとに $K$ 個のレジスタ）．
+\end{keypoint}
+
+\section{バンク競合}
+\label{sec:l04-bank-conflicts}
+
+前節のレジスタファイルはワープ全体のオペランドを一度に供給しなければ
+ならず，そのため容量ではなく帯域幅が設計上の問題になる．\source{M4，
+バンク競合；K12 §1.4.1（レジスタの読み書き，スコアボーディング）；
+A18 ch.~3（オペランドコレクタ）；BPG §10.2.3 Shared Memory；CPG
+Compute Capability 5.x，Shared Memory；\cite{harris2013sharedmem}．}
+本節ではポートとバンク，バンク化がレジスタファイルと共有メモリに
+生む競合，そしてそれを吸収するオペランドコレクタとスコアボードを
+導入する．
+
+\subsection{レジスタファイルの帯域幅}
+
+典型的な算術命令は2つのソースレジスタを読み，1つのデスティネーションに
+書く．SM は1つの命令を多数のスレッドについて同時に実行する．実行幅が
+16レーンなら1つの命令は1サイクルに $16 \times 3 = 48$ 個のレジスタ値を
+動かし，より幅の広い SM ではそれに比例して多くなる．\margin{K12
+§1.4.1 はこれを拡大している：演算当たり2回の読み出しと1回の書き込みを
+行う \SI{1}{\tera\flop\per\second} の GPU は，
+\SI{64}{\tera\byte\per\second} 程度のレジスタ読み出し帯域幅を必要と
+する \cite{kim2012gpgpu}．これはどの単一のメモリアレイの能力も
+はるかに超える．}それだけ多くの経路から同時に読み書きできるメモリ
+アレイを，ハードウェアは用意しなければならない．
+
+\begin{definition}[ポート]
+  \label{def:l04-port}
+  \term[ぽーと]{ポート}[port]とは，記憶アレイから1サイクルに1つの値を
+  読み出す，あるいは書き込むためのハードウェアのインタフェースである．
+  \term[よみだしぽーと]{読み出しポート}[read port]は値を外へ運び，
+  \term[かきこみぽーと]{書き込みポート}[write port]は値を中へ運ぶ．
+  各ポートはアレイのすべてのエントリにつながる配線と選択論理の組で
+  あるので，そのコストはエントリ数とともに増え，ポートの多いアレイは
+  大きく遅い．
+\end{definition}
+
+\cref{fig:l04-ports-vs-banks}a は実行幅4の場合の力ずくの設計を示す．
+各レジスタエントリが $2 \times 4 = 8$ 個の読み出しポートと4個の書き込み
+ポートを持ち，1サイクルに任意の8値を読み，任意の4値を書ける．
+\cref{fig:l04-ports-vs-banks}b はアレイを分割することで，同じ
+スループットをより安く実現する．
+
+\begin{definition}[バンク]
+  \label{def:l04-bank}
+  \term[ばんく]{バンク}[bank]とは，レジスタファイルやメモリを分割した
+  複数の独立な記憶アレイの1つであり，それぞれが自前の（少数の）ポートを
+  持つ．バンクは同時にアクセスされるので，それぞれ $p$ 個のポートを持つ
+  $B$ 個のバンクは，要求された値が異なるバンクにある限り，1サイクルに
+  最大 $Bp$ 個の値を供給する．\cref{fig:l04-ports-vs-banks}b では，
+  それぞれ読み出しポート2個と書き込みポート1個を持つ4つのバンクが，
+  エントリ当たり4分の1のポート数で，バンク化しない設計と同じ8回の
+  読み出しと4回の書き込みを実現する．
+\end{definition}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-ports-vs-banks}
+  \caption{実行幅4におけるポートとバンク．(a) バンクがなければ各
+    エントリに読み出しポート8個と書き込みポート4個が必要である．
+    (b) それぞれ読み出しポート2個と書き込みポート1個を持つ4つの
+    バンクに同時にアクセスする．}
+  \label{fig:l04-ports-vs-banks}
+\end{figure}
+
+\subsection{レジスタバンク競合}
+
+この節約には条件がある．1サイクルに必要な値がバンク全体に散らばって
+いなければならない．
+
+\begin{definition}[バンク競合]
+  \label{def:l04-bank-conflict}
+  \term[ばんくきょうごう]{バンク競合}[bank conflict]は，1回のアクセス
+  （1つのワープ命令）が1つのバンクから，そのバンクのポート数より多くの
+  値を必要とするときに起こる．ハードウェアはアクセスを複数のサイクルに
+  直列化し，バンクが供給できる値のグループごとに1サイクルを使う．
+  レジスタファイルにおけるものが
+  \term[れじすたばんくきょうごう]{レジスタバンク競合}[register bank conflict]
+  である．
+\end{definition}
+
+\cref{fig:l04-register-bank-conflict}は，バンク当たり2つの読み出し
+ポートを持つ4バンクのファイルで，スレッド $k$ のレジスタをバンク $k$
+に割り当てる．
+\begin{itemize}
+  \item スレッド \texttt{T0}--\texttt{T3} の \texttt{R0} を読むこと，
+    すなわちワープ命令が行うことは，各バンクの1エントリに触れる．
+    1サイクルに4値であり，バンク化しないファイルと同じ速さである．
+  \item スレッド \texttt{T0} の \texttt{R0}--\texttt{R3} を読むことは，
+    読み出しポートが2つしかないバンク~0 の4エントリに触れる．2サイクル
+    かかる．
+\end{itemize}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-register-bank-conflict}
+  \caption{バンク当たり2つの読み出しポートを持つ4バンクのレジスタ
+    ファイル．(a) 4スレッドの \texttt{R0} は4つのバンクにあり，1サイクルで
+    読まれる．(b) 1スレッドの4つのレジスタは1つのバンクにあり，2サイクル
+    かかる．}
+  \label{fig:l04-register-bank-conflict}
+\end{figure}
+
+ワープはその全スレッドについて常に同じレジスタ番号を読むので，最初の
+場合は安全に見える．しかしスレッド当たりのレジスタ数が変わると，
+スレッドからバンクへの配置が変わるので安全ではなくなる
+（\cref{fig:l04-register-layout}）．スレッド当たり4レジスタで
+バンク当たり1スレッドの場合（ケース~1），命令
+\texttt{R2 = R0 + R1} は各バンクから2値を読み，1サイクルで完了する．
+スレッド当たり2レジスタの場合（ケース~2）は2つのスレッドが1つの
+バンクを共有する．\texttt{T0}--\texttt{T3} のワープでは同じ命令が
+バンク~0 に4回の読み出し（\texttt{T0} と \texttt{T1} の \texttt{R0} と
+\texttt{R1}）を，バンク~1 にも4回を送り，バンク~2 と~3 が遊んでいる間に
+2サイクルかかる．\margin{実際の設計はスレッドのレジスタをバンク全体に
+散らす（たとえばスレッドのレジスタ $r$ をバンク $r \bmod B$ に置く）．
+こうすると競合はスレッド数からではなく，命令が指定するレジスタから
+生じる．配置の選択は，コンパイラとハードウェアの取り決めの一部である．}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-register-layout}
+  \caption{レジスタ数が変わる場合のスレッドとバンクの配置．
+    ケース~1：スレッド当たり4レジスタ，バンク当たり1スレッド．
+    ケース~2：スレッド当たり2レジスタ，バンク当たり2スレッド．その
+    ため，ワープ \texttt{T0}--\texttt{T3} について \texttt{R0} と
+    \texttt{R1} を読む命令は，バンク~0 と~1 のそれぞれに4回の読み出しを
+    送る．}
+  \label{fig:l04-register-layout}
+\end{figure}
+
+\subsection{静的と動的}
+
+第一の対策はコンパイラである．レジスタ番号はプログラムテキストの中で
+固定されているので，コンパイラは，1つの命令のオペランドが異なる
+バンクに入るように，命令が使うレジスタと命令を出力する順序を選べる．
+すべての競合を取り除くことはできない．プログラムの依存関係が順序を
+制約し，レジスタの数が選択を制約するからである．\margin{レジスタ割り付け，
+すなわちプログラムの値をレジスタに割り当てるコンパイラのパスは，
+第11章の生存解析の上に成り立つ．GPU ではバンク配置がその入力の1つに
+なる．}この対策の背後にある区別は，コンパイラを扱う章を通して用いられる．
+
+\begin{definition}[静的と動的]
+  \label{def:l04-static-dynamic}
+  プログラムの性質が\term[せいてき]{静的}[static]であるとは，それが
+  プログラムの実行前に決まり，入力に依存しないことをいう．入力に依存し，
+  実行中にしか分からないとき，その性質は\term[どうてき]{動的}[dynamic]
+  である．静的解析とはコンパイル時の解析である．
+  \term[せいてきめいれいすう]{静的命令数}[static instruction count]は
+  プログラムテキスト中の命令の数であり，
+  \term[どうてきめいれいすう]{動的命令数}[dynamic instruction count]は
+  1回の実行で実行される命令の数である．
+\end{definition}
+
+\begin{example}
+  \label{ex:l04-static-dynamic}
+  次のループは16語を合計し，5つの命令から成る．
+\begin{lstlisting}[numbers=none]
+LOOP: LD   R2, [R3]      // load a word
+      ADD  R1, R1, R2    // accumulate
+      ADD  R3, R3, #4    // next address
+      SUB  R4, R4, #1    // count down from 16
+      BNEZ R4, LOOP      // repeat while R4 != 0
+\end{lstlisting}
+  静的命令数は5である．\texttt{R4} を16に初期化するとループ本体は16回
+  実行されるので，動的命令数は $16 \times 5 = 80$ である．\texttt{R4}
+  を入力から1000に設定すると \num{5000} になる．レジスタ番号，したがって
+  各命令が読むバンクは静的であり，反復回数は動的である．
+\end{example}
+
+\subsection{オペランドコレクタとスコアボード}
+
+第二の対策はパイプラインの中にある．レジスタの読み出しは，バンク競合の
+ために，あるいはバンクに読み出しポートが1つしかないために複数サイクル
+かかることがあるので，SM は5段の CPU のようにオペランドの読み出しと
+実行を連続するステージで行わない．\cref{fig:l04-pipeline}は，
+レジスタ読み出しと実行の間に2つのものを挿入する．
+
+\begin{definition}[オペランドバッファとオペランドコレクタ]
+  \label{def:l04-operand-collector}
+  \term[おぺらんどばっふぁ]{オペランドバッファ}[operand buffer]とは，
+  待機中のワープ命令ごと，レーンごとに1エントリを持つ記憶であり，
+  レジスタバンクが複数サイクルにわたって供給するソースオペランドが
+  そこに書き込まれる．
+  \term[おぺらんどこれくた]{オペランドコレクタ}[operand collector]は，
+  これらのバッファを持ち，保持している命令のためにバンクの読み出しを
+  発行し，命令のオペランドがすべて届いたときにその命令を準備完了として
+  報告するユニットである．\margin{\emph{オペランドコレクタ}は A18 ch.~3
+  \cite{aamodt2018gpu} の用語である．K12 §1.4.1 は同じ構造を
+  オペランドバッファとして説明し，それが結果のキューとしても働くことを
+  述べている \cite{kim2012gpgpu}．}
+\end{definition}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-pipeline}
+  \caption{本章の SM パイプライン：ワープごとに1つの PC によるフェッチ，
+    デコード，バンクからのレジスタ読み出し，バッファを持つオペランド
+    コレクタ，スコアボードを持つスケジューラ，レーンと SFU あるいは
+    メモリユニットでの実行，そしてバンクへのライトバック．}
+  \label{fig:l04-pipeline}
+\end{figure}
+
+\begin{definition}[スコアボード]
+  \label{def:l04-scoreboard}
+  \term[すこあぼーど]{スコアボード}[scoreboard]とは，保留中の各ワープ
+  命令について，その各ソースオペランドが準備できているかを記録する表で
+  ある．スケジューラはこれを参照して，オペランドがすべて揃ったワープを
+  選び，そのワープの命令をレーンに発行する．準備のできたワープが複数
+  あるときは，最古優先などのポリシーを適用する．\caution{講義 vs
+  教科書：A18 ch.~3 と K12 §1.4.1 では，スコアボードは書き込みが保留中の
+  レジスタを記録し，RAW または WAW ハザードがあるワープの命令を発行前に
+  止める．オペランドの収集は発行の後に行われるので，ハードウェアの順序は
+  デコード，スコアボード検査と発行，オペランド収集，実行である
+  \cite{aamodt2018gpu,kim2012gpgpu}．}
+\end{definition}
+
+CPU では，スコアボードは初期のアウトオブオーダ動的スケジューリングの
+機構であり，1つのスレッドの命令間のハザードを追跡した．GPU では
+スコアボードはより単純な問い，すなわちワープ命令のオペランドが揃って
+いるかに答え，選択は1つのスレッドの命令の間ではなくワープの間で
+行われる．
+
+\begin{example}
+  \label{ex:l04-scoreboard}
+  4つのワープ \texttt{w0}--\texttt{w3} がそれぞれ2オペランドの命令を
+  オペランドコレクタで待たせており，バンクは示した順に1サイクルに1つの
+  オペランドを供給する．スコアボードの列は，各サイクル後の
+  \texttt{Src1} と \texttt{Src2} の準備状態を示す．
+  \begin{center}
+    \begin{tabular}{clcccc}
+      \toprule
+      サイクル & 供給されたオペランド & \texttt{w0} & \texttt{w1} & \texttt{w2} & \texttt{w3} \\
+      \midrule
+      0 & --- & $\cdot\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ \\
+      1 & \texttt{w0.Src1} & $\bullet\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ \\
+      2 & \texttt{w1.Src2} & $\bullet\,\cdot$ & $\cdot\,\bullet$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ \\
+      3 & \texttt{w2.Src1} & $\bullet\,\cdot$ & $\cdot\,\bullet$ & $\bullet\,\cdot$ & $\cdot\,\cdot$ \\
+      4 & \texttt{w0.Src2} & $\bullet\,\bullet$ & $\cdot\,\bullet$ & $\bullet\,\cdot$ & $\cdot\,\cdot$ \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  サイクル~4 の後，両オペランドが揃っているのは \texttt{w0} だけなので，
+  スケジューラはそれを選び，そのオペランドはバッファからレーンへ移る．
+  \texttt{w1} と \texttt{w2} は2つ目のオペランドを待ち続ける．
+  オペランドが届く順序，したがってどのワープが先に発行されるかは動的で
+  ある．それはプログラムテキストではなく，バンク競合とメモリシステムに
+  依存する．\sidenote{スコアボードは CDC~6600（1964年）で，単一の
+  命令ストリームのために導入された．GPU の形はワープ内ではインオーダで
+  ある．K12 §1.4.1 は，スケジューラはインオーダだが\enquote{準備の
+  できた任意のワープを選べる}ので，SM 全体の実行は\enquote{アウトオブ
+  オーダ実行のように見えるかもしれない}と述べている
+  \cite{kim2012gpgpu}．選択ポリシー（ラウンドロビン，
+  greedy-then-oldest）は第7章で詳しく比較する．}
+\end{example}
+
+\subsection{共有メモリのバンク競合}
+
+第3章のブロックごとのスクラッチパッドである共有メモリは，レジスタ
+ファイルと同じ理由でバンク化されている．ワープのロードは1サイクルに
+32語を供給しなければならない．\cref{fig:l04-shared-banks}は，連続する
+語がバンクにインタリーブされ，語 $a$ がバンク $a \bmod 4$ にある4バンクの
+共有メモリを示す．スレッド $k$ が
+\texttt{sharedInput[threadIdx.x * 4]}，すなわち語 $4k$ を読むと，ワープの
+全スレッドがバンク~0 を読み，ロードはスレッド数と同じ数のサイクルに
+直列化される．
+
+\begin{marginfigure}
+  \input{figures/l04-shared-banks}
+  \caption{語をインタリーブした4つの共有メモリバンク．4語のストライドは
+    全スレッドをバンク~0 に送る．}
+  \label{fig:l04-shared-banks}
+\end{marginfigure}
+
+\begin{definition}[共有メモリのバンク競合]
+  \label{def:l04-smem-bank-conflict}
+  \term[きょうゆうめもりのばんくきょうごう]{共有メモリのバンク競合}[shared memory bank conflict]
+  は，1つのワープのスレッドが1つの命令で，同じ共有メモリバンクにある
+  異なる語にアクセスするときに起こる．ハードウェアは要求を必要なだけの
+  競合のない要求に分割し，実効帯域幅はその分だけ低下する．\emph{同じ}
+  語にアクセスするスレッドは競合しない．複数のスレッドによる1語の読み
+  出しはブロードキャストで処理され，複数のスレッドによる1語への書き込みは
+  そのうちの1つが行う（BPG §10.2.3.1 Shared Memory and Memory Banks
+  \cite{nvidia2026cudabestpractices}；CPG，Compute Capability 5.x，
+  Shared Memory \cite{nvidia2024cudaguide}）．
+\end{definition}
+
+Compute Capability 5.0 以降の NVIDIA GPU では，共有メモリは32個の
+バンクを持ち，各バンクは幅 \SI{32}{\bit} で1クロックに1語を供給し，
+連続する32ビット語は連続するバンクに割り当てられる．ワープは32
+スレッドなので，競合はワープの任意の2スレッドの間で起こりうる．\margin{共有
+メモリのレイテンシは\enquote{キャッシュされないグローバルメモリの
+レイテンシのおよそ100分の1}である \cite{harris2013sharedmem}．
+$n$-way の競合は実効帯域幅を $n$ で割る（BPG §10.2.3.1）．}これらの
+規則から，バイトアドレス $a$ のバンクは
+\begin{equation}
+  \text{bank}(a) = \left\lfloor a / 4 \right\rfloor \bmod 32,
+  \label{eq:l04-bank}
+\end{equation}
+となる．32ビットの要素に一定の
+\term[すとらいど]{ストライド}[stride] $s$ 語，すなわち連続する
+スレッドが読む要素の間隔（スレッド $k$ が要素 $sk$ を読む）で
+アクセスするとき，触れるバンクは $32 / \gcd(s, 32)$ スレッドごとに
+繰り返すので，そのアクセスは $\gcd(s, 32)$-way の競合である．
+
+\begin{example}
+  \label{ex:l04-smem-stride}
+  ワープが \texttt{float} の配列から \texttt{s[threadIdx.x * 8]} を
+  読む．語のストライドは $s = 8$ なので，スレッド $k$ はバンク
+  $8k \bmod 32$ を読む．スレッド 0，4，8，\ldots，28 はすべてバンク~0 に，
+  スレッド 1，5，\ldots，29 はバンク~8 に当たり，使われるのはバンク 0，
+  8，16，24 だけである．各バンクを8スレッドが共有するので，ロードは
+  8-way の競合，$\gcd(8, 32) = 8$ であり，1サイクルではなく共有メモリの
+  8サイクルかかる．ストライド7ではバンクは $7k \bmod 32$ ですべて32個
+  異なり，ロードは1サイクルで済む．\caution{講義 vs ガイド：4バンクの
+  モデルでは \texttt{threadIdx.x * 4} は完全な競合（全スレッドが1つの
+  バンク）になる．実際の32バンクのハードウェアでは，同じアクセスは
+  8つのバンクを使う4-way の競合，$\gcd(4, 32) = 4$ である．}
+\end{example}
+
+実際によくあるのは，行ごとに格納したタイルを列ごとに読む場合であり，
+第5章のタイル化した行列乗算がその例である．32ビット要素の
+$32 \times 32$ のタイルでは，1つの列の要素は32語離れており，32-way の
+競合になる．標準的な解決策は\term[ぱでぃんぐ]{パディング}[padding]で
+ある．タイルを $32 \times 33$ と宣言すると列のストライドは33になり，
+\cref{eq:l04-bank}の剰余演算によって単位ストライドと同じように振る舞い，
+競合がなくなる．代償は1行当たり1語の未使用領域である．\margin{BPG
+§10.2.3.3 Shared Memory in Matrix Multiplication (C = AA$^\mathsf{T}$)
+が $[w][w+1]$ のパディング規則の出典である
+\cite{nvidia2026cudabestpractices}．Harris は転置について同じ競合を
+論じている \cite{harris2013sharedmem}．}
+\begin{lstlisting}[language=C++, numbers=none]
+__shared__ float tileA[32][32];  // column read: 32-way
+__shared__ float tileB[32][33];  // column read: no conflict
+// (tx, ty) reads tileA[tx][ty] / tileB[tx][ty]:
+// stride 32 vs 33
+\end{lstlisting}
+このようにデータ配置やアクセスパターンを組み替えることが，共有メモリの
+競合に対するソフトウェアの対策である．アドレスは動的なので，
+コンパイラがこれを自動的に適用することはできない．\tip{32バンクでは
+奇数の語ストライドはすべて競合しない．$\gcd(s, 32) = 1$ だからである．
+行を1語パディングすると，偶数の行ストライドが奇数になる．}
+
+\begin{keypoint}
+  バンク化は，幅の広いレジスタファイルや共有メモリに，少数のポートの
+  コストで多数のポートの帯域幅を与える．異なるバンクの値は一緒に読まれ，
+  同じバンクの値は直列化される．レジスタバンク競合はオペランド
+  コレクタとスコアボードが吸収し，スケジューラはオペランドの揃った
+  ワープを発行できる．共有メモリの競合はプログラマがストライドと
+  パディングによって取り除く．
+\end{keypoint}
+
+\section{GPU アーキテクチャのパイプライン}
+\label{sec:l04-pipeline}
+
+本節では，小さな構成でワープ命令を\cref{fig:l04-pipeline}の
+パイプラインに1ステージずつ通し，続いてワープ命令が一部のスレッドを
+飛ばせるようにするマスクビットを加える．\source{M4，パイプラインの
+ウォークスルー；K12 §1.4.1；A18 ch.~3；PTX ISA，特殊レジスタ
+\cite{nvidia2026ptx}．}
+
+\subsection{ステージ}
+
+\cref{fig:l04-pipeline}のステージは，1つのワープ命令について次の
+とおりである．
+\begin{description}
+  \item[フェッチ．] \term[めいれいふぇっち]{命令フェッチ}[instruction fetch]
+    ステージは，選ばれたワープの PC にある命令を命令キャッシュから読む．
+    ワープ全体で1つの命令である．
+  \item[デコード．] \term[でこーど]{デコード}[decode]ステージは，演算，
+    ソースとデスティネーションのレジスタ，および即値オペランドを識別する．
+    即値はすべてのスレッドで同じであり，全レーンのオペランドバッファに
+    一度にブロードキャストされ，最初から準備完了とされる．
+  \item[レジスタ読み出し．] レジスタバンクが各スレッドのソース値を，
+    1サイクルまたは複数サイクルかけてオペランドバッファに供給する．
+  \item[スケジュールと発行．] スコアボードがすべてのオペランドの準備完了を
+    示すと，スケジューラはそのワープを選ぶ．\term[めいれいはっこう]{命令発行}[issue]
+    は，命令とそのオペランドを実行ユニットへ送る．
+  \item[実行．] 算術レーンが，1レーンに1スレッドで計算する．
+    超越関数（正弦，逆数，平方根）は
+    \term[とくしゅかんすうゆにっと]{特殊関数ユニット}[special function unit (SFU)]（SFU）
+    へ送られる．SM はこれを少数しか持たないので，ワープの SFU 命令は
+    複数回に分けて処理される．ロードとストアはメモリユニットあるいは
+    共有メモリへ送られる．\sidenote{K12 §1.4.1 は G80 の実行ステージの
+    形を示している．8レーンであり，32スレッドのワープは1命令に4サイクル
+    かかった．SM 当たり2--4個の SFU が超越関数の近似を計算した．そして
+    CPU パイプラインのようなフォワーディングネットワークはなかった．
+    ワープの結果はワープ全体の幅を持ち（K12 は \SI{1}{\kibi\byte} と
+    する），連続する依存命令の間の隙間は他のワープが埋めることに頼る
+    からである \cite{kim2012gpgpu}．}
+  \item[ライトバック．] \term[らいとばっく]{ライトバック}[write-back]
+    ステージは，各スレッドの結果をバンク内のそのレジスタに書き込む．
+\end{description}
+
+\subsection{ウォークスルー}
+
+例の構成は意図的に小さくしてある．ワープサイズ4，8スレッドの
+スレッドブロック2つ，したがってワープは4つで，SM は4レーンを持つ．
+ブロックとスレッドは CUDA と同じく0から番号を付けるので，
+\texttt{\%ctaid.x} は0か1，\texttt{\%tid.x} は0から7である．レジスタは
+32ビットで，初期値は任意である．最初のサイクルの前の状態は
+\cref{tab:l04-walkthrough-state}の3つの表で与えられる．
+
+\begin{table}[htbp]
+  \centering
+  \caption{ウォークスルーの初期状態：各ワープの PC，命令キャッシュ内の
+    命令，ブロック~0 のレジスタファイル．}
+  \label{tab:l04-walkthrough-state}
+  \begin{tabular}{lll}
+    \toprule
+    ワープ & ブロック，スレッド & PC \\
+    \midrule
+    \texttt{W0} & ブロック 0，\texttt{T0}--\texttt{T3} & \texttt{0x8000} \\
+    \texttt{W1} & ブロック 0，\texttt{T4}--\texttt{T7} & \texttt{0x8004} \\
+    \texttt{W2} & ブロック 1，\texttt{T0}--\texttt{T3} & \texttt{0x8000} \\
+    \texttt{W3} & ブロック 1，\texttt{T4}--\texttt{T7} & \texttt{0x800C} \\
+    \bottomrule
+  \end{tabular}
+  \hspace{6mm}
+  \begin{tabular}{ll}
+    \toprule
+    アドレス & 命令 \\
+    \midrule
+    \texttt{0x8000} & \texttt{add r1, r1, 2} \\
+    \texttt{0x8004} & \texttt{sub r2, r2, 1} \\
+    \texttt{0x8008} & \texttt{mov r1, \%tid.x} \\
+    \texttt{0x800C} & \texttt{mov r2, \%ctaid.x} \\
+    \texttt{0x8010} & \texttt{ld.shared r1, [A]} \\
+    \bottomrule
+  \end{tabular}
+
+  \medskip
+  \begin{tabular}{lcccccccc}
+    \toprule
+    ブロック 0 & \texttt{T0} & \texttt{T1} & \texttt{T2} & \texttt{T3} & \texttt{T4} & \texttt{T5} & \texttt{T6} & \texttt{T7} \\
+    \midrule
+    \texttt{R1} & 20 & 21 & 22 & 23 & 30 & 31 & 32 & 33 \\
+    \texttt{R2} &  5 &  5 &  5 &  5 &  7 &  7 &  7 &  7 \\
+    \texttt{R3} &  1 &  4 &  9 & 16 & 25 & 36 & 49 & 64 \\
+    \texttt{R4} &  8 &  6 &  7 &  5 &  3 &  0 &  9 &  2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+命令は PTX の2つの\term[とくしゅれじすた]{特殊レジスタ}[special register]
+を使う．これはハードウェアがスレッドごとに値を入れる読み出し専用の
+レジスタである．\texttt{\%tid.x} はブロック内でのスレッドのインデックスを，
+\texttt{\%ctaid.x} はグリッド内でのそのブロック（CTA）のインデックスを
+保持する．\margin{PTX ISA 9.4，特殊レジスタ \texttt{\%tid}，
+\texttt{\%ntid}，\texttt{\%ctaid}，\texttt{\%nctaid}
+\cite{nvidia2026ptx}．第3章の \texttt{threadIdx}，\texttt{blockDim}，
+\texttt{blockIdx} はこれらにコンパイルされる．PTX 全体は第10章で
+扱う．}スケジューラはワープを \texttt{W0}，\texttt{W1}，\texttt{W3} の
+順に選ぶものとし，以下の各ステップでは，次のワープを考える前に命令を
+すべてのステージに通す．
+\begin{enumerate}
+  \item \emph{\texttt{0x8000} の \texttt{W0}：\texttt{add r1, r1, 2}．}
+    フェッチは4スレッドのために1つの命令を読む．デコードは即値2を
+    4レーンすべての \texttt{Src2} にブロードキャストし，準備完了とする．
+    レジスタ読み出しは \texttt{Src1} を \texttt{T0}--\texttt{T3} の
+    \texttt{R1}，すなわち20，21，22，23で満たす．両オペランドが揃った
+    ので，スコアボードはスケジューラに \texttt{W0} の発行を許し，4レーンが
+    加算し，ライトバックは22，23，24，25を \texttt{T0}--\texttt{T3} の
+    \texttt{R1} に格納する．\texttt{W0} の PC は \texttt{0x8004} に
+    進む．
+  \item \emph{\texttt{0x8004} の \texttt{W1}：\texttt{sub r2, r2, 1}．}
+    スレッド \texttt{T4}--\texttt{T7} について同じステージを通る．即値1が
+    ブロードキャストされ，\texttt{T4}--\texttt{T7} の \texttt{R2} が
+    7，7，7，7と読まれ，$7 - 1 = 6$ がそれぞれに書き戻される．ハードウェアは
+    ワープのすべてのスレッドについて同一の仕事を行う．異なるのは
+    レジスタの値だけである．
+  \item \emph{\texttt{0x800C} の \texttt{W3}：\texttt{mov r2, \%ctaid.x}．}
+    \texttt{W3} はブロック~1 に属するので，特殊レジスタはすべてのレーンで
+    1を返し，ブロック~1 の \texttt{T4}--\texttt{T7} の \texttt{R2} は
+    1，1，1，1になる．仮に \texttt{W3} の PC が \texttt{0x8008} で
+    あったなら，\texttt{mov r1, \%tid.x} はスレッドインデックス4，5，6，7を
+    \texttt{R1} に書いたはずである．特殊レジスタがスレッドごとに異なるので，
+    同じ命令がレーンごとに異なる値を生む．
+\end{enumerate}
+\cref{tab:l04-walkthrough-after}は，最初の2ステップの後のブロック~0 の
+レジスタを示す．\texttt{W2} が，\texttt{W0} が持っていたのと同じ PC を
+持つことに注意する．異なるブロックの2つのワープは，同じ静的な命令を
+それぞれ自分のレジスタに対して実行し，パイプラインの中にそれらを結び
+付けるものは何もない．\tip{ワープ命令を手でたどるには：ワープの PC で
+フェッチする；即値をブロードキャストする；ワープの全スレッドについて
+指定されたレジスタを読む；レーンごとに計算する；レーンごとに書き戻す；
+そのワープの PC を進める．}
+
+\begin{table}[htbp]
+  \centering
+  \caption{ステップ1と2の後のブロック~0 のレジスタファイル（変化した値は
+    太字）．}
+  \label{tab:l04-walkthrough-after}
+  \begin{tabular}{lcccccccc}
+    \toprule
+    ブロック 0 & \texttt{T0} & \texttt{T1} & \texttt{T2} & \texttt{T3} & \texttt{T4} & \texttt{T5} & \texttt{T6} & \texttt{T7} \\
+    \midrule
+    \texttt{R1} & \textbf{22} & \textbf{23} & \textbf{24} & \textbf{25} & 30 & 31 & 32 & 33 \\
+    \texttt{R2} &  5 &  5 &  5 &  5 & \textbf{6} & \textbf{6} & \textbf{6} & \textbf{6} \\
+    \texttt{R3} &  1 &  4 &  9 & 16 & 25 & 36 & 49 & 64 \\
+    \texttt{R4} &  8 &  6 &  7 &  5 &  3 &  0 &  9 &  2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{マスクビット}
+
+すべての命令がそのワープの全スレッドを必要とするわけではない．ワープ
+サイズ4で6スレッドのブロックは2つ目のワープの2レーンを空けたままにし，
+第6章で示すように，一部のスレッドだけが取る分岐は，経路が再合流する
+まで他のスレッドを遊ばせる．パイプラインはその両方を1つの機構で扱う．\margin{第6章の
+SIMT スタックのマスクはまさにこれらのビットであり，分岐による発散と
+再合流に応じてプッシュとポップが行われる．第5章のワープ投票関数とシャッフル関数は
+アクティブマスクをプログラムに見せる．}
+
+\begin{definition}[レーンとアクティブマスク]
+  \label{def:l04-active-mask}
+  \term[れーん]{レーン}[lane]とは，パイプラインを通る1つの実行経路，
+  すなわちワープ命令の1スレッドに仕えるオペランドバッファのエントリ，
+  ALU，ライトバックのスロットである（第1章の SIMT レーンをパイプライン
+  の側から見たもの）．ワープの
+  \term[あくてぃぶますく]{アクティブマスク}[active mask]は，レーンごとに
+  1ビットを持つビットベクトルである．ビットが1のレーンは命令を実行して
+  結果を書き戻し，ビットが0のレーンは何の仕事もせず何も書かない．
+\end{definition}
+
+上のウォークスルーはすべてのレーンをアクティブにして実行した．
+\cref{fig:l04-scoreboard-lanes}は，\cref{tab:l04-masks}のマスクの下で
+の後の命令についてレーンごとのオペランドバッファを示す．\texttt{W0} は
+4レーンすべてで準備ができて選ばれ，\texttt{W1} はマスク
+\texttt{1110} の下で動く．その最初の3レーンはオペランドを受け取って
+計算し，4番目のレーンは非アクティブで，準備完了とされることはない．
+マスクがすべて1のワープが通常の場合であり，マスクは PC とともに
+ワープの状態の一部である．
+
+\begin{margintable}
+  \caption{後の命令のアクティブマスク（上のウォークスルーはすべての
+    マスクを \texttt{1111} として実行した）．\texttt{W1} のレーン~3 と
+    \texttt{W2} のレーン~0 は無効になっている．}
+  \label{tab:l04-masks}
+  \begin{tabular}{lc}
+    \toprule
+    ワープ & マスク \\
+    \midrule
+    \texttt{W0} & \texttt{1111} \\
+    \texttt{W1} & \texttt{1110} \\
+    \texttt{W2} & \texttt{0111} \\
+    \texttt{W3} & \texttt{1111} \\
+    \bottomrule
+  \end{tabular}
+\end{margintable}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-scoreboard-lanes}
+  \caption{レーンごとのオペランドバッファとスコアボード：\texttt{w0} は
+    すべてのレーンで両オペランドが揃っており，4つの ALU に発行される．
+    \texttt{w1} はマスク \texttt{1110} の下で動くので，4番目のレーンは
+    非アクティブのままである．}
+  \label{fig:l04-scoreboard-lanes}
+\end{figure}
+
+
+\begin{keypoint}
+  ワープ命令は，ワープの PC で1回フェッチされ，1回デコードされ，その後
+  レーンごとに読み出され，実行され，書き戻される．即値と
+  \texttt{\%ctaid.x} のような特殊レジスタはブロードキャストされ，
+  \texttt{\%tid.x} と通常のレジスタはレーンごとに異なる．アクティブ
+  マスクは，命令ストリームを変えずに個々のレーンを無効にする．
+\end{keypoint}
+
+\section{グローバルメモリのコアレッシング}
+\label{sec:l04-coalescing}
+
+SM の実行側はワープ命令を1つの単位として処理するが，メモリ側はそうは
+いかない．ロードの各スレッドが自分のアドレスを与えるからである．\source{M4，
+コアレッシング；K12 §1.4.3；A18 ch.~4；BPG §10.2.1 Coalesced Access to
+Global Memory；CPG §5.3.2 Device Memory Accesses；PMPP ch.~6．}本節では，
+ワープが生成しうる要求の数を数え，それを処理しなければならないメモリ
+技術を概観し，アドレスの近い要求をハードウェアがどのように併合するかを
+示す．
+
+\subsection{帯域幅の需要}
+
+32スレッドのワープの1つのロード命令は，スレッドごとに1つ，最大32個の
+異なるメモリ要求を生成しうる．すべての SM がそのようなロードを毎サイクル
+発行したときに必要となる
+\term[めもりたいいきはば]{メモリ帯域幅}[memory bandwidth]は，容易に
+計算できる．
+
+\begin{example}
+  \label{ex:l04-bandwidth-demand}
+  ある GPU は \SI{1.5}{\giga\hertz} の SM を64個持つ．すべての SM が
+  1サイクルに1つのワープロードを発行し，各スレッドの要求が
+  \SI{32}{\byte} を取ってくるとすると，SM 群は1サイクル当たり
+  $64 \times 32 \times \SI{32}{\byte} = \SI{65536}{\byte}$ を要求し，
+  これは \SI{1.5}{\giga\hertz} で約 \SI{98}{\tera\byte\per\second} に
+  なる．（SM が32個，要求当たり \SI{64}{\byte}，\SI{1}{\giga\hertz} の
+  場合，同じ1サイクル当たり \SI{64}{\kibi\byte} は約
+  \SI{66}{\tera\byte\per\second} になり，普通は
+  \SI{64}{\tera\byte\per\second} と丸められる．）H100 SXM5 のメモリ
+  システムが供給するのは約 \SI{3}{\tera\byte\per\second}（暫定値）で
+  あり，およそ30分の1である．\margin{世代ごとの HBM 帯域幅：P100
+  \SI{720}{\giga\byte\per\second}，V100 \SI{900}{\giga\byte\per\second}，
+  A100（\SI{40}{\gibi\byte}）\SI{1555}{\giga\byte\per\second}
+  \cite{nvidia2020ampere}；H100 SXM5 \SI{3000}{\giga\byte\per\second}
+  （暫定値，HWP V1.02）\cite{nvidia2022hopper}．}この差を埋めるのは，
+  キャッシュ，すべてのワープが毎サイクルロードするわけではないこと，
+  そして何よりもコアレッシングである．ワープの32個の要求は，たいてい
+  メモリの少数の隣接するブロックに収まる．
+\end{example}
+
+GPU のキャッシュはスレッド数に比べて小さいので，その帯域幅は容易に
+飽和し，ほとんどのカーネルではオフチップメモリがボトルネックになる．
+そこにどのメモリ技術があるかが，ボトルネックの幅を決める．
+
+\subsection{SRAM，DRAM，HBM}
+
+\cref{fig:l04-sram-dram-hbm}は3つの技術を対比する．
+
+\begin{description}
+  \item[SRAM．] スタティックランダムアクセスメモリ，
+    \term[えすらむ]{SRAM}[SRAM]は，1ビットを6トランジスタのセルに
+    格納する．ビットを保持する2つの交差結合したインバータが，ワード線で
+    制御される2つのアクセストランジスタを通してビット線につながる．
+    高速でリフレッシュを必要としないが，1ビット当たり6トランジスタなので
+    面積のコストが高く，GPU のダイ上の構造，すなわちレジスタ，共有
+    メモリ，キャッシュに使われる．
+  \item[DRAM．] ダイナミックランダムアクセスメモリ，
+    \term[でぃーらむ]{DRAM}[DRAM]は，1ビットを1つのトランジスタの
+    背後のキャパシタの電荷として格納する（1T1C）．セルははるかに小さい
+    ので，DRAM は GPU の主記憶の容量を与えるが，より遅く，定期的な
+    リフレッシュを必要とし，チップは別のパッケージに入っている．出入り
+    するすべてのビットがパッケージのピンを通らなければならず，その数と
+    速度が帯域幅を制限する．SM は複数の\emph{メモリチャネル}を通して
+    L2 と DRAM に到達し，各チャネルは自前の DRAM を持ち，コアレスされた
+    要求はそれらに分散される（K12 §1.4.3 \cite{kim2012gpgpu}）．
+  \item[HBM．] 広帯域メモリ（第1章）は DRAM のセルはそのままに，
+    パッケージングを変える．複数の DRAM ダイを垂直に積み重ね，積層を
+    貫いて接続したものが
+    \term[さんじげんせきそうめもり]{3次元積層メモリ}[3D-stacked memory]
+    であり，その積層は
+    \term[しりこんいんたーぽーざ]{シリコンインターポーザ}[silicon interposer]，
+    すなわち同じパッケージの中で数千本の細い配線を運ぶシリコン基板の上に，
+    GPU ダイと並べて置かれる．GPU へのリンクはもはやパッケージのピンや
+    回路基板を通らないので，数千ビットの幅を持つことができ，パッケージ
+    当たりの帯域幅は GDDR メモリシステムの数倍になる．\margin{初期の
+    GPU は幅の広いバスで GDDR DRAM を使い，各チャネルに FR-FCFS
+    （first-ready，first-come first-served）スケジューラを置いた：K12
+    §1.4.3 \cite{kim2012gpgpu}．インタフェース幅：P100 と V100 は
+    4096ビットの HBM2 インタフェース，A100 は5120ビットの HBM2
+    インタフェース \cite{nvidia2020ampere}，H100 SXM5 は5120ビットの
+    HBM3 インタフェースを使う \cite{nvidia2022hopper}．BPG §9.2.1 は
+    V100 の \SI{898}{\giga\byte\per\second} を $0.877\,\text{GHz} \times 2
+    \times 4096\,\text{bit} / 8$ として導く \cite{nvidia2026cudabestpractices}．}
+\end{description}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-sram-dram-hbm}
+  \caption{(a) 6トランジスタの SRAM セル．(b) 1トランジスタ1キャパシタの
+    DRAM セルと，通信がピンを通る DRAM パッケージ．(c) シリコン
+    インターポーザが GPU ダイと DRAM ダイの3次元積層を結ぶ GPU
+    パッケージ．}
+  \label{fig:l04-sram-dram-hbm}
+\end{figure}
+
+\subsection{コアレッシング}
+
+HBM でさえワープ命令当たり32個の別々の要求には応えられないので，SM の
+メモリユニットは32個のアドレスをまとめて調べる．
+
+\begin{definition}[メモリコアレッシング]
+  \label{def:l04-coalescing}
+  1つのワープ命令の各スレッドのメモリ要求を，ハードウェアがそのアドレスの
+  許す限り少ないメモリトランザクションにまとめることを
+  \term[めもりこあれっしんぐ]{メモリコアレッシング}[memory coalescing]
+  という．\term[めもりとらんざくしょん]{メモリトランザクション}[memory transaction]
+  とは，メモリシステムと SM の間での，固定長で自然にアラインされた
+  バイトのブロックの1回の転送である．32個の要求が少数のトランザクションに
+  収まるアクセスが\term[こあれすあくせす]{コアレスアクセス}[coalesced access]
+  であり，ほとんどのスレッドに別々のトランザクションを必要とするものが
+  \term[ひこあれすあくせす]{非コアレスアクセス}[uncoalesced access]で
+  ある．
+\end{definition}
+
+\cref{fig:l04-coalescing}は，8スレッドが2つの PTX ロード
+\begin{lstlisting}[language=PTX, numbers=none]
+ld.global.u32 %r3, [%r1];   // R1: 512, 516, ..., 540
+ld.global.u32 %r3, [%r2];   // R2: 0, 128, 256, ..., 896
+\end{lstlisting}
+を実行する2つの場合を示す．ここで DRAM 要求の長さは \SI{64}{\byte}
+とする．\caution{講義 vs ガイド：例の \SI{64}{\byte} の要求は講義が
+仮定する粒度（\enquote{64 to 128~B}）である．Compute Capability 6.0
+以降，ハードウェアは \SI{32}{\byte} のセクタで数える．BPG §10.2.1 は，
+ワープのアクセスが\enquote{ワープの全スレッドに応えるのに必要な32バイト
+トランザクションの数に等しい数のトランザクション}にコアレスされると
+述べている \cite{nvidia2026cudabestpractices}．セクタ化キャッシュには
+第8章で戻る．}最初のロードでは8個のアドレスは512から540までの連続する
+4バイト語で，合計 \SI{32}{\byte} なので，\texttt{Mem[512--575]} への
+1つの要求にまとまる．このアクセスはコアレスされている．2つ目では
+アドレスが \SI{128}{\byte} ずつ離れているので，どの2つも要求を共有せず，
+8個の要求が発行される．このアクセスは非コアレスであり，同じ
+\SI{32}{\byte} の有用なデータのために8倍の帯域幅を消費する．
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-coalescing}
+  \caption{8スレッドが \texttt{\%r1} を通して（連続する語，1要求），
+    また \texttt{\%r2} を通して（\SI{128}{\byte} 離れた語，8要求）
+    ロードする．}
+  \label{fig:l04-coalescing}
+\end{figure}
+
+正確な規則には3つの要素がある．グローバルメモリには32，64，
+\SI{128}{\byte} のトランザクションでアクセスし，各トランザクションは
+自然にアラインされていなければならない．すなわち先頭アドレスがその
+サイズの倍数でなければならない．これが
+\term[あらいめんと]{アライメント}[alignment]の要件である．\margin{CPG
+§5.3.2 Device Memory Accesses：\enquote{デバイスメモリには32，64，
+128バイトのメモリトランザクションでアクセスする．これらのメモリ
+トランザクションは自然にアラインされていなければならない}
+\cite{nvidia2024cudaguide}．}メモリは
+\term[きゃっしゅらいん]{キャッシュライン}[cache line]の単位で
+キャッシュされる．NVIDIA GPU では \SI{128}{\byte} で，4つの
+\SI{32}{\byte} セクタから成り，ワープのアクセスは触れたセクタの数だけ
+コストがかかる．最後に，アクセスの\term*{ストライド}，すなわち連続する
+スレッドのアドレスの間隔が，ワープの32個のアドレスがいくつのセクタに
+またがるかを決める．
+
+\begin{example}
+  \label{ex:l04-sectors}
+  32スレッドのワープが，スレッドごとに4バイト語を1つ，合計
+  \SI{128}{\byte} の有用なデータを，\cref{fig:l04-sectors}と
+  \cref{tab:l04-sectors}の4つのパターンでロードする．効率は有用な
+  データを転送したバイト数で割ったものである．
+\end{example}
+
+\begin{table}[htbp]
+  \centering
+  \caption{\SI{4}{\byte} の語を32個ロードするワープが転送するセクタ
+    （BPG §10.2.1.1--10.2.1.4 による）．}
+  \label{tab:l04-sectors}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{52mm}ccc}
+    \toprule
+    アクセスパターン & セクタ & 転送バイト & 効率 \\
+    \midrule
+    (a) 連続，\SI{128}{\byte} 境界にアライン & 4 & 128 & \SI{100}{\percent} \\
+    (b) 連続，1語ずれ & 5 & 160 & \SI{80}{\percent} \\
+    (c) ストライド2語 & 8 & 256 & \SI{50}{\percent} \\
+    (d) ストライド8語以上 & 32 & 1024 & \SI{12.5}{\percent} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-sectors}
+  \caption{32スレッドのワープが触れる語（網掛け）と \SI{32}{\byte} の
+    セクタ：(a) アラインされ連続，(b) 1語ずれ，(c) ストライド2，
+    (d) ストライド8（セクタ当たり1語）．}
+  \label{fig:l04-sectors}
+\end{figure}
+
+パターン (b) は，連続するアクセスでもアライメントが重要であることを
+示す．1語のずれで5つ目のセクタにはみ出す．パターン (d) は行優先の
+行列への列方向のアクセスであり，\cref{fig:l04-coalescing}の非コアレスな
+ロードはその極端な形である．連続するスレッドが連続する語に触れるように
+カーネルを書くこと，すなわちパターン (a) は，最も重要なただ1つのメモリ
+最適化である．\margin{K12 §1.4.3：Compute Capability 1.2 より前の
+GPU は厳格なコアレッシング規則（連続するスレッド，連続しアラインされた
+語）を課していた．後の世代はそれを緩め，コアレスされたワープのアクセスに
+対して\enquote{1--4個のメモリトランザクション}を生成する
+\cite{kim2012gpgpu}．}CUDA では，パターンはスレッドインデックスが
+アドレスにどう入るかで決まる．
+\Needspace{5\baselineskip}% JA: keep the short listing on one page
+\begin{lstlisting}[language=C++, numbers=none]
+// coalesced: consecutive threads, consecutive words
+out[i] = in[blockIdx.x * blockDim.x + threadIdx.x];
+// uncoalesced: stride of one row (n words) per thread
+out[i] = in[threadIdx.x * n + blockIdx.x];
+\end{lstlisting}
+\Needspace{18\baselineskip}
+アルゴリズムがストライドのある見方を必要とするときの対策は，
+\cref{sec:l04-bank-conflicts}の共有メモリである．タイルをコアレスして
+ロードし，それから計算が望む順序で共有メモリから読む．これは第3章の
+タイリングであり，第5章の主題である．\tip{ロードを確かめるには，
+ワープのスレッド0と1がどのアドレスに触れるかを問う．その差が要素の
+サイズに等しく，スレッド0のアドレスがアラインされていれば，アクセスは
+コアレスされる．}
+
+\begin{keypoint}[章のまとめ]
+  SM はメモリレイテンシを細粒度マルチスレッディングで隠す．ワープごとの
+  1つの PC とスレッドごとのレジスタの組がチップ上にとどまるので，ワープの
+  切り替えにはコストがかからず，ワープ数は記憶容量で制限される．
+  レジスタファイルと共有メモリは，ワープのオペランドを毎サイクル供給する
+  ためにバンク化されている．1つのバンクからそのポート数より多くの値を
+  必要とするアクセスがバンク競合であり，レジスタファイルでは
+  オペランドコレクタと，準備のできたワープを発行するスコアボードが
+  これを吸収し，共有メモリ（\SI{4}{\byte} 幅のバンク32個）では奇数の
+  ストライドとパディングによってこれを避ける．ワープ命令は1回フェッチ
+  され1回デコードされ，アクティブマスクの下でレーンごとに実行される．
+  即値と \texttt{\%ctaid.x} はブロードキャストされ，\texttt{\%tid.x} は
+  レーンごとに異なる．メモリ側では，1つのワープロードが32個の要求を
+  発行しうる．ハードウェアは同じアラインされた \SI{32}{\byte} セクタに
+  収まる要求をコアレスするので，連続しアラインされたアクセスは
+  \SI{128}{\byte} のデータに対して4セクタを転送し，ストライドのある
+  アクセスは最大32セクタを転送する．インターポーザ上に積層した DRAM
+  という HBM の構成は，残る需要に応えるためにある．
+\end{keypoint}
+
+\end{document}

@@ -1,0 +1,57 @@
+% The SM pipeline with register banks, an operand collector and a
+% scoreboard (Lesson 4): fetch (one PC per warp, I-cache), decode,
+% register-file read from banks, the operand buffer / collector, the
+% scheduler with its scoreboard, execution (SIMT lanes, SFUs, memory and
+% shared memory) and write-back.  Redraws the outline figures
+% m4l2_solution and m4l3_gpu_pipeline.
+% Usage: \input{figures/l04-pipeline}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]},
+    st/.style={draw, fill=ln-box, minimum height=8mm, minimum width=15mm,
+               align=center, inner sep=2pt},
+    mem/.style={draw, fill=ln-accent!15, minimum height=6mm, align=center,
+                inner sep=2pt}]
+  \node[st] (fetch) at (7.5,20) {\iflangja{フェッチ}{Fetch}};
+  \node[st, right=2mm of fetch, minimum width=13mm] (dec) {\iflangja{デコード}{Decode}};
+  \node[st, right=2mm of dec, minimum width=14mm] (reg)
+    {\iflangja{レジスタ\\読み出し}{Register\\read}};
+  \node[st, right=2mm of reg, minimum width=16mm] (oc)
+    {\iflangja{オペランド\\コレクタ}{Operand\\collector}};
+  \node[st, right=2mm of oc, minimum width=15mm] (sched)
+    {\iflangja{スケジュール}{Schedule}};
+  \node[st, right=2mm of sched, minimum width=14mm, fill=ln-accent!12] (ex)
+    {\iflangja{実行}{Execute}};
+  \draw[->] (fetch) -- (dec);
+  \draw[->] (dec) -- (reg);
+  \draw[->] (reg) -- (oc);
+  \draw[->] (oc) -- (sched);
+  \draw[->] (sched) -- (ex);
+  % write-back below execute, result back to the register banks
+  \node[st, below=9mm of ex, minimum width=14mm] (wb)
+    {\iflangja{ライトバック}{Write-back}};
+  \draw[->] (ex) -- (wb);
+  % state attached to the stages
+  \node[mem, above=4mm of fetch, minimum width=15mm] (pcs)
+    {\iflangja{ワープごとの PC}{one PC per warp}};
+  \draw[<->] (pcs) -- (fetch);
+  \node[mem, below=4mm of fetch, minimum width=15mm] (icache)
+    {\iflangja{命令キャッシュ}{I-cache}};
+  \draw[<->] (icache) -- (fetch);
+  \node[mem, below=4mm of reg, minimum width=14mm] (banks)
+    {\iflangja{レジスタバンク\\0 1 2 3}{register banks\\0 1 2 3}};
+  \draw[<->] (banks) -- (reg);
+  \draw[->] (wb.west) -| (banks.south);
+  \node[mem, above=4mm of oc, minimum width=16mm] (buf)
+    {\iflangja{オペランド\\バッファ}{operand\\buffer}};
+  \draw[<->] (buf) -- (oc);
+  \node[mem, above=4mm of sched, minimum width=15mm] (sb)
+    {\iflangja{スコアボード}{scoreboard}};
+  \draw[<->] (sb) -- (sched);
+  \node[mem, above=4mm of ex, minimum width=14mm] (lanes)
+    {\iflangja{レーン，SFU}{lanes, SFUs}};
+  \draw[<->] (lanes) -- (ex);
+  \node[mem, right=2mm of ex, minimum width=11mm] (dmem)
+    {\iflangja{メモリ\\共有メモリ}{memory,\\shared mem.}};
+  \draw[<->] (ex) -- (dmem);
+\end{tikzpicture}

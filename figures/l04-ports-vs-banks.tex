@@ -1,0 +1,51 @@
+% Ports versus banks in a register file for an execution width of 4
+% (Lesson 4).  Left: without banks every register entry needs 8 read and
+% 4 write ports.  Right: four banks, each with 2 read and 1 write port,
+% accessed simultaneously.  Redraws the outline figures m4l2_port_vs_bank
+% and m4l2_port_vs_bank_1.
+% Usage: \input{figures/l04-ports-vs-banks}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily]
+  % (a) no banks: one column of entries crossed by 8 R and 4 W lines
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (0,43)
+    {\iflangja{(a) バンクなし}{(a) no banks}};
+  \foreach \t in {0,1} \foreach \r in {0,...,3} {
+    \pgfmathsetmacro{\yy}{38-(\t*4+\r)*4.2}
+    \draw[fill=ln-box] (0,\yy) rectangle ++(12,-4) node[midway] {T\t.R\r};
+  }
+  \node[anchor=north] at (6,3) {$\vdots$};
+  \foreach \k in {0,...,7} {
+    \draw[ln-accent, thick] (14+\k*2.2,39.5) -- ++(0,-35.5);
+    \node[text=ln-accent, anchor=south] at (14+\k*2.2,39.6) {R};
+  }
+  \foreach \k in {0,...,3} {
+    \draw[ln-caution, thick] (33+\k*2.2,39.5) -- ++(0,-35.5);
+    \node[text=ln-caution, anchor=south] at (33+\k*2.2,39.6) {W};
+  }
+  \foreach \t in {0,1} \foreach \r in {0,...,3} {
+    \pgfmathsetmacro{\yy}{36-(\t*4+\r)*4.2}
+    \draw[ln-muted] (12,\yy) -- (42,\yy);
+  }
+  \node[anchor=north west, align=left, text=ln-muted] at (0,-1)
+    {\iflangja{各エントリに 8 読み出し + 4 書き込みポート}{8 read + 4 write ports on every entry}};
+  % (b) four banks
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (58,43)
+    {\iflangja{(b) 4 バンク}{(b) 4 banks}};
+  \foreach \b in {0,...,3} {
+    \pgfmathsetmacro{\xx}{58+\b*15}
+    \node[anchor=south, text=ln-muted] at (\xx+6,21.5) {\iflangja{バンク \b}{bank \b}};
+    \foreach \r in {0,...,3} {
+      \pgfmathsetmacro{\yy}{38-\r*4.2}
+      \draw[fill=ln-box] (\xx,\yy) rectangle ++(9,-4) node[midway] {T\b.R\r};
+      \draw[ln-muted] (\xx+9,\yy-2) -- (\xx+14.5,\yy-2);
+    }
+    \draw[ln-accent, thick] (\xx+10.2,39.5) -- ++(0,-18);
+    \draw[ln-accent, thick] (\xx+12.2,39.5) -- ++(0,-18);
+    \draw[ln-caution, thick] (\xx+14.2,39.5) -- ++(0,-18);
+    \node[text=ln-accent, anchor=south] at (\xx+10.2,39.6) {R};
+    \node[text=ln-accent, anchor=south] at (\xx+12.2,39.6) {R};
+    \node[text=ln-caution, anchor=south] at (\xx+14.2,39.6) {W};
+  }
+  \node[anchor=north west, align=left, text=ln-muted] at (58,17)
+    {\iflangja{各バンクに 2 読み出し + 1 書き込みポート；\\4 バンクを同時にアクセスできる}{2 read + 1 write ports per bank;\\the four banks are accessed at the same time}};
+\end{tikzpicture}

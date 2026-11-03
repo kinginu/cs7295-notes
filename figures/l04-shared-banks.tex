@@ -1,0 +1,23 @@
+% A four-bank shared memory (Lesson 4): word addresses interleaved over
+% the banks (bank = address mod 4), and four threads reading
+% sharedInput[threadIdx.x * 4], which all hit bank 0.  Redraws the
+% outline figure m4l2_shared_mem.
+% Usage: \input{figures/l04-shared-banks} inside marginfigure
+% Width: margin (50 mm); the drawing is about 48 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.4mm]}]
+  \foreach \b in {0,...,3} {
+    \node[anchor=south, text=ln-muted] at (14+\b*9+3.5,21) {\iflangja{\b}{bank \b}};
+    \foreach \k in {0,...,3} {
+      \pgfmathtruncatemacro{\a}{\k*4+\b}
+      \draw[fill=ln-box] (14+\b*9,20-\k*4.5) rectangle ++(7,-4) node[midway] {\a};
+    }
+  }
+  \iflangja{\node[anchor=south, text=ln-muted] at (31,24) {バンク};}{}% JA: bank numbers only, one heading
+  \foreach \k in {0,...,3} {
+    \node[anchor=east, inner sep=1pt] (t\k) at (8,18-\k*4.5) {T\k};
+    \draw[->, ln-caution, thick] (t\k.east) -- (14,18-\k*4.5);
+  }
+  \node[anchor=north west, align=left, text=ln-muted] at (0,0.5)
+    {\iflangja{T$k$ は語 $4k$ を読む：全員がバンク 0}{T$k$ reads word $4k$: all in bank 0}};
+\end{tikzpicture}

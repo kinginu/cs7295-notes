@@ -1,0 +1,48 @@
+% Scoreboard and operand buffer per lane (Lesson 4): four lanes, each
+% holding for warps w0..w3 the two source operands (value v, ready r);
+% w0 has both operands ready in every lane, is selected, and its operands
+% move into the four ALUs.  Lane 3 of w1 is inactive (mask 1110) and is
+% left unready.  Redraws the outline figures m4l2_scoreboard_ready,
+% m4l2_scoreboard_ready_execution and m4l3_scoreboard9 (the slide's w3
+% lane-1 ready mark under mask 0111 corrected).
+% Usage: \input{figures/l04-scoreboard-lanes}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % \lane{x}{n}{src1 value of w0}{src2 value of w0}{w1 ready marks}
+  \newcommand{\lane}[5]{%
+    \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (#1,30) {\iflangja{レーン #2}{lane #2}};
+    % header
+    \node[anchor=south] at (#1+11,25.6) {Src1};
+    \node[anchor=south] at (#1+21,25.6) {Src2};
+    \foreach \c/\h in {8/v, 14/r, 20/v, 26/r} {
+      \node[anchor=south, text=ln-muted] at (#1+\c,23) {\h};
+    }
+    \foreach \w in {0,...,3} {
+      \node[anchor=east, inner sep=1pt] at (#1+4,20.5-\w*4) {w\w};
+      \draw[fill=ln-box] (#1+4,22.5-\w*4) rectangle ++(8,-4);
+      \draw[fill=ln-box] (#1+12,22.5-\w*4) rectangle ++(4,-4);
+      \draw[fill=ln-box] (#1+16,22.5-\w*4) rectangle ++(8,-4);
+      \draw[fill=ln-box] (#1+24,22.5-\w*4) rectangle ++(4,-4);
+    }
+    % w0: both operands ready
+    \node at (#1+8,20.5) {#3};
+    \node[text=ln-tip] at (#1+14,20.5) {$\bullet$};
+    \node at (#1+20,20.5) {#4};
+    \node[text=ln-tip] at (#1+26,20.5) {$\bullet$};
+    \draw[ln-tip, very thick] (#1+4,22.5) rectangle ++(24,-4);
+    % w1: Src2 ready, Src1 pending (#5 = ready mark or empty)
+    \node[text=ln-tip] at (#1+26,16.5) {#5};
+    % ALU
+    \draw[fill=ln-accent!15] (#1+6,2) -- (#1+22,2) -- (#1+18,-5) -- (#1+10,-5) -- cycle;
+    \node at (#1+14,-1.5) {ALU};
+    \draw[->] (#1+8,6.5) -- (#1+10,2);
+    \draw[->] (#1+20,6.5) -- (#1+18,2);
+  }
+  \lane{0}{0}{20}{2}{$\bullet$}
+  \lane{30}{1}{21}{2}{$\bullet$}
+  \lane{60}{2}{22}{2}{$\bullet$}
+  \lane{90}{3}{23}{2}{}
+  \node[anchor=north west, align=left, text=ln-muted] at (0,-7)
+    {\iflangja{w0 は全レーンで両オペランドが揃ったので選択される；w1 のレーン 3 はマスク 1110 で非アクティブ}{w0 has both operands in every lane and is selected; lane 3 of w1 is inactive under mask 1110}};
+\end{tikzpicture}

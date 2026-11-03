@@ -1,0 +1,57 @@
+% Latency hiding: in-order, out-of-order and multithreaded execution of
+% one four-instruction program whose first instruction misses in the
+% cache (Lesson 4).  (a) in-order: every later instruction waits behind
+% the miss; (b) out-of-order: only the dependent instruction waits;
+% (c) multithreading: four threads each issue their load and the four
+% misses overlap.  Stages F D S E W; grey = waiting for the miss.
+% Redraws the outline figures m4l1_multithreading, m4l1_multithreading_2
+% and m4l1_multithreading_3.
+% Usage: \input{figures/l04-latency-hiding}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=2.9mm, y=2.9mm, font=\scriptsize\sffamily]
+  % \row{x}{y}{fill}{label}{stages}: one instruction; "-" is a stall cell
+  \newcommand{\row}[5]{%
+    \node[anchor=east, inner sep=1pt] at (#1-0.3,#2-0.5) {#4};
+    \foreach \s [count=\i from 0] in {#5} {
+      \ifx\s-
+        \draw[fill=ln-rule!40, draw=ln-rule] (#1+\i,#2) rectangle ++(1,-1);
+      \else
+        \draw[fill=#3] (#1+\i,#2) rectangle ++(1,-1) node[midway] {\s};
+      \fi
+    }}
+  % (a) in-order
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (1,0.3)
+    {\iflangja{(a) インオーダ}{(a) in-order}};
+  \row{1}{0}{ln-box}{I1}{F,D,S,E,-,-,-,-,-,-,W}
+  \row{1}{-1}{ln-box}{I2}{,F,D,S,-,-,-,-,-,-,-,E,W}
+  \row{1}{-2}{ln-box}{I3}{,,F,D,-,-,-,-,-,-,-,S,E,W}
+  \row{1}{-3}{ln-box}{I4}{,,,F,-,-,-,-,-,-,-,D,S,E,W}
+  \draw[->, ln-muted] (1,-4.6) -- (16,-4.6)
+    node[below left, inner sep=1pt] {\iflangja{サイクル}{cycle}};
+  % (b) out-of-order
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (21,0.3)
+    {\iflangja{(b) アウトオブオーダ}{(b) out-of-order}};
+  \row{21}{0}{ln-box}{I1}{F,D,S,E,-,-,-,-,-,-,W}
+  \row{21}{-1}{ln-box}{I2}{,F,D,S,E,W}
+  \row{21}{-2}{ln-box}{I3}{,,F,D,S,E,W}
+  \row{21}{-3}{ln-box}{I4}{,,,F,D,S,-,-,-,-,-,E,W}
+  \draw[->, ln-muted] (21,-4.6) -- (36,-4.6)
+    node[below left, inner sep=1pt] {\iflangja{サイクル}{cycle}};
+  % (c) multithreading
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (1,-7.7)
+    {\iflangja{(c) マルチスレッディング（各スレッドの I1）}{(c) multithreading (I1 of each thread)}};
+  \row{1}{-8}{ln-accent!25}{T1}{F,D,S,E,-,-,-,-,-,-,W}
+  \row{1}{-9}{ln-tip!25}{T2}{,F,D,S,E,-,-,-,-,-,-,W}
+  \row{1}{-10}{ln-caution!20}{T3}{,,F,D,S,E,-,-,-,-,-,-,W}
+  \row{1}{-11}{ln-source!20}{T4}{,,,F,D,S,E,-,-,-,-,-,-,W}
+  \draw[->, ln-muted] (1,-12.6) -- (16,-12.6)
+    node[below left, inner sep=1pt] {\iflangja{サイクル}{cycle}};
+  % program and legend
+  \node[anchor=north west, align=left, font=\scriptsize\ttfamily] at (21,-7.7)
+    {I1: R1 = LD [0x400]\\I2: R2 = R5 + R6\\I3: R3 = R2 + R6\\I4: R5 = R1 + R6};
+  \draw[fill=ln-rule!40, draw=ln-rule] (21,-11.8) rectangle ++(1,-1);
+  \node[anchor=west, text=ln-muted] at (22.3,-12.3)
+    {\iflangja{ミス待ち（ストール）}{waiting for the miss (stall)}};
+  \node[anchor=west, text=ln-muted] at (22.3,-13.5)
+    {\iflangja{I4 だけが I1 の R1 に依存する}{only I4 depends on R1 from I1}};
+\end{tikzpicture}

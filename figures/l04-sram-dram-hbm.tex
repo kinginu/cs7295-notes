@@ -1,0 +1,66 @@
+% SRAM, DRAM and HBM (Lesson 4).  (a) a six-transistor SRAM cell: two
+% cross-coupled inverters and two access transistors on a word line and a
+% pair of bit lines.  (b) a one-transistor, one-capacitor DRAM cell, and
+% a DRAM package whose chips talk through pins.  (c) a GPU package with a
+% silicon interposer carrying the GPU die and a 3D stack of DRAM dies.
+% Schematic symbols only.  Redraws the outline figure m4l4_sram.
+% Usage: \input{figures/l04-sram-dram-hbm}
+% Width: body (120 mm); the drawing is about 118 mm wide.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\scriptsize\sffamily,
+    >={Stealth[length=1.6mm]}]
+  % (a) SRAM cell
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (0,33.5)
+    {\iflangja{(a) SRAM セル（6 トランジスタ）}{(a) SRAM cell (6 transistors)}};
+  \draw[ln-muted] (2,25) -- (34,25) node[right, text=ln-muted] {\iflangja{ワード線}{word line}};
+  \draw[ln-muted] (4,4) -- (4,28.5) node[above, text=ln-muted] {\iflangja{ビット線}{bit line}};
+  \draw[ln-muted] (32,4) -- (32,28.5) node[above, text=ln-muted] {\iflangja{$\overline{\text{ビット線}}$}{$\overline{\text{bit line}}$}};
+  % two inverters, cross coupled: the upper one drives Q-bar from Q, the
+  % lower one drives Q from Q-bar; storage nodes Q (x=10) and Q-bar (x=26)
+  \draw[fill=ln-box] (14,22) -- (14,16) -- (21,19) -- cycle;
+  \draw[fill=white] (21.9,19) circle (0.9);
+  \draw (10,19) -- (14,19); \draw (22.8,19) -- (26,19);
+  \draw[fill=ln-box] (22,14) -- (22,8) -- (15,11) -- cycle;
+  \draw[fill=white] (14.1,11) circle (0.9);
+  \draw (26,11) -- (22,11); \draw (13.2,11) -- (10,11);
+  \draw (10,11) -- (10,19); \draw (26,11) -- (26,19);
+  \fill (10,15) circle (0.45); \fill (26,15) circle (0.45);
+  \node[anchor=north] at (10,10.6) {$Q$};
+  \node[anchor=north] at (26,10.6) {$\overline{Q}$};
+  % access transistors (schematic boxes): bit line to Q, bit line-bar to
+  % Q-bar, both gated by the word line
+  \draw[fill=ln-accent!15] (5,13) rectangle ++(4,4);
+  \draw (4,15) -- (5,15); \draw (9,15) -- (10,15); \draw (7,17) -- (7,25);
+  \draw[fill=ln-accent!15] (27,13) rectangle ++(4,4);
+  \draw (31,15) -- (32,15); \draw (26,15) -- (27,15); \draw (29,17) -- (29,25);
+  \node[anchor=north west, text=ln-muted, align=left] at (0,3)
+    {\iflangja{キャッシュ，レジスタ，共有メモリ}{caches, registers, shared memory}};
+  % (b) DRAM cell and package
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (44,33.5)
+    {\iflangja{(b) DRAM（1T1C）とパッケージ}{(b) DRAM cell (1T1C) and package}};
+  \draw[ln-muted] (46,25) -- (66,25) node[right, text=ln-muted] {\iflangja{ワード線}{word line}};
+  \draw[ln-muted] (48,13) -- (48,28.5) node[above, text=ln-muted] {\iflangja{ビット線}{bit line}};
+  \draw[fill=ln-accent!15] (51,18) rectangle ++(4,4);
+  \draw (48,20) -- (51,20); \draw (55,20) -- (58,20); \draw (53,22) -- (53,25);
+  \draw (58,20) -- (58,18.5); \draw (56,18.5) -- (60,18.5); \draw (56,17) -- (60,17);
+  \draw (58,17) -- (58,15.5); \draw (56.5,15.5) -- (59.5,15.5);
+  \node[anchor=west, text=ln-muted] at (61,17.5) {\iflangja{キャパシタ}{capacitor}};
+  % package with chips and pins
+  \draw[fill=ln-box] (46,2) rectangle (76,10);
+  \foreach \k in {0,...,3} { \draw[fill=ln-tip!25] (47.5+\k*7.2,4) rectangle ++(6,4); }
+  \foreach \k in {0,...,11} { \draw (47+\k*2.5,2) -- ++(0,-2); }
+  \node[anchor=north west, text=ln-muted] at (44,-0.5) {\iflangja{全通信がピンを通る}{all traffic through the pins}};
+  % (c) HBM package
+  \node[anchor=south west, font=\scriptsize\sffamily\bfseries] at (84,33.5)
+    {\iflangja{(c) HBM の GPU パッケージ}{(c) GPU package with HBM}};
+  \draw[fill=ln-box] (84,2) rectangle (118,26);
+  \draw[fill=ln-accent!15] (86,6) rectangle (116,10)
+    node[midway] {\iflangja{シリコンインターポーザ}{silicon interposer}};
+  \draw[fill=ln-accent!25] (87,10) rectangle (101,22) node[midway] {GPU};
+  \foreach \k in {0,...,4} {
+    \draw[fill=ln-tip!25] (104,10+\k*1.8) rectangle ++(11,1.5);
+  }
+  \node[anchor=south, align=center] at (109.5,19.0) {\iflangja{3D 積層\\DRAM}{3D-stacked\\DRAM}};
+  \draw[<->, thick, ln-caution] (101,12) -- (104,12);
+  \node[anchor=north west, text=ln-muted, align=left] at (84,1)
+    {\iflangja{数千本の短い配線}{thousands of short wires}};
+\end{tikzpicture}

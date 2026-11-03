@@ -1,0 +1,1044 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+\chapter{GPU Architecture}
+\lessoninfo{
+  video={M4, lessons 1--4 (Multi-threaded Architecture; Bank Conflicts; GPU Architecture Pipeline; Global Memory Coalescing)},
+  sources={PTX ISA \cite{nvidia2026ptx} (special registers); Harris, \emph{Using Shared Memory in CUDA C/C++} \cite{harris2013sharedmem}; NVIDIA A100 \cite{nvidia2020ampere} and H100 \cite{nvidia2022hopper} whitepapers (HBM figures)},
+  textbook={A18 \cite{aamodt2018gpu} ch.~3 (assigned), ch.~4; K12 \cite{kim2012gpgpu} §1.4.1 GPU Pipeline, §1.4.3 GPU Memory Systems; CPG \cite{nvidia2024cudaguide} §4.2 Hardware Multithreading, §5.3.2 Device Memory Accesses; BPG \cite{nvidia2026cudabestpractices} §10.2.1 Coalesced Access to Global Memory, §10.2.3 Shared Memory; PMPP \cite{hwu2022pmpp} ch.~4--6},
+  keywords={latency hiding, fine-grained multithreading, context switch, program counter per warp, register file, port, bank, bank conflict, operand collector, scoreboard, active mask, special register, memory coalescing, memory transaction, SRAM, DRAM, HBM},
+}
+
+Lesson~1 named the parts of a streaming multiprocessor and Lesson~3
+showed how a kernel's threads are packed into blocks and warps and how
+many of them an SM can hold.  This lesson opens the SM and follows a
+warp instruction through it.  It begins with the reason the SM is
+multithreaded at all: a load that misses in the cache would otherwise
+stall the pipeline, and a GPU hides that latency by switching among
+warps whose program counters and registers are all kept on chip.  The
+register file that makes this possible is so wide that it must be split
+into banks, which introduces bank conflicts, operand collectors and the
+scoreboard that selects a ready warp.  A complete pipeline walk-through
+on a small example then shows fetch, decode, register read, execution
+and write-back for a warp, including the mask bits that switch lanes
+off.  The lesson closes with the memory side: why a warp can generate
+32 memory requests from one instruction, what SRAM, DRAM and HBM are,
+and how coalescing turns those requests into a few wide transactions.
+Lesson~5 turns these mechanisms into optimisation rules, and Lessons~6
+and~7 return to the register file and the warp scheduler.
+
+\section{Multi-threaded architecture}
+\label{sec:l04-multithreading}
+
+A GPU consists of many SMs, each of which runs its warps by
+multithreading and holds a block of shared memory and hardware caches
+(\cref{fig:l01-sm} of Lesson~1).\source{M4, multithreading; K12 §1.2.1;
+A18 ch.~3; CPG §4.2 Hardware Multithreading.}  This section explains
+what the multithreading buys, what state it requires, and how that
+state differs from a CPU's.
+
+\subsection{Three ways to survive a cache miss}
+
+Consider the four-instruction program of \cref{fig:l04-latency-hiding}
+on the five-stage pipeline of Lesson~1 (front end, decode and rename,
+schedule, execute, write-back).  The first instruction, \texttt{I1},
+loads a word from memory; \texttt{I4} needs the loaded value, while
+\texttt{I2} and \texttt{I3} are independent of it.  Suppose the load
+suffers a \term{cache miss}[キャッシュミス]: the word is not in the
+cache and must come from DRAM, so the execute stage of \texttt{I1}
+cannot finish for many cycles.\margin{Latency scale: global-memory
+accesses cost \enquote{100s of cycles} on the Tesla and Fermi GPUs of
+K12 Table~1.4 \cite{kim2012gpgpu}; an on-chip shared-memory access there
+costs 4--32 cycles.}  The pipeline \emph{stalls}: cycles pass in which
+no instruction completes.  Three designs react differently.
+\begin{description}
+  \item[In-order execution] (\cref{fig:l04-latency-hiding}a) issues
+    instructions in program order, so \texttt{I2}, \texttt{I3} and
+    \texttt{I4} all wait behind the miss, although only \texttt{I4}
+    depends on it.
+  \item[Out-of-order execution] (\cref{fig:l04-latency-hiding}b) lets
+    \texttt{I2} and \texttt{I3} complete during the miss; only
+    \texttt{I4} waits.  The gain is limited by the independent
+    instructions the hardware can find in one thread.
+  \item[Multithreading] (\cref{fig:l04-latency-hiding}c) issues
+    \texttt{I1} of four different threads in four consecutive cycles.
+    Instructions from different threads are independent by
+    construction, so no search for independence is needed, and the four
+    misses are outstanding at the same time: four memory requests
+    overlap instead of being served one after another.
+\end{description}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-latency-hiding}
+  \caption{One program whose first instruction misses in the cache:
+    (a) in-order, every later instruction waits; (b) out-of-order, only
+    the dependent \texttt{I4} waits; (c) multithreading, four threads
+    each issue their load and the four misses overlap.}
+  \label{fig:l04-latency-hiding}
+\end{figure}
+
+\begin{definition}[Latency hiding by multithreading]
+  \label{def:l04-latency-hiding}
+  Keeping the pipeline busy with useful instructions while a
+  long-latency operation (a cache miss, a long ALU operation, a branch
+  resolution) is in flight is called
+  \term{latency hiding}[レイテンシ隠蔽].  Holding the state of many
+  threads on chip and switching among them at every cycle, so that a
+  stalled thread simply is not selected, is
+  \term{fine-grained multithreading}[細粒度マルチスレッディング].  The number of memory requests a processor keeps in flight
+  at once is its \term{memory-level parallelism (MLP)}[メモリレベル並列性];
+  the multithreaded pipeline of \cref{fig:l04-latency-hiding}c has an
+  MLP of four.
+\end{definition}
+
+Where a CPU spends its area on out-of-order logic, large caches and the
+search for ILP, a GPU spends it on threads: the stalls caused by cache
+misses, branches and long-latency arithmetic are covered by the other
+warps of the SM.  The price is stated by one rule: the longer the memory
+latency, the more threads are needed to hide it.\tip{Threads needed
+$\approx$ latency $\div$ cycles of independent work each thread
+supplies between two long-latency operations.  Doubling the latency
+doubles the thread count; so does halving the independent work.}
+
+\begin{example}
+  \label{ex:l04-threads-needed}
+  An SM issues one warp instruction per cycle.  Each warp, after issuing
+  a load, can issue two more instructions before it needs the loaded
+  value, and the load takes \num{400} cycles.  To keep the issue slot
+  busy for the whole \num{400} cycles the SM needs about
+  $400 / 3 \approx 134$ warps that can each contribute three
+  instructions; with a \num{800}-cycle latency it needs about
+  \num{267}.  No real SM holds that many warps (the limit is
+  \num{64}), which is why GPUs also rely on caches, on independent
+  instructions within a warp and, as \cref{sec:l04-coalescing} shows,
+  on cutting the number of memory requests.\margin{Maximum resident
+  warps per SM: 64 on compute capabilities 7.0, 8.0 and 9.0, 48 on 8.6
+  and 8.9, 32 on 7.5: CPG Table~21 \cite{nvidia2024cudaguide}; the
+  occupancy of Lesson~3 is measured against this limit.}
+\end{example}
+
+\subsection{Program counters and registers per thread}
+
+Multithreading changes the front end of the pipeline
+(\cref{fig:l04-warp-state}).  A single-threaded core keeps one
+\term{program counter (PC)}[プログラムカウンタ], the address of the next
+instruction to fetch.  An SM keeps one PC per warp: four resident warps
+mean four PC registers, and in every cycle the fetch stage reads the PC
+of the warp it has selected and fetches one instruction for all the
+threads of that warp.  One static instruction thus serves a whole warp,
+which is the SPMD model of Lesson~1 realised in hardware.  Behind the
+front end, the \term{register file}[レジスタファイル] holds a private set
+of registers for every thread of every resident warp, so that switching
+from one warp to another needs no copying: the registers of the next
+warp are already there.\margin{Per SM the register file holds
+\num{65536} 32-bit registers, \SI{256}{\kibi\byte}, on every compute
+capability from 5.0 to 9.0: CPG Table~21 \cite{nvidia2024cudaguide}.
+Fermi (2010) had \SI{128}{\kibi\byte} per SM: K12 §1.4.1 \cite{kim2012gpgpu}.}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-warp-state}
+  \caption{The front end of a multithreaded SM: one program counter per
+    warp selects the instruction to fetch, and the register file keeps a
+    register set for every thread, grouped by warp, so that reading
+    \texttt{R1} for warp~0 reads \texttt{R1} of its four threads at
+    once.}
+  \label{fig:l04-warp-state}
+\end{figure}
+
+\begin{definition}[Context switch]
+  \label{def:l04-context-switch}
+  A \term{context switch}[コンテキストスイッチ] replaces the thread whose
+  state (PC, registers) the pipeline is executing with another thread.
+  On a CPU the pipeline, the PC and the registers belong to one thread
+  at a time, so the switch stores the running thread's state to memory
+  and loads the next thread's (\cref{fig:l04-context-switch}), a cost
+  of many cycles.  On a GPU every resident warp's PC and registers are
+  already on chip; the switch only changes which PC and which register
+  set the pipeline uses, and costs nothing.\margin{CPG §4.2 Hardware
+  Multithreading: the execution context of each warp \enquote{is
+  maintained on-chip during the entire lifetime of the warp.  Therefore,
+  switching from one execution context to another has no cost}
+  \cite{nvidia2024cudaguide}.}
+\end{definition}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-context-switch}
+  \caption{A CPU context switch: the core holds one thread's PC and
+    registers, so switching from \texttt{T1} to \texttt{T2} saves
+    \texttt{T1}'s state to memory and restores \texttt{T2}'s.}
+  \label{fig:l04-context-switch}
+\end{figure}
+
+\begin{note}
+  The word \emph{context switch} is used in two senses.  An operating
+  system's context switch saves a process or thread to memory and is
+  expensive; the GPU's \enquote{context switch} between
+  warps is a selection among states that are all resident and is
+  free.\caution{The free GPU switch applies only to warps that are
+  resident on the SM.  Replacing a finished thread block by a new one
+  does allocate registers and shared memory and is not free; Lesson~7
+  treats warp scheduling.}  A CPU with simultaneous
+  multithreading holds two thread contexts per core; an SM holds
+  hundreds of threads.\margin{K12 §1.2.1 contrasts the two hyper-threads
+  of a CPU core with the hundreds of threads of an SM
+  \cite{kim2012gpgpu}.}
+\end{note}
+
+\subsection{Resource requirements}
+
+The state that multithreading keeps on chip is counted in two
+quantities.
+\begin{itemize}
+  \item \emph{Program counters.}  One per warp, so the number of PCs is
+    the number of resident threads divided by the warp size.  Later
+    GPUs keep more front-end state than this; for the model of this
+    book one PC per warp is assumed.\margin{Since Volta, independent
+    thread scheduling keeps a program counter and call stack per
+    \emph{thread}, so that diverged threads can be interleaved: CPG §4.1
+    SIMT Architecture \cite{nvidia2024cudaguide}.  Lesson~5 discusses
+    it; Lesson~6 keeps the per-warp model.}
+  \item \emph{Registers.}  $K$ registers per thread times the number of
+    resident threads, where $K$ is chosen by the compiler for each
+    kernel and varies from application to application.  A larger $K$
+    means fewer resident threads for a fixed register file, which is the
+    register limit of the occupancy calculation of Lesson~3.
+\end{itemize}
+
+\begin{example}
+  \label{ex:l04-resources}
+  An SM holds \num{512} resident threads with a warp size of 32, so it
+  keeps $512 / 32 = 16$ program counters.  A kernel of \num{12}
+  instructions executed by all of them costs
+  $16 \times 12 = 192$ warp-instruction fetches, whereas the same work
+  on single-threaded cores would need $512 \times 12 = \num{6144}$
+  instruction fetches: one fetch serves 32 threads.  If the compiler
+  assigns $K = 40$ registers per thread, the resident threads occupy
+  $40 \times 512 = \num{20480}$ registers, \SI{80}{\kibi\byte} at
+  \SI{4}{\byte} each.\tip{Per SM: PCs = threads $\div$ warp size;
+  registers = $K \times$ threads; a GPU repeats both in every SM.  Both scale with the thread count, so the
+  latency-hiding rule above is a statement about on-chip storage.}
+\end{example}
+
+\begin{keypoint}
+  A GPU hides memory latency with fine-grained multithreading rather
+  than with out-of-order execution: every resident warp's PC and
+  registers stay on chip, so switching warps costs nothing, and the
+  number of warps an SM can hold is a storage question (one PC per
+  warp, $K$ registers per thread).
+\end{keypoint}
+
+\section{Bank conflicts}
+\label{sec:l04-bank-conflicts}
+
+The register file of the previous section must deliver operands for a
+whole warp at once, which makes its bandwidth, not its capacity, the
+design problem.\source{M4, bank conflicts; K12 §1.4.1 (register
+read/write, scoreboarding); A18 ch.~3 (operand collector); BPG §10.2.3
+Shared Memory; CPG Compute Capability 5.x, Shared Memory;
+\cite{harris2013sharedmem}.}  This section introduces ports and banks,
+the conflicts banking creates in the register file and in shared memory,
+and the operand collector and scoreboard that absorb them.
+
+\subsection{Register file bandwidth}
+
+A typical arithmetic instruction reads two source registers and writes
+one destination.  An SM executes an instruction for many threads at
+once: with an execution width of 16 lanes, one instruction moves
+$16 \times 3 = 48$ register values in a cycle, and a wider SM
+proportionally more.\margin{K12 §1.4.1 scales this up: a GPU of
+\SI{1}{\tera\flop\per\second} with two reads and one write per
+operation needs on the order of \SI{64}{\tera\byte\per\second} of
+register read bandwidth \cite{kim2012gpgpu}, far beyond any single
+memory array.}  A memory array that can be read and written through
+that many paths at once is what the hardware must provide.
+
+\begin{definition}[Port]
+  \label{def:l04-port}
+  A \term{port}[ポート] is a hardware interface through which one value
+  can be read from or written to a storage array in a cycle; a
+  \term{read port}[読み出しポート] carries a value out, a
+  \term{write port}[書き込みポート] carries one in.  Each port is a set
+  of wires and selection logic attached to every entry of the array,
+  so its cost grows with the number of entries, and an array with many
+  ports is large and slow.
+\end{definition}
+
+\Cref{fig:l04-ports-vs-banks}a shows the brute-force design for an
+execution width of 4: every register entry carries $2 \times 4 = 8$
+read ports and 4 write ports, so that any 8 values can be read and any
+4 written in one cycle.  \Cref{fig:l04-ports-vs-banks}b reaches the
+same throughput more cheaply by splitting the array.
+
+\begin{definition}[Bank]
+  \label{def:l04-bank}
+  A \term{bank}[バンク] is one of several independent storage arrays
+  into which a register file or memory is divided, each with its own
+  (few) ports.  Banks are accessed simultaneously, so $B$ banks with
+  $p$ ports each deliver up to $Bp$ values per cycle as long as the
+  values requested lie in different banks.  In
+  \cref{fig:l04-ports-vs-banks}b four banks with 2 read and 1 write
+  port each give the 8 reads and 4 writes of the unbanked design with
+  a quarter of the ports per entry.
+\end{definition}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-ports-vs-banks}
+  \caption{Ports versus banks for an execution width of 4.  (a) Without
+    banks every entry needs 8 read and 4 write ports.  (b) Four banks
+    with 2 read and 1 write ports each are accessed at the same time.}
+  \label{fig:l04-ports-vs-banks}
+\end{figure}
+
+\subsection{Register bank conflicts}
+
+The saving has a condition: the values a cycle needs must be spread over
+the banks.
+
+\begin{definition}[Bank conflict]
+  \label{def:l04-bank-conflict}
+  A \term{bank conflict}[バンク競合] occurs when one access (one warp
+  instruction) needs more values from a single bank than that bank has
+  ports.  The hardware serialises the access over several cycles, one
+  per group of values the bank can serve.  In a register file this is a
+  \term{register bank conflict}[レジスタバンク競合].
+\end{definition}
+
+\Cref{fig:l04-register-bank-conflict} assigns the registers of thread
+$k$ to bank $k$ in a four-bank file with two read ports per bank.
+\begin{itemize}
+  \item Reading \texttt{R0} of threads \texttt{T0}--\texttt{T3}, which
+    is what a warp instruction does, touches one entry in each bank:
+    four values in one cycle, as fast as the unbanked file.
+  \item Reading \texttt{R0}--\texttt{R3} of thread \texttt{T0} touches
+    four entries of bank~0, which has two read ports: two cycles.
+\end{itemize}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-register-bank-conflict}
+  \caption{A four-bank register file with two read ports per bank.
+    (a) \texttt{R0} of four threads lies in four banks and is read in
+    one cycle.  (b) Four registers of one thread lie in one bank and
+    take two cycles.}
+  \label{fig:l04-register-bank-conflict}
+\end{figure}
+
+The first case looks safe, since a warp always reads the same register
+number for all its threads.  It stops being safe once the number of
+registers per thread varies, because the thread-to-bank layout then
+changes (\cref{fig:l04-register-layout}).  With four registers per
+thread and one thread per bank (case~1), the instruction
+\texttt{R2 = R0 + R1} reads two values from every bank and completes in
+one cycle.  With two registers per thread (case~2) two threads share a
+bank: for a warp of \texttt{T0}--\texttt{T3} the same instruction sends
+four reads to bank~0 (\texttt{R0} and \texttt{R1} of \texttt{T0} and
+\texttt{T1}) and four to bank~1, and takes two cycles while banks~2
+and~3 idle.\margin{Real designs spread a thread's registers over the
+banks (register $r$ of a thread in bank $r \bmod B$, for instance), so
+that the conflicts come from the registers an instruction names, not
+from the thread count; the choice of layout is part of the compiler's
+and the hardware's contract.}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-register-layout}
+  \caption{Thread-to-bank layout with a variable register count.
+    Case~1: four registers per thread, one thread per bank.  Case~2:
+    two registers per thread, two threads per bank, so an instruction
+    reading \texttt{R0} and \texttt{R1} for warp \texttt{T0}--\texttt{T3}
+    sends four reads to each of banks~0 and~1.}
+  \label{fig:l04-register-layout}
+\end{figure}
+
+\subsection{Static and dynamic}
+
+The first remedy is the compiler.  Register numbers are fixed in the
+program text, so the compiler can choose which registers an instruction
+uses and in what order instructions are emitted so that the operands of
+one instruction fall into different banks.  It cannot remove every
+conflict, because the dependences of the program constrain the order and
+the number of registers constrains the choice.\margin{Register
+allocation, the compiler pass that assigns program values to registers,
+builds on the liveness analysis of Lesson~11; on a GPU the bank layout
+is one of its inputs.}  The distinction behind this remedy is used throughout the
+compiler lessons.
+
+\begin{definition}[Static and dynamic]
+  \label{def:l04-static-dynamic}
+  A property of a program is \term{static}[静的] when it is determined
+  before the program runs and does not depend on its input; it is
+  \term{dynamic}[動的] when it depends on the input and is known only
+  during execution.  Static analysis is compile-time analysis.  The
+  \term{static instruction count}[静的命令数] is the number of
+  instructions in the program text; the
+  \term{dynamic instruction count}[動的命令数] is the number of
+  instructions executed in one run.
+\end{definition}
+
+\begin{example}
+  \label{ex:l04-static-dynamic}
+  The loop below sums 16 words and consists of five instructions.
+\begin{lstlisting}[numbers=none]
+LOOP: LD   R2, [R3]      // load a word
+      ADD  R1, R1, R2    // accumulate
+      ADD  R3, R3, #4    // next address
+      SUB  R4, R4, #1    // count down from 16
+      BNEZ R4, LOOP      // repeat while R4 != 0
+\end{lstlisting}
+  Its static instruction count is 5.  With \texttt{R4} initialised to 16
+  the loop body runs 16 times, so the dynamic instruction count is
+  $16 \times 5 = 80$; with \texttt{R4} set from the input to 1000 it is
+  \num{5000}.  The register numbers, and therefore the banks each
+  instruction reads, are static; the trip count is dynamic.
+\end{example}
+
+\subsection{Operand collectors and the scoreboard}
+
+The second remedy is in the pipeline.  Because a register read may take
+several cycles, through a bank conflict or because a bank has a single
+read port, the SM does not read operands and execute in consecutive
+stages as the five-stage CPU does.  \Cref{fig:l04-pipeline} inserts two
+things between register read and execution.
+
+\begin{definition}[Operand buffer and operand collector]
+  \label{def:l04-operand-collector}
+  An \term{operand buffer}[オペランドバッファ] is storage, one entry per
+  waiting warp instruction and per lane, into which source operands are
+  written as the register banks deliver them over several cycles.  The
+  \term{operand collector}[オペランドコレクタ] is the unit that owns these
+  buffers, issues the bank reads for the instructions it holds, and
+  reports an instruction as ready when all of its operands have
+  arrived.\margin{\emph{Operand collector} is the term of A18 ch.~3
+  \cite{aamodt2018gpu}; K12 §1.4.1 describes the same structure as
+  operand buffers and notes that it also serves as a result queue
+  \cite{kim2012gpgpu}.}
+\end{definition}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-pipeline}
+  \caption{The SM pipeline of this lesson: fetch with one PC per warp,
+    decode, register read from the banks, the operand collector with
+    its buffers, the scheduler with its scoreboard, execution on the
+    lanes and SFUs or in the memory units, and write-back to the
+    banks.}
+  \label{fig:l04-pipeline}
+\end{figure}
+
+\begin{definition}[Scoreboard]
+  \label{def:l04-scoreboard}
+  A \term{scoreboard}[スコアボード] is a table that records, for each
+  pending warp instruction, whether each of its source operands is
+  ready.  The scheduler consults it to select a warp whose operands are
+  all ready and issues that warp's instruction to the lanes; among
+  several ready warps it applies a policy such as oldest first.\caution{Lecture
+  vs textbook: in A18 ch.~3 and K12 §1.4.1 the scoreboard records which
+  registers have pending writes and blocks a warp's instruction on a RAW
+  or WAW hazard before issue; operand collection follows issue, so the
+  hardware order is decode, scoreboard check and issue, operand
+  collection, execute \cite{aamodt2018gpu,kim2012gpgpu}.}
+\end{definition}
+
+On a CPU the scoreboard was the mechanism of early out-of-order dynamic
+scheduling: it tracked the hazards among the instructions of one thread.
+On a GPU it answers a simpler question, whether a warp instruction has
+its operands, and the choice is among warps rather than among the
+instructions of one thread.
+
+\begin{example}
+  \label{ex:l04-scoreboard}
+  Four warps \texttt{w0}--\texttt{w3} each have a two-operand
+  instruction waiting in the operand collector, and the banks deliver
+  one operand per cycle in the order shown.  The scoreboard columns give
+  the readiness of \texttt{Src1} and \texttt{Src2} after each cycle.
+  \begin{center}
+    \begin{tabular}{clcccc}
+      \toprule
+      cycle & operand delivered & \texttt{w0} & \texttt{w1} & \texttt{w2} & \texttt{w3} \\
+      \midrule
+      0 & --- & $\cdot\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ \\
+      1 & \texttt{w0.Src1} & $\bullet\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ \\
+      2 & \texttt{w1.Src2} & $\bullet\,\cdot$ & $\cdot\,\bullet$ & $\cdot\,\cdot$ & $\cdot\,\cdot$ \\
+      3 & \texttt{w2.Src1} & $\bullet\,\cdot$ & $\cdot\,\bullet$ & $\bullet\,\cdot$ & $\cdot\,\cdot$ \\
+      4 & \texttt{w0.Src2} & $\bullet\,\bullet$ & $\cdot\,\bullet$ & $\bullet\,\cdot$ & $\cdot\,\cdot$ \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  After cycle~4 \texttt{w0} is the only warp with both operands ready,
+  so the scheduler selects it and its operands move from the buffers
+  into the lanes; \texttt{w1} and \texttt{w2} keep waiting for their
+  second operand.  The order in which operands arrive, and hence which
+  warp issues first, is dynamic: it depends on bank conflicts and on
+  the memory system, not on the program text.\sidenote{The scoreboard was introduced with
+the CDC~6600 (1964) for a single instruction stream.  The GPU form is
+in-order per warp: K12 §1.4.1 observes that the scheduler is in order
+but \enquote{can select any warps that are ready}, so that the
+execution of the SM as a whole \enquote{might look like an out-of-order
+execution} \cite{kim2012gpgpu}.  Lesson~7 compares the selection
+policies (round-robin, greedy-then-oldest) in detail.}
+\end{example}
+
+\subsection{Shared-memory bank conflicts}
+
+Shared memory, the per-block scratchpad of Lesson~3, is banked for the
+same reason as the register file: a warp's load must deliver 32 words
+in a cycle.  \Cref{fig:l04-shared-banks} shows a four-bank shared memory
+whose consecutive words are interleaved across the banks, word $a$ in
+bank $a \bmod 4$.  If thread $k$ reads
+\texttt{sharedInput[threadIdx.x * 4]}, that is word $4k$, every thread
+of the warp reads bank~0 and the load is serialised over as many cycles
+as there are threads.
+
+\begin{marginfigure}
+  \input{figures/l04-shared-banks}
+  \caption{Four shared-memory banks with interleaved words; a stride of
+    four words sends every thread to bank~0.}
+  \label{fig:l04-shared-banks}
+\end{marginfigure}
+
+\begin{definition}[Shared-memory bank conflict]
+  \label{def:l04-smem-bank-conflict}
+  A \term{shared memory bank conflict}[共有メモリのバンク競合] occurs when
+  the threads of one warp access different words that lie in the same
+  shared-memory bank in one instruction.  The hardware splits the
+  request into as many conflict-free requests as necessary, and the
+  effective bandwidth falls by that factor.  Threads that access the
+  \emph{same} word do not conflict: a read of one word by several
+  threads is served by a broadcast, and a write of one word by several
+  threads is performed by one of them (BPG §10.2.3.1 Shared Memory and
+  Memory Banks \cite{nvidia2026cudabestpractices}; CPG, Compute
+  Capability 5.x, Shared Memory \cite{nvidia2024cudaguide}).
+\end{definition}
+
+On NVIDIA GPUs of compute capability 5.0 and later, shared memory has
+32 banks, each \SI{32}{\bit} wide and delivering one word per clock,
+and successive 32-bit words are assigned to successive banks.  With a
+warp of 32 threads a conflict can therefore arise between any two
+threads of the warp.\margin{Shared-memory latency is \enquote{roughly
+100x lower than uncached global memory latency}
+\cite{harris2013sharedmem}; an $n$-way conflict divides the effective
+bandwidth by $n$ (BPG §10.2.3.1).}  From these rules the bank of a byte address
+$a$ follows as
+\begin{equation}
+  \text{bank}(a) = \left\lfloor a / 4 \right\rfloor \bmod 32,
+  \label{eq:l04-bank}
+\end{equation}
+and for 32-bit elements accessed at a constant
+\term{stride}[ストライド] of $s$ words, the distance between the
+elements read by consecutive threads (thread $k$ reads element $sk$),
+the banks touched
+repeat after $32 / \gcd(s, 32)$ threads, so the access is a
+$\gcd(s, 32)$-way conflict.
+
+\begin{example}
+  \label{ex:l04-smem-stride}
+  A warp reads \texttt{s[threadIdx.x * 8]} from an array of
+  \texttt{float}.  The word stride is $s = 8$, so thread $k$ reads bank
+  $8k \bmod 32$: threads 0, 4, 8, \ldots, 28 all hit bank~0, threads
+  1, 5, \ldots, 29 bank~8, and only banks 0, 8, 16 and 24 are used.
+  Eight threads share each bank, so the load is an 8-way conflict,
+  $\gcd(8, 32) = 8$, and takes eight shared-memory cycles instead of
+  one.  With stride 7 the banks are $7k \bmod 32$, all 32 distinct, and
+  the load takes one cycle.\caution{Lecture vs guide: the four-bank
+  model turns \texttt{threadIdx.x * 4} into a full conflict (every
+  thread in one bank).  On real 32-bank hardware the same access is a
+  4-way conflict, $\gcd(4, 32) = 4$, using eight banks.}
+\end{example}
+
+The common case in practice is a tile stored row by row and read column
+by column, as in the tiled matrix multiplication of Lesson~5.  With a
+$32 \times 32$ tile of 32-bit elements, the elements of one column are
+32 words apart, a 32-way conflict.  The standard fix is
+\term{padding}[パディング]: declaring the tile as $32 \times 33$ makes
+the column stride 33, which by the modulo arithmetic of
+\cref{eq:l04-bank} behaves like a unit stride and is conflict-free, at
+the cost of one unused word per row.\margin{BPG §10.2.3.3 Shared
+Memory in Matrix Multiplication (C = AA$^\mathsf{T}$) is the source of
+the $[w][w+1]$ padding rule \cite{nvidia2026cudabestpractices}; Harris
+discusses the same conflict for transposes \cite{harris2013sharedmem}.}
+\begin{lstlisting}[language=C++, numbers=none]
+__shared__ float tileA[32][32];  // column read: 32-way
+__shared__ float tileB[32][33];  // column read: no conflict
+// (tx, ty) reads tileA[tx][ty] / tileB[tx][ty]:
+// stride 32 vs 33
+\end{lstlisting}
+Restructuring the data layout or the access pattern in this way is the
+software remedy for shared-memory conflicts, and the compiler cannot
+apply it automatically because the addresses are dynamic.\tip{Any odd word stride is
+conflict-free on 32 banks, since $\gcd(s, 32) = 1$; padding a row by
+one word makes an even row stride odd.}
+
+\begin{keypoint}
+  Banking gives a wide register file or shared memory the bandwidth of
+  many ports at the cost of a few: values in different banks are read
+  together, values in the same bank are serialised.  Register bank
+  conflicts are absorbed by the operand collector and the scoreboard,
+  which lets the scheduler issue whichever warp has its operands;
+  shared-memory conflicts are removed by the programmer through strides
+  and padding.
+\end{keypoint}
+
+\section{GPU architecture pipeline}
+\label{sec:l04-pipeline}
+
+This section follows warp instructions through the pipeline of
+\cref{fig:l04-pipeline} on a small configuration, stage by stage, and
+then adds the mask bits that let a warp instruction skip some of its
+threads.\source{M4, pipeline walk-through; K12 §1.4.1; A18 ch.~3; PTX
+ISA, special registers \cite{nvidia2026ptx}.}
+
+\subsection{The stages}
+
+The stages of \cref{fig:l04-pipeline} are, for one warp instruction:
+\begin{description}
+  \item[Fetch.]  The \term{instruction fetch}[命令フェッチ] stage reads the
+    instruction at the selected warp's PC from the instruction cache,
+    one instruction for the whole warp.
+  \item[Decode.]  The \term{decode}[デコード] stage identifies the operation, the
+    source and destination registers and any immediate operand; an
+    immediate is the same for every thread and is broadcast into every
+    lane's operand buffer at once, already marked ready.
+  \item[Register read.]  The register banks deliver the source values of
+    each thread into the operand buffers, over one or more cycles.
+  \item[Schedule and issue.]  When the scoreboard shows all operands
+    ready the scheduler selects the warp; \term{issue}[命令発行] sends
+    the instruction and its operands to the execution units.
+  \item[Execute.]  The arithmetic lanes compute, one thread per lane.
+    Transcendental functions (sine, reciprocal, square root) go to a
+    \term{special function unit (SFU)}[特殊関数ユニット], of which an SM
+    has a few, so that a warp's SFU instruction takes several passes;
+    loads and stores go to the memory unit or to shared
+    memory.\sidenote{K12 §1.4.1 gives the shape of the execution stage
+    on G80: 8 lanes, so a 32-thread warp took four cycles per
+    instruction; 2--4 SFUs per SM computing approximations of the
+    transcendental functions; and no forwarding network as in a CPU
+    pipeline, since a warp result is as wide as the whole warp (K12
+    puts it at \SI{1}{\kibi\byte}), so that dependent back-to-back
+    instructions rely on the other warps to fill the gap
+    \cite{kim2012gpgpu}.}
+  \item[Write-back.]  The \term{write-back}[ライトバック] stage writes each
+    thread's result into its register in the banks.
+\end{description}
+
+\subsection{A walk-through}
+
+The configuration of the example is deliberately small: a warp size of
+4, two thread blocks of 8 threads, hence four warps, and an SM with four
+lanes.  Blocks and threads are numbered from 0 as in CUDA, so
+\texttt{\%ctaid.x} is 0 or 1 and \texttt{\%tid.x} runs from 0 to 7;
+registers are 32-bit and their initial values are arbitrary.  The state
+before the first cycle is given by the three tables of
+\cref{tab:l04-walkthrough-state}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Initial state of the walk-through: the PC of each warp, the
+    instructions in the instruction cache, and the register file of
+    block~0.}
+  \label{tab:l04-walkthrough-state}
+  \begin{tabular}{lll}
+    \toprule
+    warp & block, threads & PC \\
+    \midrule
+    \texttt{W0} & block 0, \texttt{T0}--\texttt{T3} & \texttt{0x8000} \\
+    \texttt{W1} & block 0, \texttt{T4}--\texttt{T7} & \texttt{0x8004} \\
+    \texttt{W2} & block 1, \texttt{T0}--\texttt{T3} & \texttt{0x8000} \\
+    \texttt{W3} & block 1, \texttt{T4}--\texttt{T7} & \texttt{0x800C} \\
+    \bottomrule
+  \end{tabular}
+  \hspace{6mm}
+  \begin{tabular}{ll}
+    \toprule
+    address & instruction \\
+    \midrule
+    \texttt{0x8000} & \texttt{add r1, r1, 2} \\
+    \texttt{0x8004} & \texttt{sub r2, r2, 1} \\
+    \texttt{0x8008} & \texttt{mov r1, \%tid.x} \\
+    \texttt{0x800C} & \texttt{mov r2, \%ctaid.x} \\
+    \texttt{0x8010} & \texttt{ld.shared r1, [A]} \\
+    \bottomrule
+  \end{tabular}
+
+  \medskip
+  \begin{tabular}{lcccccccc}
+    \toprule
+    block 0 & \texttt{T0} & \texttt{T1} & \texttt{T2} & \texttt{T3} & \texttt{T4} & \texttt{T5} & \texttt{T6} & \texttt{T7} \\
+    \midrule
+    \texttt{R1} & 20 & 21 & 22 & 23 & 30 & 31 & 32 & 33 \\
+    \texttt{R2} &  5 &  5 &  5 &  5 &  7 &  7 &  7 &  7 \\
+    \texttt{R3} &  1 &  4 &  9 & 16 & 25 & 36 & 49 & 64 \\
+    \texttt{R4} &  8 &  6 &  7 &  5 &  3 &  0 &  9 &  2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The instructions use two \term{special register}[特殊レジスタ]s of PTX,
+read-only registers that the hardware fills for every thread:
+\texttt{\%tid.x} holds the thread's index within its block and
+\texttt{\%ctaid.x} the index of its block (CTA) within the
+grid.\margin{PTX ISA 9.4, special registers \texttt{\%tid},
+\texttt{\%ntid}, \texttt{\%ctaid}, \texttt{\%nctaid}
+\cite{nvidia2026ptx}; they are what \texttt{threadIdx}, \texttt{blockDim}
+and \texttt{blockIdx} of Lesson~3 compile to.  Lesson~10 presents PTX
+as a whole.}  The scheduler is assumed to pick warps in the order
+\texttt{W0}, \texttt{W1}, \texttt{W3}, and each step below takes the
+instruction through all stages before the next warp is considered.
+\begin{enumerate}
+  \item \emph{\texttt{W0} at \texttt{0x8000}: \texttt{add r1, r1, 2}.}
+    Fetch reads one instruction for the four threads.  Decode broadcasts
+    the immediate 2 into \texttt{Src2} of all four lanes and marks it
+    ready.  Register read fills \texttt{Src1} with \texttt{R1} of
+    \texttt{T0}--\texttt{T3}, that is 20, 21, 22, 23.  Both operands
+    are ready, the scoreboard lets the scheduler issue \texttt{W0}, the
+    four lanes add, and write-back stores 22, 23, 24, 25 into
+    \texttt{R1} of \texttt{T0}--\texttt{T3}.  The PC of \texttt{W0}
+    advances to \texttt{0x8004}.
+  \item \emph{\texttt{W1} at \texttt{0x8004}: \texttt{sub r2, r2, 1}.}
+    The same stages for threads \texttt{T4}--\texttt{T7}: the immediate
+    1 is broadcast, \texttt{R2} of \texttt{T4}--\texttt{T7} is read as
+    7, 7, 7, 7, and $7 - 1 = 6$ is written back to each.  The hardware
+    performs identical work for every thread of a warp; only the
+    register values differ.
+  \item \emph{\texttt{W3} at \texttt{0x800C}: \texttt{mov r2, \%ctaid.x}.}
+    \texttt{W3} belongs to block~1, so the special register reads 1 in
+    every lane and \texttt{R2} of \texttt{T4}--\texttt{T7} of block~1
+    becomes 1, 1, 1, 1.  Had \texttt{W3}'s PC been \texttt{0x8008}
+    instead, \texttt{mov r1, \%tid.x} would have written the thread
+    indices 4, 5, 6, 7 into \texttt{R1}: the same instruction yields a
+    different value per lane because the special register differs per
+    thread.
+\end{enumerate}
+\Cref{tab:l04-walkthrough-after} shows block~0's registers after the
+first two steps.  Note that \texttt{W2} has the same PC as \texttt{W0}
+had: the two warps of different blocks execute the same static
+instruction on their own registers, and nothing in the pipeline ties
+them together.\tip{To trace a warp instruction by hand: fetch at the
+warp's PC; broadcast the immediate; read the named register for every
+thread of the warp; compute per lane; write back per lane; advance
+that warp's PC.}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Register file of block~0 after steps 1 and 2 (changed values
+    in bold).}
+  \label{tab:l04-walkthrough-after}
+  \begin{tabular}{lcccccccc}
+    \toprule
+    block 0 & \texttt{T0} & \texttt{T1} & \texttt{T2} & \texttt{T3} & \texttt{T4} & \texttt{T5} & \texttt{T6} & \texttt{T7} \\
+    \midrule
+    \texttt{R1} & \textbf{22} & \textbf{23} & \textbf{24} & \textbf{25} & 30 & 31 & 32 & 33 \\
+    \texttt{R2} &  5 &  5 &  5 &  5 & \textbf{6} & \textbf{6} & \textbf{6} & \textbf{6} \\
+    \texttt{R3} &  1 &  4 &  9 & 16 & 25 & 36 & 49 & 64 \\
+    \texttt{R4} &  8 &  6 &  7 &  5 &  3 &  0 &  9 &  2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Mask bits}
+
+Not every instruction needs all the threads of its warp: a block of 6
+threads with warp size 4 leaves two lanes of its second warp empty, and
+Lesson~6 shows that a branch taken by some threads only leaves the
+others idle until the paths reconverge.  The pipeline handles both with
+one mechanism.\margin{The
+masks of Lesson~6's SIMT stack are exactly these bits, pushed and
+popped as branches diverge and reconverge; Lesson~5's warp vote and
+shuffle functions expose the active mask to the program.}
+
+\begin{definition}[Lane and active mask]
+  \label{def:l04-active-mask}
+  A \term{lane}[レーン] is one execution path through the pipeline:
+  the operand-buffer entries, ALU and write-back slot that serve one
+  thread of a warp instruction (the SIMT lane of Lesson~1 seen from the
+  pipeline).  The \term{active mask}[アクティブマスク] of a warp is a bit
+  vector with one bit per lane; a lane whose bit is 1 executes the
+  instruction and writes its result back, a lane whose bit is 0 does
+  no work and writes nothing.
+\end{definition}
+
+The walk-through above ran with every lane active.
+\Cref{fig:l04-scoreboard-lanes} shows the per-lane operand buffers for
+a later instruction under the masks of \cref{tab:l04-masks}, with
+\texttt{W0} ready in all four lanes and selected, and \texttt{W1}
+running under the mask \texttt{1110}: its first three
+lanes receive operands and compute, its fourth lane is inactive and is
+never marked ready.  A warp whose mask is all ones is the common case,
+and the mask is part of the warp's state alongside its PC.
+
+\begin{margintable}
+  \caption{Active masks for a later instruction (the walk-through above ran
+    with all masks \texttt{1111}); lane~3 of \texttt{W1} and lane~0 of
+    \texttt{W2} are switched off.}
+  \label{tab:l04-masks}
+  \begin{tabular}{lc}
+    \toprule
+    warp & mask \\
+    \midrule
+    \texttt{W0} & \texttt{1111} \\
+    \texttt{W1} & \texttt{1110} \\
+    \texttt{W2} & \texttt{0111} \\
+    \texttt{W3} & \texttt{1111} \\
+    \bottomrule
+  \end{tabular}
+\end{margintable}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-scoreboard-lanes}
+  \caption{Per-lane operand buffers and the scoreboard: \texttt{w0}
+    has both operands ready in every lane and is issued to the four
+    ALUs; \texttt{w1} runs under the mask \texttt{1110}, so its fourth
+    lane stays inactive.}
+  \label{fig:l04-scoreboard-lanes}
+\end{figure}
+
+
+\begin{keypoint}
+  A warp instruction is fetched once at the warp's PC, decoded once,
+  and then read, executed and written back per lane; immediates and
+  special registers like \texttt{\%ctaid.x} are broadcast, while
+  \texttt{\%tid.x} and ordinary registers differ per lane.  The active
+  mask switches individual lanes off without changing the instruction
+  stream.
+\end{keypoint}
+
+\section{Global memory coalescing}
+\label{sec:l04-coalescing}
+
+The execution side of the SM processes a warp instruction as one unit;
+the memory side cannot, because each thread of a load supplies its own
+address.\source{M4, coalescing; K12 §1.4.3; A18 ch.~4; BPG §10.2.1
+Coalesced Access to Global Memory; CPG §5.3.2 Device Memory Accesses;
+PMPP ch.~6.}  This section counts the requests a warp can generate,
+reviews the memory technologies that must serve them, and shows how the
+hardware merges requests whose addresses are close.
+
+\subsection{The demand for bandwidth}
+
+One load instruction of a 32-thread warp can generate up to 32 distinct
+memory requests, one per thread.  The \term{memory bandwidth}[メモリ帯域幅]
+that would be needed if every SM issued such a load every cycle is
+easily computed.
+
+\begin{example}
+  \label{ex:l04-bandwidth-demand}
+  A GPU has 64 SMs at \SI{1.5}{\giga\hertz}.  If every SM issues one
+  warp load per cycle and every thread's request fetches
+  \SI{32}{\byte}, the SMs demand
+  $64 \times 32 \times \SI{32}{\byte} = \SI{65536}{\byte}$ per cycle,
+  which at \SI{1.5}{\giga\hertz} is about
+  \SI{98}{\tera\byte\per\second}.  (With 32 SMs, \SI{64}{\byte} per
+  request and \SI{1}{\giga\hertz} the same \SI{64}{\kibi\byte} per cycle
+  give about \SI{66}{\tera\byte\per\second}, usually rounded to
+  \SI{64}{\tera\byte\per\second}.)  The H100 SXM5 memory system delivers
+  about \SI{3}{\tera\byte\per\second} (preliminary figure), some thirty
+  times less.\margin{HBM bandwidth by generation: P100
+  \SI{720}{\giga\byte\per\second}, V100 \SI{900}{\giga\byte\per\second},
+  A100 (\SI{40}{\gibi\byte}) \SI{1555}{\giga\byte\per\second}
+  \cite{nvidia2020ampere}; H100 SXM5 \SI{3000}{\giga\byte\per\second}
+  (preliminary, HWP V1.02) \cite{nvidia2022hopper}.}  The gap is closed
+  by caches, by not every warp loading every cycle, and above all by
+  coalescing: the 32 requests of a warp usually fall into a few
+  adjacent blocks of memory.
+\end{example}
+
+GPU caches are small relative to the thread count, so their bandwidth
+saturates easily, and the off-chip memory is the bottleneck for most
+kernels.  Which memory technology sits there decides how wide the
+bottleneck is.
+
+\subsection{SRAM, DRAM and HBM}
+
+\Cref{fig:l04-sram-dram-hbm} contrasts the three technologies.
+
+\begin{description}
+  \item[SRAM.]  Static random-access memory, \term{SRAM}[SRAM], stores a
+    bit in a six-transistor cell: two cross-coupled inverters that hold
+    the bit, connected to the bit lines through two access transistors
+    gated by the word line.  It is fast and needs no refresh, but
+    six transistors per bit make it expensive in area, so it is used
+    for the structures on the GPU die: registers, shared memory and
+    caches.
+  \item[DRAM.]  Dynamic random-access memory, \term{DRAM}[DRAM], stores a
+    bit as charge on a capacitor behind a single transistor (1T1C).
+    The cell is far smaller, so DRAM gives the capacity of the GPU's
+    main memory, but it is slower, needs periodic refresh, and its chips
+    sit in separate packages: every bit that enters or leaves must pass
+    through the package pins, whose number and speed bound the
+    bandwidth.  The SMs reach the L2 and DRAM through several
+    \emph{memory channels}, each with its own DRAM, and coalesced
+    requests spread over them (K12 §1.4.3 \cite{kim2012gpgpu}).
+  \item[HBM.]  High bandwidth memory (Lesson~1) keeps the DRAM cell but
+    changes the packaging.  Several DRAM dies are stacked vertically and
+    connected through the stack, which is
+    \term{3D-stacked memory}[3次元積層メモリ], and the stack is placed
+    next to the GPU die on a \term{silicon interposer}[シリコンインターポーザ],
+    a silicon substrate carrying thousands of fine wires inside the same
+    package.  The link to the GPU no longer crosses package pins or a
+    circuit board, so it can be thousands of bits wide, and the bandwidth
+    per package is several times that of a GDDR memory system.\margin{Earlier GPUs used GDDR DRAM over a wide bus, with an FR-FCFS
+    (first-ready, first-come first-served) scheduler at each channel: K12
+    §1.4.3 \cite{kim2012gpgpu}.  Interface widths:
+    P100 and V100 use a 4096-bit HBM2 interface, A100 a 5120-bit HBM2
+    interface \cite{nvidia2020ampere}, H100 SXM5 a 5120-bit HBM3
+    interface \cite{nvidia2022hopper}.  BPG §9.2.1 derives V100's
+    \SI{898}{\giga\byte\per\second} as $0.877\,\text{GHz} \times 2
+    \times 4096\,\text{bit} / 8$ \cite{nvidia2026cudabestpractices}.}
+\end{description}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-sram-dram-hbm}
+  \caption{(a) A six-transistor SRAM cell.  (b) A one-transistor,
+    one-capacitor DRAM cell and a DRAM package whose traffic passes
+    through its pins.  (c) A GPU package in which a silicon interposer
+    links the GPU die to a 3D stack of DRAM dies.}
+  \label{fig:l04-sram-dram-hbm}
+\end{figure}
+
+\subsection{Coalescing}
+
+Even HBM cannot serve 32 separate requests per warp instruction, so the
+memory unit of the SM looks at the 32 addresses together.
+
+\begin{definition}[Memory coalescing]
+  \label{def:l04-coalescing}
+  The combination, by the hardware, of the memory requests of the
+  threads of one warp instruction into as few memory transactions as
+  their addresses allow is \term{memory coalescing}[メモリコアレッシング].
+  A \term{memory transaction}[メモリトランザクション] is one transfer
+  between the memory system and the SM of a fixed, naturally aligned
+  block of bytes.  An access whose 32 requests fit into a small number
+  of transactions is a \term{coalesced access}[コアレスアクセス]; one that
+  needs a separate transaction for most threads is an
+  \term{uncoalesced access}[非コアレスアクセス].
+\end{definition}
+
+\Cref{fig:l04-coalescing} shows the two cases for eight threads
+executing two PTX loads,
+\begin{lstlisting}[language=PTX, numbers=none]
+ld.global.u32 %r3, [%r1];   // R1: 512, 516, ..., 540
+ld.global.u32 %r3, [%r2];   // R2: 0, 128, 256, ..., 896
+\end{lstlisting}
+where a DRAM request is taken to be \SI{64}{\byte} long.\caution{Lecture vs guide: the \SI{64}{\byte} request of the
+example is the granularity the lecture assumes (\enquote{64 to
+128~B}).  Since compute capability 6.0 the hardware counts
+\SI{32}{\byte} sectors: BPG §10.2.1 states that a warp's accesses
+coalesce into \enquote{a number of transactions equal to the number of
+32-byte transactions necessary to service all of the threads of the
+warp} \cite{nvidia2026cudabestpractices}.  Lesson~8 returns to sectored
+caches.}  In the first
+load the eight addresses are consecutive 4-byte words from 512 to 540,
+\SI{32}{\byte} in all, so they combine into one request for
+\texttt{Mem[512--575]}: the access is coalesced.  In the second the
+addresses are \SI{128}{\byte} apart, so no two of them share a request
+and eight requests are issued: the access is uncoalesced and consumes
+eight times the bandwidth for the same \SI{32}{\byte} of useful
+data.
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-coalescing}
+  \caption{Eight threads load through \texttt{\%r1} (consecutive words,
+    one request) and through \texttt{\%r2} (words \SI{128}{\byte} apart,
+    eight requests).}
+  \label{fig:l04-coalescing}
+\end{figure}
+
+The precise rule has three ingredients.  Global memory is accessed in
+transactions of 32, 64 or \SI{128}{\byte}, and each transaction must be
+naturally aligned: its first address is a multiple of its size, which
+is the \term{alignment}[アライメント] requirement.\margin{CPG §5.3.2
+Device Memory Accesses: \enquote{device memory is accessed via 32-, 64-,
+or 128-byte memory transactions.  These memory transactions must be
+naturally aligned} \cite{nvidia2024cudaguide}.}  Memory is cached in
+units of a \term{cache line}[キャッシュライン], \SI{128}{\byte} on
+NVIDIA GPUs, made of four \SI{32}{\byte} sectors, and a warp's accesses
+cost as many sectors as they touch.  Finally the \term*{stride}
+of an access, the distance between the addresses of consecutive threads,
+decides how many sectors the warp's 32 addresses span.
+
+\begin{example}
+  \label{ex:l04-sectors}
+  A warp of 32 threads loads one 4-byte word per thread,
+  \SI{128}{\byte} of useful data, in the four patterns of
+  \cref{fig:l04-sectors} and \cref{tab:l04-sectors}.  The efficiency is
+  the useful data divided by the bytes transferred.
+\end{example}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Sectors transferred for a warp loading 32 words of
+    \SI{4}{\byte} (after BPG §10.2.1.1--10.2.1.4).}
+  \label{tab:l04-sectors}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{52mm}ccc}
+    \toprule
+    access pattern & sectors & bytes moved & efficiency \\
+    \midrule
+    (a) consecutive, \SI{128}{\byte}-aligned & 4 & 128 & \SI{100}{\percent} \\
+    (b) consecutive, offset by one word & 5 & 160 & \SI{80}{\percent} \\
+    (c) stride 2 words & 8 & 256 & \SI{50}{\percent} \\
+    (d) stride 8 words or more & 32 & 1024 & \SI{12.5}{\percent} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+  \centering
+  \input{figures/l04-sectors}
+  \caption{Words touched by a 32-thread warp (shaded) over
+    \SI{32}{\byte} sectors: (a) aligned and consecutive, (b) shifted by
+    one word, (c) stride 2, (d) stride 8 (one word per sector).}
+  \label{fig:l04-sectors}
+\end{figure}
+
+Pattern (b) shows why alignment matters even for consecutive accesses:
+a shift of one word spills into a fifth sector.  Pattern (d) is the
+column-wise access to a row-major matrix, and the uncoalesced load of
+\cref{fig:l04-coalescing} is its extreme form; a kernel written so that
+consecutive threads touch consecutive words, pattern (a), is the single
+most important memory optimisation.\margin{K12 §1.4.3: GPUs before
+compute capability 1.2 imposed strict coalescing rules (consecutive
+threads, consecutive aligned words); later generations relaxed them and
+produce \enquote{one to four memory transactions} for a coalesced warp
+access \cite{kim2012gpgpu}.}  In CUDA the pattern is determined by how
+the thread index enters the address:
+\begin{lstlisting}[language=C++, numbers=none]
+// coalesced: consecutive threads, consecutive words
+out[i] = in[blockIdx.x * blockDim.x + threadIdx.x];
+// uncoalesced: stride of one row (n words) per thread
+out[i] = in[threadIdx.x * n + blockIdx.x];
+\end{lstlisting}
+\Needspace{18\baselineskip}
+When the algorithm needs the strided view, the remedy is the shared
+memory of \cref{sec:l04-bank-conflicts}: load a tile coalesced, then
+read it from shared memory in the order the computation wants, which is
+the tiling of Lesson~3 and the subject of Lesson~5.\tip{Check a load by
+asking what addresses threads 0 and 1 of a warp touch: if they differ
+by the element size and thread 0's address is aligned, the access is
+coalesced.}
+
+\begin{keypoint}[Lesson summary]
+  An SM hides memory latency with fine-grained multithreading: one PC
+  per warp and a register set per thread stay on chip, so a warp switch
+  is free and the number of warps is bounded by storage.  The register
+  file and shared memory are banked to supply a warp's operands per
+  cycle; accesses that need more values from one bank than it has ports
+  are bank conflicts, absorbed in the register file by operand
+  collectors and a scoreboard that issues whichever warp is ready, and
+  avoided in shared memory (32 banks of \SI{4}{\byte}) by odd strides
+  and padding.  A warp instruction is fetched and decoded once and
+  executed per lane under an active mask, with immediates and
+  \texttt{\%ctaid.x} broadcast and \texttt{\%tid.x} per lane.  On the
+  memory side one warp load can issue 32 requests; the hardware
+  coalesces those that fall into the same aligned \SI{32}{\byte}
+  sectors, so consecutive, aligned accesses move 4 sectors for
+  \SI{128}{\byte} of data while strided ones move up to 32, and HBM's
+  stacked DRAM on an interposer exists to serve the remaining demand.
+\end{keypoint}
+
+\end{document}
