@@ -7,8 +7,8 @@ what the lectures cover.  Built with
 
 - **Read the latest PDFs in the browser** (rebuilt by CI on every push):
   <https://kinginu.github.io/cs7295-notes/> —
-  [English](https://kinginu.github.io/cs7295-notes/notes-en.pdf) ·
-  [日本語](https://kinginu.github.io/cs7295-notes/notes-ja.pdf)
+  [English](https://kinginu.github.io/cs7295-notes/cs7295-notes-en.pdf) ·
+  [日本語](https://kinginu.github.io/cs7295-notes/cs7295-notes-ja.pdf)
 - Local build: `make docker-all` → `en/build/main.pdf`, `ja/build/main.pdf`.
 - Print editions: compact two-sided books scaled from the A4 layout
   (class option `print=`, no chapter changes): `make docker-print-a5`
