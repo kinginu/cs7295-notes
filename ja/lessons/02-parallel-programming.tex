@@ -370,8 +370,9 @@ int main() {
 \section{スケジューリング，データ共有，同期}
 \label{sec:l02-scheduling}
 
-共有メモリプログラムの残り4つの課題，スレッド数，スケジュール，共有の方針，
-同期には，それぞれ OpenMP の構文がある．\source{M2，OpenMP vs.\ MPI
+共有メモリプログラムは，並列化そのもの（\cref{sec:l02-openmp}）のほかに，
+スレッド数，スケジュール，共有の方針，同期の4つを決めなければならず，
+それぞれに OpenMP の構文がある．\source{M2，OpenMP vs.\ MPI
 （第2部）；PPP App.~A；\cite{openmp2021spec}．}
 
 \subsection{スレッド数}
@@ -480,8 +481,8 @@ OpenMP の \texttt{schedule(}\textit{kind}\texttt{, }\textit{chunk}\texttt{)}
 
 \subsection{同期}
 
-同期こそが共有メモリプログラムを正しくする．異なるスレッドの共有データへの
-アクセスを順序付けるからである．OpenMP は3つの構文を提供する．
+共有メモリプログラムの正しさを保証するのは同期である．同期は，異なるスレッドに
+よる共有データへのアクセスに順序を付ける．OpenMP はそのための構文を3つ提供する．
 
 \begin{description}
   \item[バリア]  \term[ばりあ]{バリア}[barrier]とは，チームのすべての
@@ -595,11 +596,11 @@ for (int i = 0; i < n; ++i) {
 \section{MPI によるプログラミング}
 \label{sec:l02-mpi}
 
-CUDA プログラミングは\cref{sec:l02-openmp}の2つのモデルを組み合わせる．GPU
-のすべてのコアで共有されるメモリ領域がある一方，外からは見えず明示的な通信を
-必要とする領域もある．したがって GPU プログラマには，共有メモリの習慣と
-同じくらい分散メモリの習慣が必要であり，それがここでメッセージパッシングを
-導入する理由である．\source{M2，MPI によるプログラミング；PPP App.~B；
+CUDA プログラミングは\cref{sec:l02-openmp}の2つのモデルを併せもつ．GPU
+には全コアで共有されるメモリ領域がある一方，外部からは見えず，明示的な通信を
+必要とする領域もある．したがって GPU プログラマは，共有メモリだけでなく
+分散メモリのプログラミングにも習熟している必要がある．本節でメッセージ
+パッシングを扱うのはこのためである．\source{M2，MPI によるプログラミング；PPP App.~B；
 \cite{barney2026parallel}，メッセージパッシングモデル；PMPP ch.~20．}
 
 \subsection{プロセスとメッセージ}
@@ -646,7 +647,7 @@ CUDA プログラミングは\cref{sec:l02-openmp}の2つのモデルを組み�
 
 最小限のプログラムで両方の呼び出しを示す．同じ実行ファイルがプロセスごとに
 1回起動され（\texttt{mpirun -np 4 ./a.out} は4つ起動する），どのコピーも
-先頭から実行し，コピーを区別して各自の仕事を決める唯一のものがランクである
+先頭から実行する．コピーどうしを区別し，それぞれの仕事を決めるのはランクだけである
 （これも SPMD である）．
 \begin{lstlisting}[language=C, numbers=none]
 #include <mpi.h>

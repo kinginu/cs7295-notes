@@ -178,7 +178,7 @@ from a circuit model such as CACTI, or from the register-transfer-level
 circuits.\margin{CACTI is a widely used model of the access time,
 area and energy of SRAM arrays such as caches and register files,
 from their size and organisation.}  Execution latencies that do not
-depend on the run are therefore a lookup table.
+depend on the run therefore come from a lookup table.
 
 \subsection{Structure of a simulator}
 
@@ -860,8 +860,8 @@ head of the reorder buffer and stalls dispatch once it fills
 first-order model in detail, including the penalties of each kind of
 miss event.}
 
-Applied to a GPU, the naive approach treats the GPU as one more
-multithreaded processor.  That misses the two effects that most
+The naive way to apply interval analysis to a GPU treats the GPU as one
+more multithreaded processor.  That misses the two effects that most
 distinguish GPUs:
 \begin{description}
   \item[Branch divergence.]  Not every lane of a warp is active, and

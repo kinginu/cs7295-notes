@@ -34,8 +34,8 @@ GPU は多数の SM から成り，各 SM はマルチスレッディングに�
 そのワープを実行し，共有メモリとハードウェアキャッシュを持つ
 （第1章の SM の図）．\source{M4，マルチスレッディング；K12 §1.2.1；
 A18 ch.~3；CPG §4.2 Hardware Multithreading．}本節では，
-マルチスレッディングが何をもたらし，どのような状態を必要とし，その状態が
-CPU のものとどう違うかを説明する．
+マルチスレッディングによって得られる利点，それに必要な状態，そしてその状態と
+CPU の状態との違いを説明する．
 
 \subsection{キャッシュミスを乗り切る3つの方法}
 
@@ -237,7 +237,7 @@ Compute Capability 5.0 から 9.0 まですべて同じである：CPG Table~21
 \section{バンク競合}
 \label{sec:l04-bank-conflicts}
 
-前節のレジスタファイルはワープ全体のオペランドを一度に供給しなければ
+\cref{sec:l04-multithreading}のレジスタファイルはワープ全体のオペランドを一度に供給しなければ
 ならず，そのため容量ではなく帯域幅が設計上の問題になる．\source{M4，
 バンク競合；K12 §1.4.1（レジスタの読み書き，スコアボーディング）；
 A18 ch.~3（オペランドコレクタ）；BPG §10.2.3 Shared Memory；CPG
@@ -372,7 +372,8 @@ Compute Capability 5.x，Shared Memory；\cite{harris2013sharedmem}．}
 制約し，レジスタの数が選択を制約するからである．\margin{レジスタ割り付け，
 すなわちプログラムの値をレジスタに割り当てるコンパイラのパスは，
 第11章の生存変数解析の上に成り立つ．GPU ではバンク配置がその入力の1つに
-なる．}この対策の背後にある区別は，コンパイラを扱う章を通して用いられる．
+なる．}この対策の背後にある静的と動的の区別は，コンパイラを
+扱う章を通じて用いる．
 
 \begin{definition}[静的と動的]
   \label{def:l04-static-dynamic}
@@ -584,7 +585,7 @@ __shared__ float tileB[32][33];  // column read: no conflict
   パディングによって取り除く．
 \end{keypoint}
 
-\section{GPU アーキテクチャのパイプライン}
+\section{SM のパイプライン}
 \label{sec:l04-pipeline}
 
 本節では，小さな構成でワープ命令を\cref{fig:l04-pipeline}の
@@ -846,7 +847,7 @@ Global Memory；CPG §5.3.2 Device Memory Accesses；PMPP ch.~6．}本節では�
 
 GPU のキャッシュはスレッド数に比べて小さいので，その帯域幅は容易に
 飽和し，ほとんどのカーネルではオフチップメモリがボトルネックになる．
-そこにどのメモリ技術があるかが，ボトルネックの幅を決める．
+そのボトルネックがどれだけ広いかは，そこに使われるメモリ技術で決まる．
 
 \subsection{SRAM，DRAM，HBM}
 

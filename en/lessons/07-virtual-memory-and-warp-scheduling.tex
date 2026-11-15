@@ -346,8 +346,8 @@ and spill TLB entries to the IOMMU's TLB, gaining 23.5\,\% and
 \section{Unified virtual address space and on-demand paging}
 \label{sec:l07-uva}
 
-The second side of virtual memory is page allocation, and here the GPU
-differs from the CPU most.\source{M7, UVA and on-demand paging;
+Page allocation, the side of virtual memory that \cref{sec:l07-vm} set
+aside, is where the GPU differs most from the CPU.\source{M7, UVA and on-demand paging;
 CPG §19 Unified Memory Programming; BPG §10.1.4 Unified Virtual
 Addressing; \cite{ganguly2019interplay,kim2020batch}.}  This section
 compares explicit copying with a shared address space, follows a GPU
@@ -933,7 +933,7 @@ __global__ void twoPhase(float *a) {
 
 \subsection{Other scheduling policies}
 
-The scheduler can also serve the memory system beyond the L1.\margin{GPUMech (Lesson~8) models the performance of both RR and GTO
+The warp scheduler can also improve the use of the memory system beyond the L1.\margin{GPUMech (Lesson~8) models the performance of both RR and GTO
 analytically, with average errors of 13.2\,\% and 14.0\,\%
 \cite{huang2014gpumech}.}  Like the memory channels of Lesson~4, the
 banks inside each DRAM can serve requests in parallel; the number of banks busy at the same

@@ -233,7 +233,7 @@ quantities.
 \section{Bank conflicts}
 \label{sec:l04-bank-conflicts}
 
-The register file of the previous section must deliver operands for a
+The register file of \cref{sec:l04-multithreading} must deliver operands for a
 whole warp at once, which makes its bandwidth, not its capacity, the
 design problem.\source{M4, bank conflicts; K12 §1.4.1 (register
 read/write, scoreboarding); A18 ch.~3 (operand collector); BPG §10.2.3
@@ -364,8 +364,8 @@ conflict, because the dependences of the program constrain the order and
 the number of registers constrains the choice.\margin{Register
 allocation, the compiler pass that assigns program values to registers,
 builds on the liveness analysis of Lesson~11; on a GPU the bank layout
-is one of its inputs.}  The distinction behind this remedy is used throughout the
-compiler lessons.
+is one of its inputs.}  The distinction behind this remedy, between static and
+dynamic properties, is used throughout the compiler lessons.
 
 \begin{definition}[Static and dynamic]
   \label{def:l04-static-dynamic}
@@ -582,7 +582,7 @@ one word makes an even row stride odd.}
   and padding.
 \end{keypoint}
 
-\section{GPU architecture pipeline}
+\section{The SM pipeline}
 \label{sec:l04-pipeline}
 
 This section follows warp instructions through the pipeline of

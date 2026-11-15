@@ -499,7 +499,8 @@ path-convergence criterion without enumerating paths.
 \section{Examples of compiler optimizations}
 \label{sec:l11-optimizations}
 
-The analyses above exist to justify transformations.\source{M11,
+Data-flow analyses such as liveness and reaching definitions, and the
+SSA form, exist to justify transformations.\source{M11,
 compiler optimizations; Aho et al.\ §9.1 The Principal Sources of
 Optimization \cite{aho2006compilers}; CPG §7.39 \#pragma unroll, §7.1.5
 \cite{nvidia2024cudaguide}.}  Each optimisation below must preserve the

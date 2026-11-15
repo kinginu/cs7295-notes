@@ -30,7 +30,7 @@ reshaped for the GPU.  Lessons 6 and~7 go below this level, into the
 hardware mechanisms behind divergence, register files and warp
 scheduling.
 
-\section{What suits a GPU, and where the time goes}
+\section{GPU-friendly programs and profiling}
 \label{sec:l05-profiling}
 
 Not every program benefits from a GPU.\source{M5, GPU-friendly programs
@@ -126,13 +126,13 @@ The execution time of a GPU program decomposes as
 \end{equation}
 the time to move data between host and device, the time the kernel
 spends waiting for device memory, and the time it spends computing.  All
-three must be attacked, and in that order of surprise: a program ported
+three must be attacked, and the first is the one most often overlooked: a program ported
 naively is often dominated by the first term, which does not appear in
 the kernel at all.  The sum reflects the naive program, in which the
 three parts are serialised; the optimisations of \cref{sec:l05-transfer}
 either shorten the first term or overlap it with the other two.  The
 sections that follow take the three terms in
-turn; a fourth rule precedes them all: use the vendor's libraries
+turn; a rule precedes them all: use the vendor's libraries
 (\cref{sec:l05-libraries}) wherever one covers the computation, because
 they already contain the optimisations below.
 
@@ -617,8 +617,9 @@ float y2 = rsqrtf(x);        // one SFU instruction
 \section{Newer CUDA features}
 \label{sec:l05-features}
 
-Several costs of the checklists above have been removed by hardware and
-API additions since the original CUDA model.\source{M5, newer CUDA
+Several costs that the optimisation checklists of
+\cref{sec:l05-transfer,sec:l05-memory,sec:l05-compute} address have been
+removed by hardware and API additions since the original CUDA model.\source{M5, newer CUDA
 features; CPG §4.1 SIMT Architecture, §7.19 Warp Vote Functions,
 §7.22 Warp Shuffle Functions, §7.26 Asynchronous Barrier, §8 Cooperative
 Groups; \cite{nvidia2022hopper}.}
@@ -837,7 +838,8 @@ synchronisation.
 \section{Libraries and other platforms}
 \label{sec:l05-libraries}
 
-The first rule, before any of the checklists, is to use the
+The first rule of GPU optimisation, ahead of the checklists of
+\cref{sec:l05-transfer,sec:l05-memory,sec:l05-compute}, is to use the
 libraries.\source{M5, libraries and other platforms.}
 
 \begin{definition}[Math library]

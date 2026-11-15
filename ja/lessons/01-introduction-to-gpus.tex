@@ -23,12 +23,11 @@
 \label{sec:l01-cpu-vs-gpu}
 
 \term{GPU}[GPU]（graphics processing unit）は 3D グラフィックス用の
-プロセッサとして生まれ，汎用の並列プロセッサへと成長した．今日では
-機械学習の高速化と高性能計算に最も結びつけられるハードウェアで
-ある．\source{M1，CPU vs GPU；K12 §1.2；CPG §1.1 The Benefits of
-Using GPUs．}\term{CPU}[CPU]（central processing unit）は設計空間の
-反対側の点に向けて作られており，\cref{tab:l01-cpu-gpu}にまとめた両者の
-対比が本書の残りの部分を貫く軸となる．
+プロセッサとして生まれ，汎用の並列プロセッサへと成長した．今日では，機械学習の高速化と高性能計算を代表する
+ハードウェアである．\source{M1，CPU vs GPU；K12 §1.2；CPG §1.1 The Benefits of
+Using GPUs．}\term{CPU}[CPU]（central processing unit）は設計空間でそれとは
+正反対の点をめざして作られており，\cref{tab:l01-cpu-gpu}にまとめた両者の
+対比が本書全体を通じた軸となる．
 
 \begin{table}[htbp]
   \centering
@@ -80,13 +79,12 @@ Using GPUs．}\term{CPU}[CPU]（central processing unit）は設計空間の
     ホスト--デバイス間転送は第5章で扱う．}
   \item[ISA] CPU の\term[めいれいせっとあーきてくちゃ]{命令セットアーキテクチャ}[instruction set architecture (ISA)]\index{ISA|see{命令セットアーキテクチャ}}
     は公開され安定している．コンパイル済みのソフトウェアが以後の
-    すべての実装で動き続けなければならないからである．GPU は
-    ドライバの背後でアクセラレータモードで動作し，ドライバが
-    プログラムを現行のハードウェア世代が実行するものへ変換する．
-    ネイティブ ISA は非公開でもよく，世代ごとに変わってもよい．
+    すべての実装で動き続けなければならないからである．GPU はアクセラレータとしてドライバの管理下で動作し，ドライバは
+    プログラムを，その時点のハードウェア世代が実行できる形式に変換する．
+    ネイティブ ISA は非公開であってよく，世代ごとに変わってもかまわない．
     プログラマに安定した目標を与えるために NVIDIA は PTX，すなわち
-    \term[かそうあいえすえー]{仮想ISA}[virtual ISA]を公開した．どの
-    ハードウェアも直接には実行しないが，ドライバが搭載 GPU の
+    \term[かそうあいえすえー]{仮想ISA}[virtual ISA]を公開した．仮想ISA とは，
+    どのハードウェアも直接には実行せず，ドライバが搭載 GPU の
     ネイティブ ISA へコンパイルする命令セットである．\margin{PTX
     そのもの，そのレジスタ，コンパイラフローにおける位置は第10章の
     主題である．}
@@ -249,13 +247,13 @@ ILP；PMPP ch.~1；A18 ch.~1．}
   ILP の機構の大半を捨て，代わりにスレッド数を増やす．
 \end{keypoint}
 
-\section{並列プログラムの書き方}
+\section{並列化による高速化とプログラムの分割}
 \label{sec:l01-parallel-programs}
 
-多数のコアをもつハードウェアは，並列な仕事を露わにするプログラムに
-対してのみ報われる．本節では，利得を上から抑える法則，プログラムを
-並列な部分へ分ける2つの方法，そして GPU が位置づけられる分類を
-述べる．\source{M1，Amdahl's law and decomposition；PPP ch.~2
+多数のコアをもつハードウェアが性能を発揮するのは，並列に実行できる
+仕事を含むプログラムに対してだけである．本節では，並列化による
+高速化の上限を与える法則，プログラムを並列な部分に分ける2つの方法，
+そして GPU を位置づける分類を述べる．\source{M1，Amdahl's law and decomposition；PPP ch.~2
 \cite{mattson2004patterns}；BPG §4.1.3 Understanding Scaling
 \cite{nvidia2026cudabestpractices}．}
 
